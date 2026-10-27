@@ -270,10 +270,23 @@ pub(super) fn file_handle_object<'js>(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
                 let written = open_descriptor(&ctx, &write_file_state).and_then(|descriptor| {
-                    let view = file_view(&ctx, data, options.0.as_ref())?;
-                    let bytes = attached_bytes(&ctx, &view)?;
-                    let count = write_descriptor(&ctx, descriptor, &bytes, false)?;
-                    transfer_value(&ctx, "bytesWritten", count, "buffer", view)
+                    let count = write_all(
+                        &ctx,
+                        descriptor.into_js(&ctx)?,
+                        data.clone(),
+                        options.0.clone(),
+                    )?;
+                    // workerd reports a string as `Buffer.from(data, options)`
+                    // encodes it.
+                    let buffer = if is_array_buffer_view(&data) {
+                        data
+                    } else {
+                        let options = options
+                            .0
+                            .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+                        encoded(&ctx, data, options)?
+                    };
+                    transfer_value(&ctx, "bytesWritten", count, "buffer", buffer)
                 });
                 promise(ctx.clone(), written)
             },
@@ -288,7 +301,7 @@ pub(super) fn file_handle_object<'js>(
                 let appended = open_descriptor(&ctx, &append_state).and_then(|descriptor| {
                     append_file_sync(ctx.clone(), descriptor.into_js(&ctx)?, data, options)
                 });
-                promise_unit(ctx, appended)
+                promise_unit(ctx, appended.map(drop))
             },
         )?,
     )?;

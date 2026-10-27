@@ -23,7 +23,8 @@ pub(super) struct OpenFile {
 pub(super) enum Node {
     File(FileNode),
     Directory(Directory),
-    Symlink(String),
+    /// A symbolic link to an absolute path, shared by its hard links.
+    Symlink(Arc<str>),
 }
 
 impl Node {
@@ -32,6 +33,16 @@ impl Node {
             Self::File(_) => NodeType::File,
             Self::Directory(_) => NodeType::Directory,
             Self::Symlink(_) => NodeType::Symlink,
+        }
+    }
+
+    /// Whether `self` and `other` are one node, as hard links are.
+    pub(super) fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::File(file), Self::File(other)) => file.same(other),
+            (Self::Directory(directory), Self::Directory(other)) => directory.same(other),
+            (Self::Symlink(target), Self::Symlink(other)) => Arc::ptr_eq(target, other),
+            _ => false,
         }
     }
 
@@ -132,6 +143,7 @@ impl Directory {
     }
 
     pub(super) fn lookup(&self, name: &str) -> Result<Option<Node>> {
+        check_name(name)?;
         match self {
             Self::Memory { entries, .. } => Ok(lock(entries).get(name).cloned()),
             Self::Static { entries } => Ok(entries.get(name).cloned()),
@@ -158,6 +170,9 @@ impl Directory {
         else {
             return Err(Error::new(ErrorKind::NotPermitted));
         };
+        if name.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidPath));
+        }
         match lock(entries).entry(name) {
             Entry::Occupied(_) => Err(Error::new(ErrorKind::AlreadyExists)),
             Entry::Vacant(entry) => {
@@ -168,6 +183,7 @@ impl Directory {
     }
 
     pub(super) fn remove(&self, name: &str) -> Result<Option<Node>> {
+        check_name(name)?;
         match self {
             Self::Memory { entries, writable } if *writable => Ok(lock(entries).swap_remove(name)),
             _ => Err(Error::new(ErrorKind::NotPermitted)),
@@ -176,6 +192,25 @@ impl Directory {
 
     pub(super) fn is_empty(&self) -> Result<bool> {
         Ok(self.entries()?.is_empty())
+    }
+
+    /// Whether `self` and `other` are one directory.
+    pub(super) fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Memory { entries, .. }, Self::Memory { entries: other, .. }) => {
+                Arc::ptr_eq(entries, other)
+            }
+            (Self::Static { entries }, Self::Static { entries: other }) => {
+                Arc::ptr_eq(entries, other)
+            }
+            (
+                Self::Bundle { relative, .. },
+                Self::Bundle {
+                    relative: other, ..
+                },
+            ) => relative == other,
+            _ => false,
+        }
     }
 
     pub(super) fn writable(&self) -> bool {
@@ -222,6 +257,21 @@ impl FileNode {
 
     pub(super) fn size(&self) -> Result<u64> {
         Ok(self.stat()?.size)
+    }
+
+    /// Whether `self` and `other` are one file, as hard links are.
+    pub(super) fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Memory(data), Self::Memory(other)) => Arc::ptr_eq(data, other),
+            (
+                Self::Bundle { relative, .. },
+                Self::Bundle {
+                    relative: other, ..
+                },
+            ) => relative == other,
+            (Self::Device(device), Self::Device(other)) => device == other,
+            _ => false,
+        }
     }
 
     /// An independent in-memory copy of this file, which `path` names in
@@ -276,7 +326,7 @@ impl FileNode {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Device {
     Null,
     Zero,
@@ -322,4 +372,13 @@ pub(super) fn shared_devices() -> Directory {
         ),
     });
     DEVICES.clone()
+}
+
+/// Fails for the empty name a trailing slash leaves, as workerd fails, without
+/// a system error, to build a path from it.
+fn check_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::new(ErrorKind::Internal));
+    }
+    Ok(())
 }

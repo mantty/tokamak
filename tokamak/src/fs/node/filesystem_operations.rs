@@ -14,7 +14,7 @@ pub(super) type PairOperation =
     for<'js> fn(Ctx<'js>, Value<'js>, Value<'js>) -> rquickjs::Result<()>;
 /// `(first, second, options?)` operations.
 pub(super) type PairOptionsOperation =
-    for<'js> fn(Ctx<'js>, Value<'js>, Value<'js>, Opt<Value<'js>>) -> rquickjs::Result<()>;
+    for<'js> fn(Ctx<'js>, Value<'js>, Value<'js>, Opt<Value<'js>>) -> rquickjs::Result<Value<'js>>;
 /// `(path, uid, gid)` operations.
 pub(super) type OwnerOperation =
     for<'js> fn(Ctx<'js>, Value<'js>, u32, u32) -> rquickjs::Result<()>;
@@ -26,8 +26,6 @@ pub(super) type TimesOperation =
 pub(super) struct FsOptions {
     pub(super) encoding: Option<String>,
     recursive: bool,
-    error_on_exist: bool,
-    dereference: bool,
     with_file_types: bool,
     pub(super) bigint: bool,
     throw_if_no_entry: bool,
@@ -39,8 +37,6 @@ impl Default for FsOptions {
         Self {
             encoding: None,
             recursive: false,
-            error_on_exist: false,
-            dereference: false,
             with_file_types: false,
             bigint: false,
             throw_if_no_entry: true,
@@ -74,8 +70,6 @@ pub(super) fn parse_options<'js>(
     Ok(FsOptions {
         encoding: object.get("encoding")?,
         recursive: boolean("recursive", false)?,
-        error_on_exist: boolean("errorOnExist", false)?,
-        dereference: boolean("dereference", false)?,
         with_file_types: boolean("withFileTypes", false)?,
         bigint: boolean("bigint", false)?,
         throw_if_no_entry: boolean("throwIfNoEntry", true)?,
@@ -156,7 +150,8 @@ pub(super) fn option_property<'js>(
 
 /// The virtual path `value` names: a string or `Buffer` resolved as a URL
 /// against the working directory, or a `file:` URL, spelled as names are
-/// stored.
+/// stored. Like workerd, it keeps the URL's empty segments, including a
+/// trailing slash, and allows at most 4096 bytes and 48 slashes.
 pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<String> {
     let url = path_url(ctx, value)?;
     if url.scheme() != "file" {
@@ -168,17 +163,15 @@ pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<S
             "File path must not have a host",
         ));
     }
-    let parts: Vec<String> = stored_path(url)
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .map(str::to_owned)
-        .collect();
-    let path = format!("/{}", parts.join("/"));
-    if path.chars().count() > MAX_PATH_LENGTH {
-        return Err(Exception::throw_range(ctx, "path is too long"));
+    let path = stored_path(url);
+    if path.len() > MAX_PATH_LENGTH {
+        return Err(Exception::throw_message(ctx, "File path is too long"));
     }
-    if parts.len() > MAX_PATH_SEGMENTS {
-        return Err(Exception::throw_range(ctx, "path has too many segments"));
+    if path.matches('/').count() > MAX_PATH_SEGMENTS {
+        return Err(Exception::throw_message(
+            ctx,
+            "File path has too many segments",
+        ));
     }
     Ok(path)
 }
@@ -302,28 +295,40 @@ pub(super) fn buffer_class<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>>
     })
 }
 
+/// The whole content of the file `descriptor` names, as workerd's `readAll`
+/// reads it, leaving the descriptor at the end of the file.
 pub(super) fn read_descriptor(ctx: &Ctx<'_>, descriptor: u32) -> rquickjs::Result<Vec<u8>> {
-    let size = vfs_call(ctx, "fread", |vfs| vfs.fstat(descriptor))?.size;
+    let size = vfs_call(ctx, "fread", |vfs| vfs.whole_read_size(descriptor))?;
     let size = usize::try_from(size)
         .map_err(|_| Exception::throw_range(ctx, "file is too large to read"))?;
-    vfs_call(ctx, "freadAll", |vfs| vfs.read(descriptor, size, Some(0)))
+    let bytes = vfs_call(ctx, "freadAll", |vfs| vfs.read(descriptor, size, Some(0)));
+    vfs_call(ctx, "fread", |vfs| vfs.seek_end(descriptor))?;
+    bytes
 }
 
-pub(super) fn write_descriptor(
+/// Writes `data` as the whole content of the file `descriptor` names, as
+/// workerd's `writeAll` does: after the existing content when `append` or the
+/// descriptor appends, leaving the descriptor at the end of the file.
+fn write_descriptor(
     ctx: &Ctx<'_>,
     descriptor: u32,
     data: &[u8],
     append: bool,
 ) -> rquickjs::Result<usize> {
-    let size = vfs_call(ctx, "fwrite", |vfs| vfs.fstat(descriptor))?.size;
-    if append {
-        vfs_call(ctx, "write", |vfs| vfs.write(descriptor, data, Some(size)))
+    let appends = vfs_call(ctx, "fwrite", |vfs| vfs.whole_write_appends(descriptor))?;
+    let written = if append || appends {
+        vfs_call(ctx, "write", |vfs| {
+            let size = vfs.fstat(descriptor)?.size;
+            vfs.write(descriptor, data, Some(size))
+        })
     } else {
         vfs_call(ctx, "fwriteAll", |vfs| {
             vfs.ftruncate(descriptor, 0)?;
             vfs.write(descriptor, data, Some(0))
         })
-    }
+    };
+    vfs_call(ctx, "fwrite", |vfs| vfs.seek_end(descriptor))?;
+    written
 }
 
 pub(super) fn read_file_sync<'js>(
@@ -345,8 +350,19 @@ pub(super) fn write_file_sync<'js>(
     input: Value<'js>,
     data: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<()> {
-    let options = options.0;
+) -> rquickjs::Result<Value<'js>> {
+    write_all(&ctx, input, data, options.0)?.into_js(&ctx)
+}
+
+/// Writes `data` as the whole content of the file or descriptor `input`
+/// names, as workerd's `writeFileSync` does, returning the bytes written.
+pub(super) fn write_all<'js>(
+    ctx: &Ctx<'js>,
+    input: Value<'js>,
+    data: Value<'js>,
+    options: Option<Value<'js>>,
+) -> rquickjs::Result<usize> {
+    let ctx = ctx.clone();
     let bytes = attached_bytes(&ctx, &file_view(&ctx, data, options.as_ref())?)?;
     let flag = option_property(options.as_ref(), "flag")?
         .filter(|flag| !flag.is_undefined())
@@ -366,9 +382,7 @@ pub(super) fn write_file_sync<'js>(
         PathOrFd::Path(path) => vfs_call(&ctx, "writeAll", |vfs| {
             vfs.write_file(&path, &bytes, flags.append, flags.exclusive)
         }),
-        PathOrFd::Fd(descriptor) => {
-            write_descriptor(&ctx, descriptor, &bytes, flags.append).map(|_| ())
-        }
+        PathOrFd::Fd(descriptor) => write_descriptor(&ctx, descriptor, &bytes, flags.append),
     }
 }
 
@@ -377,7 +391,7 @@ pub(super) fn append_file_sync<'js>(
     input: Value<'js>,
     data: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<()> {
+) -> rquickjs::Result<Value<'js>> {
     let options = append_options(&ctx, options.0)?;
     write_file_sync(ctx, input, data, Opt(Some(options)))
 }
@@ -615,7 +629,7 @@ pub(super) fn mkdir_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<()> {
+) -> rquickjs::Result<Value<'js>> {
     let path = path(&ctx, input)?;
     let options_value = options.0;
     let options = if let Some(value) = options_value.as_ref()
@@ -631,7 +645,7 @@ pub(super) fn mkdir_sync<'js>(
         }
         parse_options(&ctx, options_value)?
     };
-    vfs_call(&ctx, "mkdir", |vfs| vfs.mkdir(&path, options.recursive))
+    vfs_call(&ctx, "mkdir", |vfs| vfs.mkdir(&path, options.recursive))?.into_js(&ctx)
 }
 
 pub(super) fn readdir_sync<'js>(
@@ -660,12 +674,14 @@ pub(super) fn readdir_sync<'js>(
 /// path without the leading slash.
 fn dir_items(ctx: &Ctx<'_>, path: &str, recursive: bool) -> rquickjs::Result<Vec<DirItem>> {
     if !recursive {
-        let entries = vfs_call(ctx, "readdir", |vfs| vfs.read_dir(path))?;
+        let (parent, entries) = vfs_call(ctx, "readdir", |vfs| {
+            Ok((normalized_path(path)?, vfs.read_dir(path)?))
+        })?;
         return Ok(entries
             .into_iter()
             .map(|entry| DirItem {
                 name: entry.name.clone(),
-                parent: path.to_owned(),
+                parent: parent.clone(),
                 entry,
             })
             .collect());
@@ -846,57 +862,88 @@ pub(super) fn cp_sync<'js>(
     from: Value<'js>,
     to: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<()> {
-    let from = path(&ctx, from)?;
-    let to = path(&ctx, to)?;
-    let options_value = options.0;
-    if let Some(mode) = option_property(options_value.as_ref(), "mode")? {
-        let mode = Coerced::<i64>::from_js(&ctx, mode)?.0;
-        let mode = u32::try_from(mode)
-            .map_err(|_| Exception::throw_range(&ctx, "options.mode is out of range"))?;
-        if mode & 4 != 0 {
-            return Err(Exception::throw_message(
-                &ctx,
-                "COPYFILE_FICLONE_FORCE is not supported",
-            ));
+) -> rquickjs::Result<Value<'js>> {
+    let (from, to, options) = copy_arguments(&ctx, from, to, options.0)?;
+    vfs_call(&ctx, "cp", |vfs| vfs.copy(&from, &to, options))?;
+    Ok(Value::new_undefined(ctx))
+}
+
+/// The paths and options of `cp`, checked as workerd checks them before
+/// copying.
+pub(super) fn copy_arguments<'js>(
+    ctx: &Ctx<'js>,
+    from: Value<'js>,
+    to: Value<'js>,
+    options: Option<Value<'js>>,
+) -> rquickjs::Result<(String, String, CopyOptions)> {
+    let options = copy_options(ctx, options)?;
+    Ok((path(ctx, from)?, path(ctx, to)?, options))
+}
+
+fn copy_options<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> rquickjs::Result<CopyOptions> {
+    let options = match options.filter(|options| !options.is_undefined()) {
+        None => Object::new(ctx.clone())?,
+        Some(options) if options.is_array() || options.is_function() => {
+            return Err(invalid_options(ctx));
         }
-    }
-    if let Some(filter) = option_property(options_value.as_ref(), "filter")?
-        && !filter.is_undefined()
-    {
-        if !filter.is_function() {
-            return Err(Exception::throw_type(
-                &ctx,
-                "options.filter must be a function",
-            ));
+        Some(options) => options.into_object().ok_or_else(|| invalid_options(ctx))?,
+    };
+    let boolean = |name: &str, default: bool| {
+        let value: Value = options.get(name)?;
+        if value.is_undefined() {
+            return Ok(default);
         }
-        return Err(Exception::throw_message(
-            &ctx,
-            "options.filter is not supported",
+        value.as_bool().ok_or_else(|| {
+            throw_type_error(
+                ctx,
+                "ERR_INVALID_ARG_TYPE",
+                &format!("The \"options.{name}\" property must be of type boolean"),
+            )
+        })
+    };
+    let dereference = boolean("dereference", false)?;
+    let error_on_exist = boolean("errorOnExist", false)?;
+    let force = boolean("force", true)?;
+    boolean("preserveTimestamps", false)?;
+    let recursive = boolean("recursive", false)?;
+    boolean("verbatimSymlinks", false)?;
+    let mode: Value = options.get("mode")?;
+    if !mode.is_undefined() && validate_uint32(ctx, &mode, "options.mode")? & 4 != 0 {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_VALUE",
+            "The property 'options.mode' is invalid. Received 'COPYFILE_FICLONE_FORCE is not supported'",
         ));
     }
-    for name in ["preserveTimestamps", "verbatimSymlinks"] {
-        option_property(options_value.as_ref(), name)?
-            .map(|value| bool::from_js(&ctx, value))
-            .transpose()?;
+    let filter: Value = options.get("filter")?;
+    if filter.is_undefined() {
+        return Ok(CopyOptions {
+            recursive,
+            force,
+            error_on_exist,
+            dereference,
+        });
     }
-    let force = option_property(options_value.as_ref(), "force")?
-        .map(|value| bool::from_js(&ctx, value))
-        .transpose()?
-        .unwrap_or(true);
-    let options = parse_options(&ctx, options_value)?;
-    vfs_call(&ctx, "cp", |vfs| {
-        vfs.copy(
-            &from,
-            &to,
-            CopyOptions {
-                recursive: options.recursive,
-                force,
-                error_on_exist: options.error_on_exist,
-                dereference: options.dereference,
-            },
-        )
-    })
+    if !filter.is_function() {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_TYPE",
+            "The \"options.filter\" property must be of type function",
+        ));
+    }
+    Err(throw_error(
+        ctx,
+        "ERR_UNSUPPORTED_OPERATION",
+        "The requested operation is unsupported",
+    ))
+}
+
+fn invalid_options(ctx: &Ctx<'_>) -> rquickjs::Error {
+    throw_type_error(
+        ctx,
+        "ERR_INVALID_ARG_TYPE",
+        "The \"options\" argument must be of type object",
+    )
 }
 
 pub(super) fn link_sync<'js>(
@@ -916,7 +963,15 @@ pub(super) fn mkdtemp_sync<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
     let prefix = path(&ctx, prefix)?;
-    vfs_call(&ctx, "mkdir", |vfs| vfs.make_temp_dir(&prefix))?.into_js(&ctx)
+    match vfs_call(&ctx, "mkdir", |vfs| vfs.make_temp_dir(&prefix))? {
+        Some(path) => path.into_js(&ctx),
+        None => Err(throw_syscall_error(
+            &ctx,
+            ErrorKind::InvalidInput,
+            "mkdtemp",
+            None,
+        )),
+    }
 }
 
 pub(super) fn opendir_sync<'js>(
@@ -1200,7 +1255,10 @@ pub(super) fn pair_options_promise<'js>(
     Function::new(
         ctx.clone(),
         move |ctx: Ctx<'js>, first: Value<'js>, second: Value<'js>, options: Opt<Value<'js>>| {
-            promise_unit(ctx.clone(), operation(ctx, first, second, options))
+            promise_unit(
+                ctx.clone(),
+                operation(ctx, first, second, options).map(drop),
+            )
         },
     )
 }
@@ -1279,11 +1337,13 @@ pub(super) fn vfs_exception<'js>(
     error: &VfsError,
 ) -> rquickjs::Result<Exception<'js>> {
     let exception = new_error(ctx, &error.message(syscall))?;
-    if error.code().is_empty() {
-        // workerd fails without a system error here.
+    let object = exception.as_object();
+    if !error.kind().is_system_error() {
+        if !error.code().is_empty() {
+            object.set("code", error.code())?;
+        }
         return Ok(exception);
     }
-    let object = exception.as_object();
     object.set("syscall", syscall)?;
     object.set("code", error.code())?;
     if !error.path().is_empty() {
@@ -1315,10 +1375,19 @@ fn syscall_error<'js>(
 ) -> rquickjs::Result<Exception<'js>> {
     let (message, errno) = match kind {
         ErrorKind::AlreadyExists => ("file already exists", -17),
+        ErrorKind::InvalidInput => ("invalid argument", -22),
         _ => ("no such file or directory", -2),
     };
-    let shown = path.unwrap_or("undefined");
-    let exception = new_error(ctx, &format!("{message}, {syscall} '{shown}'"))?;
+    // workerd's `ERR_ENOENT` always names the path; its other errors name one
+    // only when given.
+    let message = match (kind, path) {
+        (ErrorKind::NotFound, path) => {
+            format!("{message}, {syscall} '{}'", path.unwrap_or("undefined"))
+        }
+        (_, Some(path)) if !path.is_empty() => format!("{message}, {syscall} '{path}'"),
+        _ => message.to_owned(),
+    };
+    let exception = new_error(ctx, &message)?;
     let object = exception.as_object();
     object.set("code", kind.code())?;
     object.set("name", "Error")?;

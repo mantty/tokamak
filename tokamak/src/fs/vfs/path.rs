@@ -109,6 +109,11 @@ pub(super) fn path_from_components(components: &[String]) -> String {
     format!("/{}", components.join("/"))
 }
 
+/// `path` without empty or `.` segments, as workerd names what it lists.
+pub(crate) fn normalized_path(path: &str) -> Result<String> {
+    Ok(path_from_components(&absolute_components(path)?))
+}
+
 pub(super) fn checked_size(size: u64) -> Result<usize> {
     if size > MAX_FILE_SIZE {
         return Err(Error::new(ErrorKind::FileTooLarge));

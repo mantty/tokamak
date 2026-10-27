@@ -102,7 +102,7 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
             )?;
             assert_eq!(
                 result,
-                r#"{"text":"hello world","count":3,"bytes":[1,2,3],"file":true,"entry":true,"linkTarget":"/tmp/data/value.txt","linkPath":"/tmp/data/value.txt","renamed":"hello world","appendReadCode":"EPERM","zeros":[0,0,0,0],"readonlyCode":"EPERM","bundle":"{\"enabled\":true}"}"#
+                r#"{"text":"hello world","count":3,"bytes":[1,2,3],"file":true,"entry":true,"linkTarget":"/tmp/data/value.txt","linkPath":"/tmp/data/value.txt","renamed":"hello world","appendReadCode":"EBADF","zeros":[0,0,0,0],"readonlyCode":"EPERM","bundle":"{\"enabled\":true}"}"#
             );
 
             let promise: Promise = ctx.eval(

@@ -266,7 +266,7 @@ fn buffer_range<'js>(
 }
 
 /// `Buffer.from(text, encoding)`.
-fn encoded<'js>(
+pub(super) fn encoded<'js>(
     ctx: &Ctx<'js>,
     text: Value<'js>,
     encoding: Value<'js>,

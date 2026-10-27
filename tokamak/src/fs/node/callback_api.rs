@@ -24,6 +24,9 @@ pub(super) enum CallbackOperation {
     Exists,
     Close,
     CopyFile,
+    /// `(from, to, options?)`, with the arguments checked before the call,
+    /// as workerd checks them.
+    Cp,
     Fchmod,
     Fchown,
     Fdatasync,
@@ -48,7 +51,7 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
         ("chown", CallbackOperation::Owner(chown_callback)),
         ("close", CallbackOperation::Close),
         ("copyFile", CallbackOperation::CopyFile),
-        ("cp", CallbackOperation::PairOptions(cp_sync)),
+        ("cp", CallbackOperation::Cp),
         ("fchmod", CallbackOperation::Fchmod),
         ("fchown", CallbackOperation::Fchown),
         ("fdatasync", CallbackOperation::Fdatasync),
@@ -62,7 +65,7 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
         ("link", CallbackOperation::Pair(link_sync)),
         ("lstat", CallbackOperation::Value(lstat_sync, None)),
         ("lutimes", CallbackOperation::Times(lutimes_sync)),
-        ("mkdir", CallbackOperation::Options(mkdir_sync)),
+        ("mkdir", CallbackOperation::Value(mkdir_sync, None)),
         (
             "mkdtemp",
             CallbackOperation::Value(mkdtemp_sync, Some(EncodingCheck::NullAllowed)),
@@ -199,6 +202,15 @@ pub(super) fn callback_call<'js>(
             reply(
                 &ctx,
                 vfs_call(&ctx, "copy", |vfs| vfs.copy_file(&from, &to)),
+            )
+        }
+        CallbackOperation::Cp => {
+            let from = take_arg(&ctx, &mut args)?;
+            let to = take_arg(&ctx, &mut args)?;
+            let (from, to, options) = copy_arguments(&ctx, from, to, args.pop())?;
+            reply(
+                &ctx,
+                vfs_call(&ctx, "cp", |vfs| vfs.copy(&from, &to, options)),
             )
         }
         CallbackOperation::Fchmod => {
@@ -385,7 +397,6 @@ pub(super) fn open_options<'js>(
             create: flags & 64 != 0,
             exclusive: flags & 128 != 0,
             truncate: flags & 512 != 0,
-            ..OpenOptions::default()
         });
     }
     let flags = Coerced::<String>::from_js(ctx, value)?.0;
@@ -407,7 +418,6 @@ pub(super) fn open_options<'js>(
         create: matches!(first, 'w' | 'a') || value.contains('x'),
         exclusive: value.contains('x'),
         truncate: first == 'w',
-        ..OpenOptions::default()
     })
 }
 

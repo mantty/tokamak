@@ -30,9 +30,8 @@ fn keeps_tmp_mutable_and_bundle_readonly() -> TestResult {
             .map(|error| error.kind()),
         Some(ErrorKind::NotFound)
     );
-    let error = match vfs.write_file("/bundle/nope", b"x", false, false) {
-        Ok(()) => return Err("readonly bundle accepted a write".into()),
-        Err(error) => error,
+    let Err(error) = vfs.write_file("/bundle/nope", b"x", false, false) else {
+        return Err("readonly bundle accepted a write".into());
     };
     assert_eq!(error.kind(), ErrorKind::NotPermitted);
     Ok(())
@@ -118,18 +117,69 @@ fn handles_symlinks_and_descriptors() -> TestResult {
 }
 
 #[test]
-fn enforces_descriptor_permissions_and_path_limits() -> TestResult {
+fn checks_descriptor_access_as_workerd_does() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut vfs = vfs(directory.path());
     vfs.write_file("/tmp/value", b"hello", false, false)?;
 
     let read_only = vfs.open("/tmp/value", OpenOptions::default())?;
-    assert_eq!(
-        vfs.ftruncate(read_only, 0).err().map(|error| error.kind()),
-        Some(ErrorKind::NotPermitted)
-    );
-    assert_eq!(vfs.read_file("/tmp/value")?, b"hello");
+    vfs.ftruncate(read_only, 1)?;
+    assert_eq!(vfs.write(read_only, b"i", None)?, 1);
+    assert_eq!(vfs.read_file("/tmp/value")?, b"i");
     vfs.close(read_only);
+
+    let write_only = vfs.open(
+        "/tmp/value",
+        OpenOptions {
+            read: false,
+            write: true,
+            ..OpenOptions::default()
+        },
+    )?;
+    assert_eq!(
+        vfs.read(write_only, 1, None)
+            .err()
+            .map(|error| error.kind()),
+        Some(ErrorKind::InvalidDescriptor)
+    );
+    assert_eq!(
+        vfs.whole_read_size(write_only)
+            .err()
+            .map(|error| error.kind()),
+        Some(ErrorKind::InvalidDescriptor)
+    );
+    vfs.close(write_only);
+
+    let directory = vfs.open("/tmp", OpenOptions::default())?;
+    assert_eq!(vfs.fstat(directory)?.kind, NodeType::Directory);
+    assert_eq!(
+        vfs.read(directory, 1, None).err().map(|error| error.kind()),
+        Some(ErrorKind::IsDirectory)
+    );
+    assert_eq!(
+        vfs.whole_read_size(directory)
+            .err()
+            .map(|error| error.kind()),
+        Some(ErrorKind::InvalidDescriptor)
+    );
+    vfs.close(directory);
+    let writing_directory = OpenOptions {
+        write: true,
+        ..OpenOptions::default()
+    };
+    assert_eq!(
+        vfs.open("/tmp", writing_directory)
+            .err()
+            .map(|error| error.kind()),
+        Some(ErrorKind::IsDirectory)
+    );
+    Ok(())
+}
+
+#[test]
+fn enforces_path_limits() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let vfs = vfs(directory.path());
 
     let too_long = format!("/{}", "x".repeat(MAX_PATH_LENGTH));
     assert_eq!(
@@ -186,9 +236,10 @@ fn supports_access_copy_links_temp_and_vectors() -> TestResult {
     assert_eq!(vfs.read_file("/tmp/hard-link.txt")?, b"hello");
     assert_eq!(vfs.read_file("/tmp/tree-copy/nested.txt")?, b"nested");
 
-    let temp = vfs.make_temp_dir("/tmp/prefix-")?;
+    let temp = vfs.make_temp_dir("/tmp/prefix-")?.unwrap_or_default();
     assert!(temp.starts_with("/tmp/prefix-"), "{temp}");
     assert_eq!(vfs.stat(&temp)?.kind, NodeType::Directory);
+    assert_eq!(vfs.make_temp_dir("/tmp")?, None);
 
     let descriptor = vfs.open(
         "/tmp/vector.bin",
@@ -216,4 +267,57 @@ fn joins_child_paths_without_doubling_the_root_separator() {
     assert_eq!(join_child("/", "tmp"), "/tmp");
     assert_eq!(join_child("/tmp", "data"), "/tmp/data");
     assert_eq!(join_child("/tmp/data", "value.txt"), "/tmp/data/value.txt");
+}
+
+#[test]
+fn resolves_paths_as_workerd_does() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let mut vfs = vfs(directory.path());
+    vfs.write_file("/tmp/file", b"x", false, false)?;
+    vfs.mkdir("/tmp/full/sub", true)?;
+    vfs.symlink("/tmp/full", "/tmp/link")?;
+    vfs.symlink("/tmp/missing", "/tmp/dangling")?;
+
+    assert_eq!(
+        vfs.stat("/tmp/file/x").err().map(|error| error.kind()),
+        Some(ErrorKind::NotFound)
+    );
+    assert_eq!(vfs.stat("/tmp/link/sub")?.kind, NodeType::Directory);
+    assert_eq!(
+        vfs.lstat("/tmp/link/sub").err().map(|error| error.kind()),
+        Some(ErrorKind::NotFound)
+    );
+
+    assert_eq!(vfs.mkdir("/tmp/a/b/c", true)?.as_deref(), Some("/tmp/a"));
+    assert_eq!(vfs.mkdir("/tmp/a/d", true)?, None);
+    assert_eq!(
+        vfs.mkdir("/tmp/link/new/leaf", true)?.as_deref(),
+        Some("/tmp/link/new")
+    );
+    assert_eq!(vfs.stat("/tmp/full/new/leaf")?.kind, NodeType::Directory);
+    assert_eq!(
+        vfs.mkdir("/tmp/dangling/leaf", true)
+            .err()
+            .map(|error| error.kind()),
+        Some(ErrorKind::AlreadyExists)
+    );
+
+    let creating = OpenOptions {
+        write: true,
+        create: true,
+        ..OpenOptions::default()
+    };
+    assert_eq!(
+        vfs.open("/tmp/dangling", creating)
+            .err()
+            .map(|error| error.kind()),
+        Some(ErrorKind::Failed)
+    );
+    assert_eq!(
+        vfs.open("/tmp/file/new", creating)
+            .err()
+            .map(|error| error.kind()),
+        Some(ErrorKind::NotDirectory)
+    );
+    Ok(())
 }

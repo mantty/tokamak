@@ -301,17 +301,46 @@ async function fileWriteContracts() {
   return outcomes;
 }
 
-// What `FileHandle.writeFile` resolves with for a string, and whether it
-// throws or rejects for a number.
+// What `FileHandle.writeFile` resolves with for a string, with an encoding
+// named and in options, whether it throws or rejects for a number, and what
+// the `a` flag leaves.
 async function handleWriteFileResult() {
-  const handle = await fs.promises.open("/tmp/filesystem-handle-write.bin", "w+");
+  const path = "/tmp/filesystem-handle-write.bin";
+  const handle = await fs.promises.open(path, "w+");
   try {
     const { bytesWritten, buffer } = await handle.writeFile("6869", "hex");
+    const inOptions = await handle.writeFile("6869", { encoding: "hex" });
     let rejection = "threw";
     try { const pending = handle.writeFile(5); rejection = "rejected"; await pending; }
     catch (error) { rejection = `${rejection} ${error.code}`; }
-    return { bytesWritten, isBuffer: Buffer.isBuffer(buffer), bytes: [...buffer], rejection };
+    await handle.writeFile("!", { flag: "a" });
+    return {
+      bytesWritten, isBuffer: Buffer.isBuffer(buffer), bytes: [...buffer], rejection,
+      inOptions: { bytesWritten: inOptions.bytesWritten, bytes: [...inOptions.buffer] },
+      appended: fs.readFileSync(path, "utf8"),
+    };
   } finally { await handle.close(); }
+}
+
+// What `writeFileSync` and `appendFileSync` return and leave for a
+// descriptor opened with each flag, and where its next write lands.
+function descriptorWriteFileContracts() {
+  const path = "/tmp/filesystem-descriptor-write-file.bin";
+  const outcomes = {};
+  for (const write of ["writeFileSync", "appendFileSync"]) {
+    for (const flag of ["r", "r+", "w", "a", "a+"]) {
+      fs.writeFileSync(path, "old");
+      const fd = fs.openSync(path, flag);
+      try {
+        outcomes[`${write} ${flag}`] = attempt(() => {
+          const written = fs[write](fd, "new");
+          fs.writeSync(fd, "!");
+          return { written, contents: fs.readFileSync(path, "utf8") };
+        });
+      } finally { fs.closeSync(fd); }
+    }
+  }
+  return outcomes;
 }
 
 function sizeLimitOutcomes() {
@@ -647,6 +676,12 @@ function pathContracts() {
     readAboveRoot: attempt(() => fs.readFileSync("/../../tmp/filesystem-paths/file.txt", "utf8")),
     relativeAboveRoot: attempt(() => fs.readFileSync("../../../tmp/filesystem-paths/file.txt", "utf8")),
     existsAboveRoot: fs.existsSync("/../tmp/filesystem-paths/file.txt"),
+    longestPath: attempt(() => fs.statSync(`/tmp/${"x".repeat(4091)}`)),
+    tooLong: attempt(() => fs.statSync(`/tmp/${"x".repeat(4092)}`)),
+    mostSegments: attempt(() => fs.statSync(`/tmp${"/a".repeat(47)}`)),
+    tooManySegments: attempt(() => fs.statSync(`/tmp${"/a".repeat(48)}`)),
+    tooManyWithTrailingSlash: attempt(() => fs.statSync(`/tmp${"/a".repeat(47)}/`)),
+    tooManyWithDoubledSlash: attempt(() => fs.statSync(`/tmp${"/a".repeat(46)}///a`)),
     globAboveRoot: globOutcome("*", { cwd: "/../tmp/filesystem-paths" }),
   };
 }
@@ -1185,6 +1220,9 @@ const errorCalls = {
   copyFileDirectory: ["copyFile", "$/directory", "$/copy"],
   copyFileExclusive: ["copyFile", "$/file", "$/directory/entry", fs.constants.COPYFILE_EXCL],
   cpMissing: ["cp", "$/missing", "$/copy"],
+  cpOptionsNotObject: ["cp", "$/file", "$/copy", "x"],
+  cpFilter: ["cp", "$/file", "$/copy", { filter: () => true }],
+  cpOntoExisting: ["cp", "$/file", "$/directory/entry", { force: false, errorOnExist: true }],
   lchownMissing: ["lchown", "$/missing", 0, 0],
   linkExisting: ["link", "$/file", "$/directory"],
   linkMissing: ["link", "$/missing", "$/link"],
@@ -1238,44 +1276,389 @@ const errorCalls = {
   writeBadDescriptor: ["write", 1000, new Uint8Array(1)],
 };
 
-// A fresh tree holding a file, a directory with an entry and a symbolic link
-// to itself.
-function errorTree(index) {
-  const root = `/tmp/filesystem-errors/${index}`;
+// Calls that succeed, in the `errorCalls` form.
+const resultCalls = {
+  mkdirRecursive: ["mkdir", "$/directory/new/deeper", { recursive: true }],
+  mkdirRecursiveLeaf: ["mkdir", "$/directory/new", { recursive: true }],
+  writeFileNew: ["writeFile", "$/new", "data"],
+  appendFileExisting: ["appendFile", "$/file", "data"],
+  cpNew: ["cp", "$/file", "$/new"],
+};
+
+// Makes a file, a directory with an entry and a symbolic link to itself
+// under `root`.
+function errorTree(root) {
   fs.mkdirSync(`${root}/directory`, { recursive: true });
   fs.writeFileSync(`${root}/file`, "f");
   fs.writeFileSync(`${root}/directory/entry`, "e");
   fs.symlinkSync(`${root}/loop`, `${root}/loop`);
-  return root;
 }
 
 // What the sync, callback or promise `form` of `operation` reports for `args`:
-// "ok", the failure it throws, or the failure it reports later.
-async function errorOutcome(form, operation, args) {
+// the value it returns, passes on or resolves with ("ok" for none), the
+// failure it throws, or the failure it reports later.
+async function formOutcome(form, operation, args) {
   if (form === "promise" && !fs.promises[operation]) return "absent";
   const settled = Promise.withResolvers();
+  let value;
   try {
-    if (form === "sync") fs[`${operation}Sync`](...args);
-    else if (form === "callback") fs[operation](...args, error => (error ? settled.reject(error) : settled.resolve()));
+    if (form === "sync") value = fs[`${operation}Sync`](...args);
+    else if (form === "callback") fs[operation](...args, (error, result) => (error ? settled.reject(error) : settled.resolve(result)));
     else fs.promises[operation](...args).then(settled.resolve, settled.reject);
   } catch (error) { return { thrown: failure(error) }; }
-  if (form === "sync") return "ok";
-  try { await settled.promise; return "ok"; } catch (error) { return failure(error); }
+  try { return (form === "sync" ? value : await settled.promise) ?? "ok"; } catch (error) { return failure(error); }
 }
 
-// Each form of each failing call, each in a fresh tree.
-async function errorContracts() {
+// Each form of each call in `calls`, each in a fresh `errorTree` below
+// `base`.
+async function formContracts(calls, base) {
   const outcomes = {};
   let index = 0;
-  for (const [name, [operation, ...args]] of Object.entries(errorCalls)) {
+  for (const [name, [operation, ...args]] of Object.entries(calls)) {
     outcomes[name] = {};
     for (const form of ["sync", "callback", "promise"]) {
-      const root = errorTree(index++);
+      const root = `${base}/${index++}`;
+      errorTree(root);
       const resolved = args.map(arg => (typeof arg === "string" ? arg.replace(/^\$/, root) : arg));
-      outcomes[name][form] = await errorOutcome(form, operation, resolved);
+      outcomes[name][form] = await formOutcome(form, operation, resolved);
     }
   }
   return outcomes;
+}
+
+// Calls naming paths with a trailing slash, with `$` for a fresh tree's root.
+const slashCalls = {
+  statFile: ["stat", "$/a/"],
+  statDirectory: ["stat", "$/full/"],
+  statMissing: ["stat", "$/missing/"],
+  lstatLink: ["lstat", "$/linkToA/"],
+  accessFile: ["access", "$/a/"],
+  existsFile: ["exists", "$/a/"],
+  readFileFile: ["readFile", "$/a/", "utf8"],
+  writeFileFile: ["writeFile", "$/a/", "w"],
+  writeFileNew: ["writeFile", "$/new/", "w"],
+  appendFileFile: ["appendFile", "$/a/", "w"],
+  appendFileNew: ["appendFile", "$/new/", "w"],
+  openFileForReading: ["open", "$/a/", "r"],
+  openFileForWriting: ["open", "$/a/", "w"],
+  openNew: ["open", "$/new/", "w"],
+  truncateFile: ["truncate", "$/a/"],
+  utimesFile: ["utimes", "$/a/", 0, 0],
+  chmodFile: ["chmod", "$/a/", 0o644],
+  readdirDirectory: ["readdir", "$/full/"],
+  readdirFile: ["readdir", "$/a/"],
+  opendirDirectory: ["opendir", "$/full/"],
+  realpathFile: ["realpath", "$/a/"],
+  realpathLink: ["realpath", "$/linkToFull/"],
+  readlinkLink: ["readlink", "$/linkToA/"],
+  mkdirNew: ["mkdir", "$/new/"],
+  mkdirNewRecursive: ["mkdir", "$/new/deeper/", { recursive: true }],
+  mkdirNewLeafRecursive: ["mkdir", "$/new/", { recursive: true }],
+  mkdirExisting: ["mkdir", "$/full/"],
+  mkdirFile: ["mkdir", "$/a/"],
+  mkdtempDirectory: ["mkdtemp", "$/full/"],
+  rmdirEmpty: ["rmdir", "$/empty/"],
+  rmdirFile: ["rmdir", "$/a/"],
+  rmFile: ["rm", "$/a/"],
+  rmMissing: ["rm", "$/missing/"],
+  rmFull: ["rm", "$/full/", { recursive: true }],
+  unlinkFile: ["unlink", "$/a/"],
+  unlinkLink: ["unlink", "$/linkToA/"],
+  unlinkDirectory: ["unlink", "$/full/"],
+  renameFileOntoFile: ["rename", "$/a", "$/b/"],
+  renameFileOntoNew: ["rename", "$/a", "$/new/"],
+  renameFileOntoDirectory: ["rename", "$/a", "$/empty/"],
+  renameFromFile: ["rename", "$/a/", "$/new"],
+  renameDirectoryOntoNew: ["rename", "$/empty", "$/new/"],
+  renameDirectoryOntoFull: ["rename", "$/empty", "$/full/"],
+  renameDirectoryOntoItself: ["rename", "$/full", "$/full/"],
+  copyFileOntoFile: ["copyFile", "$/a", "$/b/"],
+  copyFileOntoNew: ["copyFile", "$/a", "$/new/"],
+  copyFileFromFile: ["copyFile", "$/a/", "$/new"],
+  cpFileOntoNew: ["cp", "$/a", "$/new/"],
+  cpFromFile: ["cp", "$/a/", "$/new"],
+  cpDirectoryOntoNew: ["cp", "$/full", "$/new/", { recursive: true }],
+  cpFromDirectory: ["cp", "$/full/", "$/new", { recursive: true }],
+  linkOntoNew: ["link", "$/a", "$/new/"],
+  linkFromFile: ["link", "$/a/", "$/new"],
+  symlinkOntoNew: ["symlink", "$/a", "$/new/"],
+  symlinkToSlash: ["symlink", "$/full/", "$/new"],
+};
+
+// A sync call's result, with stats reduced to the node's type.
+function slashResult(value) {
+  if (value instanceof fs.Stats) return { file: value.isFile(), directory: value.isDirectory(), link: value.isSymbolicLink() };
+  if (value instanceof fs.Dir) { value.closeSync(); return "Dir"; }
+  return value ?? "ok";
+}
+
+// Makes files a and b, directories empty and full, and symbolic links to a
+// and to full under `root`.
+function slashTree(root) {
+  fs.mkdirSync(`${root}/full`, { recursive: true });
+  fs.mkdirSync(`${root}/empty`);
+  fs.writeFileSync(`${root}/a`, "a");
+  fs.writeFileSync(`${root}/b`, "b");
+  fs.writeFileSync(`${root}/full/x`, "x");
+  fs.symlinkSync(`${root}/a`, `${root}/linkToA`);
+  fs.symlinkSync(`${root}/full`, `${root}/linkToFull`);
+}
+
+// What each sync call in `calls` returns or throws, and the tree it leaves.
+// `$` starts a path in a fresh tree `build` makes below `base`.
+function callOutcomes(calls, base, build) {
+  const outcomes = {};
+  for (const [name, [operation, ...args]] of Object.entries(calls)) {
+    const root = `${base}/${name}`;
+    build(root);
+    const resolved = args.map(arg => (typeof arg === "string" ? arg.replace(/^\$/, root) : arg));
+    const result = attempt(() => {
+      const value = fs[`${operation}Sync`](...resolved);
+      if (operation !== "open") return slashResult(value);
+      fs.closeSync(value);
+      return "opened";
+    });
+    outcomes[name] = { result, tree: attempt(() => treeOf(root)) };
+  }
+  return outcomes;
+}
+
+// Calls naming paths through a symbolic link to a directory, with `$` for a
+// fresh `linkedTree`'s root.
+const linkedPathCalls = {
+  stat: ["stat", "$/linkToFull/x"],
+  lstat: ["lstat", "$/linkToFull/x"],
+  lstatLink: ["lstat", "$/linkToFull/inner"],
+  readlink: ["readlink", "$/linkToFull/inner"],
+  realpath: ["realpath", "$/linkToFull/x"],
+  realpathLink: ["realpath", "$/linkToFull/inner"],
+  access: ["access", "$/linkToFull/x"],
+  exists: ["exists", "$/linkToFull/x"],
+  readFile: ["readFile", "$/linkToFull/x", "utf8"],
+  writeFile: ["writeFile", "$/linkToFull/new", "w"],
+  appendFile: ["appendFile", "$/linkToFull/x", "w"],
+  open: ["open", "$/linkToFull/x", "r"],
+  openNew: ["open", "$/linkToFull/new", "w"],
+  truncate: ["truncate", "$/linkToFull/x"],
+  utimes: ["utimes", "$/linkToFull/x", 0, 0],
+  lutimes: ["lutimes", "$/linkToFull/x", 0, 0],
+  chmod: ["chmod", "$/linkToFull/x", 0o644],
+  chown: ["chown", "$/linkToFull/x", 0, 0],
+  lchown: ["lchown", "$/linkToFull/x", 0, 0],
+  readdir: ["readdir", "$/linkToFull/sub"],
+  opendir: ["opendir", "$/linkToFull/sub"],
+  mkdir: ["mkdir", "$/linkToFull/new"],
+  mkdirExisting: ["mkdir", "$/linkToFull/x"],
+  mkdirExistingDirectory: ["mkdir", "$/linkToFull/sub"],
+  mkdirExistingDirectoryRecursive: ["mkdir", "$/linkToFull/sub", { recursive: true }],
+  mkdirRecursive: ["mkdir", "$/linkToFull/new/deeper", { recursive: true }],
+  mkdirRecursiveThroughDangling: ["mkdir", "$/dangling/new", { recursive: true }],
+  mkdirRecursiveThroughFileLink: ["mkdir", "$/linkToA/new", { recursive: true }],
+  rmdir: ["rmdir", "$/linkToFull/sub"],
+  rm: ["rm", "$/linkToFull/x"],
+  rmRecursive: ["rm", "$/linkToFull/sub", { recursive: true }],
+  unlink: ["unlink", "$/linkToFull/x"],
+  rename: ["rename", "$/linkToFull/x", "$/new"],
+  renameOnto: ["rename", "$/a", "$/linkToFull/x"],
+  copyFile: ["copyFile", "$/linkToFull/x", "$/new"],
+  copyFileOnto: ["copyFile", "$/a", "$/linkToFull/x"],
+  cp: ["cp", "$/linkToFull/x", "$/new"],
+  cpDereference: ["cp", "$/linkToFull/x", "$/new", { dereference: true }],
+  cpOnto: ["cp", "$/a", "$/linkToFull/x"],
+  cpOntoNew: ["cp", "$/a", "$/linkToFull/new"],
+  link: ["link", "$/linkToFull/x", "$/new"],
+  linkOnto: ["link", "$/a", "$/linkToFull/new"],
+  symlink: ["symlink", "$/a", "$/linkToFull/new"],
+};
+
+// Calls naming paths below a file, with `$` for a fresh `slashTree`'s root.
+const underFileCalls = {
+  stat: ["stat", "$/a/x"],
+  lstat: ["lstat", "$/a/x"],
+  statThroughLink: ["stat", "$/linkToA/x"],
+  access: ["access", "$/a/x"],
+  exists: ["exists", "$/a/x"],
+  readFile: ["readFile", "$/a/x", "utf8"],
+  writeFile: ["writeFile", "$/a/x", "w"],
+  appendFile: ["appendFile", "$/a/x", "w"],
+  openForReading: ["open", "$/a/x", "r"],
+  openForWriting: ["open", "$/a/x", "w"],
+  truncate: ["truncate", "$/a/x"],
+  utimes: ["utimes", "$/a/x", 0, 0],
+  lutimes: ["lutimes", "$/a/x", 0, 0],
+  chmod: ["chmod", "$/a/x", 0o644],
+  lchown: ["lchown", "$/a/x", 0, 0],
+  readdir: ["readdir", "$/a/x"],
+  realpath: ["realpath", "$/a/x"],
+  readlink: ["readlink", "$/a/x"],
+  mkdir: ["mkdir", "$/a/x"],
+  mkdirRecursive: ["mkdir", "$/a/x", { recursive: true }],
+  mkdtemp: ["mkdtemp", "$/a/x"],
+  rmdir: ["rmdir", "$/a/x"],
+  rm: ["rm", "$/a/x"],
+  unlink: ["unlink", "$/a/x"],
+  renameFrom: ["rename", "$/a/x", "$/new"],
+  renameOnto: ["rename", "$/b", "$/a/x"],
+  copyFileFrom: ["copyFile", "$/a/x", "$/new"],
+  copyFileOnto: ["copyFile", "$/b", "$/a/x"],
+  cpFrom: ["cp", "$/a/x", "$/new"],
+  linkFrom: ["link", "$/a/x", "$/new"],
+  linkOnto: ["link", "$/b", "$/a/x"],
+  symlinkOnto: ["symlink", "$/b", "$/a/x"],
+};
+
+// Makes the `slashTree` nodes under `root`, a dangling symbolic link, and a
+// directory sub and a symbolic link inner to a in full.
+function linkedTree(root) {
+  slashTree(root);
+  fs.symlinkSync(`${root}/missing`, `${root}/dangling`);
+  fs.mkdirSync(`${root}/full/sub`);
+  fs.symlinkSync(`${root}/a`, `${root}/full/inner`);
+}
+
+// What descriptors opened on a directory and, without following it, on a
+// symbolic link report, and what reads, writes and truncation do through a
+// descriptor opened without access for them.
+function descriptorKindContracts() {
+  const root = "/tmp/filesystem-descriptor-kinds";
+  slashTree(root);
+  const fresh = name => { const path = `${root}/${name}`; fs.writeFileSync(path, "old"); return path; };
+  const contents = path => fs.readFileSync(path, "utf8");
+  const { O_RDONLY, O_WRONLY, O_NOFOLLOW } = fs.constants;
+  const opened = (path, flags, use) => attempt(() => {
+    const fd = fs.openSync(path, flags);
+    try { return use(fd); } finally { fs.closeSync(fd); }
+  });
+  const kind = fd => slashResult(fs.fstatSync(fd));
+  const read = fd => fs.readSync(fd, Buffer.alloc(1));
+  return {
+    directory: opened(`${root}/full`, "r", kind),
+    directoryRead: opened(`${root}/full`, "r", read),
+    directoryReadFile: opened(`${root}/full`, "r", fd => fs.readFileSync(fd, "utf8")),
+    directoryWrite: opened(`${root}/full`, "w", kind),
+    directoryReadWrite: opened(`${root}/full`, "r+", kind),
+    directoryTruncate: opened(`${root}/full`, "r", fd => fs.ftruncateSync(fd)),
+    noFollow: O_NOFOLLOW ?? "absent",
+    link: O_NOFOLLOW === undefined ? "absent" : opened(`${root}/linkToA`, O_RDONLY | O_NOFOLLOW, kind),
+    linkRead: O_NOFOLLOW === undefined ? "absent" : opened(`${root}/linkToA`, O_RDONLY | O_NOFOLLOW, read),
+    linkWrite: O_NOFOLLOW === undefined ? "absent" : opened(`${root}/linkToA`, O_WRONLY | O_NOFOLLOW, kind),
+    readOnlyWrite: (path => [opened(path, "r", fd => fs.writeSync(fd, "new")), contents(path)])(fresh("readOnlyWrite")),
+    readOnlyTruncate: (path => [opened(path, "r", fd => fs.ftruncateSync(fd, 1)), contents(path)])(fresh("readOnlyTruncate")),
+    writeOnlyRead: opened(fresh("writeOnlyRead"), "w", read),
+    writeOnlyReadFile: opened(fresh("writeOnlyReadFile"), "w", fd => fs.readFileSync(fd)),
+    readFileThenWrite: (path => [opened(path, "r+", fd => { fs.readFileSync(fd); return fs.writeSync(fd, "!"); }), contents(path)])(fresh("readFileThenWrite")),
+  };
+}
+
+// Copies onto and from each kind of node, with `$` for a fresh tree's root.
+const cpCalls = {
+  optionsNotObject: ["cp", "$/a", "$/new", "x"],
+  optionsNull: ["cp", "$/a", "$/new", null],
+  dereferenceNotBoolean: ["cp", "$/a", "$/new", { dereference: 1 }],
+  forceNotBoolean: ["cp", "$/a", "$/new", { force: "yes" }],
+  preserveTimestampsNotBoolean: ["cp", "$/a", "$/new", { preserveTimestamps: 0 }],
+  verbatimSymlinksNotBoolean: ["cp", "$/a", "$/new", { verbatimSymlinks: null }],
+  modeNegative: ["cp", "$/a", "$/new", { mode: -1 }],
+  modeString: ["cp", "$/a", "$/new", { mode: "1" }],
+  modeFractional: ["cp", "$/a", "$/new", { mode: 1.5 }],
+  modeCloneForce: ["cp", "$/a", "$/new", { mode: fs.constants.COPYFILE_FICLONE_FORCE }],
+  modeExclusive: ["cp", "$/a", "$/b", { mode: fs.constants.COPYFILE_EXCL }],
+  filterNotFunction: ["cp", "$/a", "$/new", { filter: 1 }],
+  filterFunction: ["cp", "$/a", "$/new", { filter: () => true }],
+  filterNull: ["cp", "$/a", "$/new", { filter: null }],
+  samePath: ["cp", "$/a", "$/a"],
+  sameDirectoryWithSlash: ["cp", "$/full", "$/full/", { recursive: true }],
+  intoItself: ["cp", "$/full", "$/full/inner", { recursive: true }],
+  intoSibling: ["cp", "$/full", "$/fuller", { recursive: true }],
+  missingSource: ["cp", "$/missing", "$/new"],
+  fileOntoNew: ["cp", "$/a", "$/new"],
+  fileIntoMissingParents: ["cp", "$/a", "$/new/deeper/file"],
+  fileUnderFile: ["cp", "$/a", "$/b/file"],
+  fileOntoFile: ["cp", "$/a", "$/b"],
+  fileOntoFileWithoutForce: ["cp", "$/a", "$/b", { force: false }],
+  fileOntoFileErrorOnExist: ["cp", "$/a", "$/b", { force: false, errorOnExist: true }],
+  fileOntoFileForcedErrorOnExist: ["cp", "$/a", "$/b", { errorOnExist: true }],
+  fileOntoDirectory: ["cp", "$/a", "$/empty"],
+  fileOntoLink: ["cp", "$/b", "$/linkToA"],
+  fileOntoLinkErrorOnExist: ["cp", "$/b", "$/linkToA", { force: false, errorOnExist: true }],
+  fileOntoLinkDereference: ["cp", "$/b", "$/linkToA", { dereference: true }],
+  fileOntoDirectoryLink: ["cp", "$/a", "$/linkToFull"],
+  fileOntoDirectoryLinkDereference: ["cp", "$/a", "$/linkToFull", { dereference: true }],
+  fileOntoDanglingLink: ["cp", "$/a", "$/dangling"],
+  fileOntoDanglingLinkDereference: ["cp", "$/a", "$/dangling", { dereference: true }],
+  fileIntoBundle: ["cp", "$/a", "/bundle/new"],
+  fileOntoDevice: ["cp", "$/a", "/dev/null"],
+  device: ["cp", "/dev/null", "$/new"],
+  directoryWithoutRecursive: ["cp", "$/full", "$/new"],
+  directoryOntoNew: ["cp", "$/full", "$/new", { recursive: true }],
+  directoryIntoMissingParents: ["cp", "$/full", "$/new/deeper", { recursive: true }],
+  directoryUnderFile: ["cp", "$/full", "$/a/inner", { recursive: true }],
+  directoryOntoFile: ["cp", "$/full", "$/a", { recursive: true }],
+  directoryOntoDirectory: ["cp", "$/full", "$/empty", { recursive: true }],
+  directoryOntoLink: ["cp", "$/full", "$/linkToA", { recursive: true }],
+  directoryOntoItsLinkDereference: ["cp", "$/full", "$/linkToFull", { recursive: true, dereference: true }],
+  directoryHoldingLinks: ["cp", "$/mixed", "$/new", { recursive: true }],
+  directoryHoldingLinksDereference: ["cp", "$/mixed", "$/new", { recursive: true, dereference: true }],
+  directoryIntoBundle: ["cp", "$/full", "/bundle", { recursive: true }],
+  linkOntoNew: ["cp", "$/linkToA", "$/new"],
+  linkDereference: ["cp", "$/linkToA", "$/new", { dereference: true }],
+  directoryLinkOntoNew: ["cp", "$/linkToFull", "$/new"],
+  directoryLinkDereference: ["cp", "$/linkToFull", "$/new", { dereference: true }],
+  directoryLinkDereferenceRecursive: ["cp", "$/linkToFull", "$/new", { dereference: true, recursive: true }],
+  danglingLink: ["cp", "$/dangling", "$/new"],
+  danglingLinkDereference: ["cp", "$/dangling", "$/new", { dereference: true }],
+  linkOntoFile: ["cp", "$/linkToA", "$/b"],
+  linkOntoFileWithoutForce: ["cp", "$/linkToA", "$/b", { force: false }],
+  linkOntoFileErrorOnExist: ["cp", "$/linkToA", "$/b", { force: false, errorOnExist: true }],
+  linkOntoDirectory: ["cp", "$/linkToA", "$/empty"],
+  linkOntoLink: ["cp", "$/linkToA", "$/linkToFull"],
+  mergeFileOntoFile: ["cp", "$/sourceFile", "$/destinationFiles", { recursive: true }],
+  mergeFileOntoFileWithoutForce: ["cp", "$/sourceFile", "$/destinationFiles", { recursive: true, force: false }],
+  mergeFileOntoFileErrorOnExist: ["cp", "$/sourceFile", "$/destinationFiles", { recursive: true, force: false, errorOnExist: true }],
+  mergeFileOntoDirectory: ["cp", "$/sourceFile", "$/destinationDirectories", { recursive: true }],
+  mergeFileOntoLink: ["cp", "$/sourceFile", "$/destinationLinks", { recursive: true }],
+  mergeFileOntoLinkErrorOnExist: ["cp", "$/sourceFile", "$/destinationLinks", { recursive: true, force: false, errorOnExist: true }],
+  mergeFileOntoLinkDereference: ["cp", "$/sourceFile", "$/destinationLinks", { recursive: true, dereference: true }],
+  mergeFileOntoSameFile: ["cp", "$/sourceFile", "$/hardLinks", { recursive: true, force: false, errorOnExist: true }],
+  mergeDirectoryOntoFile: ["cp", "$/sourceDirectory", "$/destinationFiles", { recursive: true }],
+  mergeDirectoryOntoDirectory: ["cp", "$/sourceDirectory", "$/destinationDirectories", { recursive: true }],
+  mergeDirectoryOntoLink: ["cp", "$/sourceDirectory", "$/destinationLinks", { recursive: true }],
+  mergeDirectoryOntoLinkDereference: ["cp", "$/sourceDirectory", "$/destinationLinks", { recursive: true, dereference: true }],
+  mergeLinkOntoFile: ["cp", "$/sourceLink", "$/destinationFiles", { recursive: true }],
+  mergeLinkOntoFileErrorOnExist: ["cp", "$/sourceLink", "$/destinationFiles", { recursive: true, force: false, errorOnExist: true }],
+  mergeLinkOntoDirectory: ["cp", "$/sourceLink", "$/destinationDirectories", { recursive: true }],
+  mergeLinkOntoLink: ["cp", "$/sourceLink", "$/destinationLinks", { recursive: true }],
+  mergeLinkOntoLinkDereference: ["cp", "$/sourceLink", "$/destinationLinks", { recursive: true, dereference: true }],
+  mergeLinkOntoSameLink: ["cp", "$/sourceLink", "$/hardLinks", { recursive: true, force: false, errorOnExist: true }],
+};
+
+// Makes the `slashTree` nodes under `root`, a dangling symbolic link, a
+// directory holding a file and links to a file and a directory, directories
+// holding one file, directory or link named f, d and l, directories holding
+// files, directories and links to b under all three names, and one holding
+// hard links to the file f and the link l.
+function cpTree(root) {
+  slashTree(root);
+  fs.symlinkSync(`${root}/missing`, `${root}/dangling`);
+  fs.mkdirSync(`${root}/mixed`);
+  fs.writeFileSync(`${root}/mixed/f`, "f");
+  fs.symlinkSync(`${root}/a`, `${root}/mixed/l`);
+  fs.symlinkSync(`${root}/full`, `${root}/mixed/ld`);
+  fs.mkdirSync(`${root}/sourceFile`);
+  fs.writeFileSync(`${root}/sourceFile/f`, "new");
+  fs.mkdirSync(`${root}/sourceDirectory/d`, { recursive: true });
+  fs.writeFileSync(`${root}/sourceDirectory/d/i`, "i");
+  fs.mkdirSync(`${root}/sourceLink`);
+  fs.symlinkSync(`${root}/a`, `${root}/sourceLink/l`);
+  for (const kind of ["Files", "Directories", "Links"]) fs.mkdirSync(`${root}/destination${kind}`);
+  for (const name of ["f", "d", "l"]) {
+    fs.writeFileSync(`${root}/destinationFiles/${name}`, "old");
+    fs.mkdirSync(`${root}/destinationDirectories/${name}`);
+    fs.symlinkSync(`${root}/b`, `${root}/destinationLinks/${name}`);
+  }
+  fs.mkdirSync(`${root}/hardLinks`);
+  fs.linkSync(`${root}/sourceFile/f`, `${root}/hardLinks/f`);
+  fs.linkSync(`${root}/sourceLink/l`, `${root}/hardLinks/l`);
 }
 
 export async function filesystemContracts() {
@@ -1287,6 +1670,7 @@ export async function filesystemContracts() {
   result.sizeLimit = sizeLimitOutcomes();
   result.fileWrites = await fileWriteContracts();
   result.handleWriteFile = await handleWriteFileResult();
+  result.descriptorWriteFile = descriptorWriteFileContracts();
   result.order = await orderContracts();
   result.dirents = await direntContracts();
   result.readData = await readDataContracts();
@@ -1300,6 +1684,12 @@ export async function filesystemContracts() {
   result.encodings = await encodingContracts();
   result.shapes = await shapeContracts();
   result.workingDirectory = workingDirectoryContracts();
-  result.errors = await errorContracts();
+  result.errors = await formContracts(errorCalls, "/tmp/filesystem-errors");
+  result.results = await formContracts(resultCalls, "/tmp/filesystem-results");
+  result.slashes = callOutcomes(slashCalls, "/tmp/filesystem-slashes", slashTree);
+  result.cp = callOutcomes(cpCalls, "/tmp/filesystem-cp", cpTree);
+  result.linkedPaths = callOutcomes(linkedPathCalls, "/tmp/filesystem-linked-paths", linkedTree);
+  result.underFile = callOutcomes(underFileCalls, "/tmp/filesystem-under-file", slashTree);
+  result.descriptorKinds = descriptorKindContracts();
   return result;
 }

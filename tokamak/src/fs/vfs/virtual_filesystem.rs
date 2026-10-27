@@ -11,7 +11,8 @@ use indexmap::IndexMap;
 
 use super::nodes::{Directory, FileNode, Node, OpenFile, shared_devices};
 use super::path::{
-    absolute_components, join_child, path_from_components, random_suffix, target_components,
+    absolute_components, join_child, normalized_path, path_from_components, random_suffix,
+    target_components,
 };
 
 /// Maximum size of one virtual file.
@@ -68,8 +69,21 @@ pub enum ErrorKind {
     Host,
     /// The random source failed.
     Entropy,
-    /// The filesystem failed internally, reported without a code.
+    /// The operation failed without a more specific cause.
+    Failed,
+    /// A failure workerd reports as a plain `Error` without a code, such as
+    /// an internal one.
     Internal,
+    /// `cp` met an existing destination it may not replace.
+    CopyExists,
+    /// `cp` was asked to copy a directory into itself.
+    CopyIntoItself,
+    /// `cp` was asked to copy a non-directory onto a directory.
+    CopyNonDirectoryToDirectory,
+    /// `cp` was asked to copy a directory onto a non-directory.
+    CopyDirectoryToNonDirectory,
+    /// `cp` was asked to copy a directory without `recursive`.
+    CopyDirectory,
 }
 
 impl ErrorKind {
@@ -88,9 +102,30 @@ impl ErrorKind {
             Self::InvalidDescriptor => "EBADF",
             Self::SymlinkLoop => "ELOOP",
             Self::Unsupported => "ENOSYS",
-            Self::Host | Self::Entropy => "EIO",
+            Self::Host | Self::Entropy | Self::Failed => "EIO",
             Self::Internal => "",
+            Self::CopyExists => "ERR_FS_CP_EEXIST",
+            Self::CopyIntoItself => "ERR_FS_CP_EINVAL",
+            Self::CopyNonDirectoryToDirectory => "ERR_FS_CP_NON_DIR_TO_DIR",
+            Self::CopyDirectoryToNonDirectory => "ERR_FS_CP_DIR_TO_NON_DIR",
+            Self::CopyDirectory => "ERR_FS_EISDIR",
         }
+    }
+
+    /// Whether workerd reports the kind as a failed system call, with
+    /// `syscall` and, when one is named, `path`. Other kinds are plain
+    /// errors carrying only their code.
+    #[must_use]
+    pub const fn is_system_error(self) -> bool {
+        !matches!(
+            self,
+            Self::Internal
+                | Self::CopyExists
+                | Self::CopyIntoItself
+                | Self::CopyNonDirectoryToDirectory
+                | Self::CopyDirectoryToNonDirectory
+                | Self::CopyDirectory
+        )
     }
 
     /// The kind's message, and whether the system call and path follow it as
@@ -110,8 +145,13 @@ impl ErrorKind {
             Self::InvalidDescriptor => ("bad file descriptor", true),
             Self::SymlinkLoop => ("symlink depth exceeded", false),
             Self::Unsupported => ("function not implemented", true),
-            Self::Host | Self::Entropy => ("input/output error", true),
+            Self::Host | Self::Entropy | Self::Failed => ("input/output error", true),
             Self::Internal => ("internal error", false),
+            Self::CopyExists => ("File already exists", false),
+            Self::CopyIntoItself => ("Cannot copy a directory into itself", false),
+            Self::CopyNonDirectoryToDirectory => ("Cannot copy non-directory to directory", false),
+            Self::CopyDirectoryToNonDirectory => ("Cannot copy directory to non-directory", false),
+            Self::CopyDirectory => ("Expected a file but found a directory", false),
         }
     }
 }
@@ -263,8 +303,6 @@ pub struct OpenOptions {
     pub exclusive: bool,
     /// Truncate an existing file after opening.
     pub truncate: bool,
-    /// Follow the final symbolic link.
-    pub follow_symlinks: bool,
 }
 
 impl Default for OpenOptions {
@@ -276,7 +314,6 @@ impl Default for OpenOptions {
             create: false,
             exclusive: false,
             truncate: false,
-            follow_symlinks: true,
         }
     }
 }
@@ -361,9 +398,6 @@ impl VirtualFileSystem {
                 Ok(())
             }
             Ok(_) => Err(Error::new(ErrorKind::NotDirectory).at(named)),
-            Err(error) if error.kind() == ErrorKind::NotDirectory => {
-                Err(Error::new(ErrorKind::NotFound).at(named))
-            }
             Err(error) => Err(error.at(named)),
         }
     }
@@ -392,10 +426,12 @@ impl VirtualFileSystem {
 
     /// List a directory tree depth first, each directory in its stored order,
     /// descending into symbolic links to directories under the link's path.
+    /// Entries are named below `path` normalized.
     pub fn walk(&self, path: &str) -> Result<Vec<(String, DirectoryEntry)>> {
         let directory = self.listed_directory(path)?;
+        let base = normalized_path(path)?;
         let mut entries = Vec::new();
-        self.walk_directory(path, &directory, &mut vec![path.to_owned()], &mut entries)?;
+        self.walk_directory(&base, &directory, &mut vec![base.clone()], &mut entries)?;
         Ok(entries)
     }
 
@@ -440,33 +476,37 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// Create a directory, leaving an existing directory alone.
-    pub fn mkdir(&mut self, path: &str, recursive: bool) -> Result<()> {
+    /// Create a directory, leaving an existing directory alone. A recursive
+    /// call also creates missing parents and, as workerd's does, returns the
+    /// first parent it created.
+    pub fn mkdir(&mut self, path: &str, recursive: bool) -> Result<Option<String>> {
         let components = absolute_components(path)?;
-        match self.resolve(path, false) {
-            Ok(Node::Directory(_)) => return Ok(()),
-            Ok(_) => return Err(Error::new(ErrorKind::AlreadyExists)),
-            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
-            Err(_) => {}
+        if self.is_existing_directory(path)? {
+            return Ok(None);
         }
         if recursive {
             return self.mkdir_recursive(&components);
         }
         let (base, name) = split_name(path)?;
-        let parent = self.directory(base).map_err(|error| error.at(&name))?;
-        parent.insert(name, Node::Directory(Directory::memory()))
+        let parent = self.directory(base).map_err(|error| match error.kind() {
+            ErrorKind::NotDirectory => error,
+            _ => error.at(&name),
+        })?;
+        parent.insert(name, Node::Directory(Directory::memory()))?;
+        Ok(None)
     }
 
     /// Write `data` as the content of the file `path` names, creating the file
     /// when it is missing, as workerd's `writeAll` does: `append` writes after
     /// the existing content, and `exclusive` fails when the file exists.
+    /// Returns the number of bytes written.
     pub fn write_file(
         &mut self,
         path: &str,
         data: &[u8],
         append: bool,
         exclusive: bool,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let node = match self.resolve(path, true) {
             Ok(_) if exclusive => return Err(Error::new(ErrorKind::AlreadyExists)),
             Ok(node) => node,
@@ -479,8 +519,9 @@ impl VirtualFileSystem {
                     return Err(Error::new(ErrorKind::NotPermitted));
                 }
                 let node = Node::File(FileNode::memory());
-                node.write(0, data, false)?;
-                return parent.insert(name, node);
+                let written = node.write(0, data, false)?;
+                parent.insert(name, node)?;
+                return Ok(written);
             }
             Err(error) => return Err(error),
         };
@@ -488,13 +529,10 @@ impl VirtualFileSystem {
         if !file.writable() {
             return Err(Error::new(ErrorKind::NotPermitted));
         }
-        if append {
-            file.write(0, data, true)?;
-        } else {
+        if !append {
             file.resize(0)?;
-            file.write(0, data, false)?;
         }
-        Ok(())
+        file.write(0, data, append)
     }
 
     /// Remove the entry `path` names without following a final symbolic
@@ -553,7 +591,7 @@ impl VirtualFileSystem {
         let replaced = self.node_without_links(to)?;
         let to_components = absolute_components(to)?;
         let from_components = absolute_components(from)?;
-        if replaced.is_some() && to_components == from_components {
+        if replaced.is_some() && to == from {
             return Ok(());
         }
         let (parent, name) = self.containing_directory(to)?;
@@ -596,28 +634,204 @@ impl VirtualFileSystem {
         replace_entry(&parent, name, replaced.is_some(), copy)
     }
 
-    /// Copy a file or directory tree.
+    /// Copy what `from` names to `to`, as workerd's `cp` does. With
+    /// `options.dereference`, symbolic links `from` and `to` name are
+    /// followed, but not those inside a copied directory. A directory is
+    /// copied into an existing directory entry by entry, and missing parents
+    /// of `to` are created.
     pub fn copy(&mut self, from: &str, to: &str, options: CopyOptions) -> Result<()> {
-        let source = self
-            .resolve(from, options.dereference)
-            .map_err(|error| missing_at(error, from))?;
-        let target = self.copy_target(from, to, &source)?;
-        let target_exists = self.resolve(&target, false).is_ok();
-        if target_exists && options.error_on_exist {
-            return Err(Error::new(ErrorKind::AlreadyExists));
+        if from == to {
+            return Err(Error::with_message(
+                ErrorKind::Internal,
+                "Source and destination paths must not be the same",
+            ));
         }
-        if target_exists && !options.force {
-            return Ok(());
+        let prefix = if from.ends_with('/') {
+            from.to_owned()
+        } else {
+            format!("{from}/")
+        };
+        if to.len() > prefix.len() && to.starts_with(&prefix) {
+            return Err(Error::with_message(
+                ErrorKind::CopyIntoItself,
+                format!("Cannot copy '{from}' to a subdirectory of itself, '{to}'"),
+            ));
         }
-        if matches!(source, Node::Directory(_)) && !options.recursive {
-            return Err(Error::new(ErrorKind::IsDirectory));
+        let Some(source) = self.copy_lookup(from, options.dereference)? else {
+            return Err(Error::new(ErrorKind::NotFound).at(from));
+        };
+        let destination = self.copy_lookup(to, options.dereference)?;
+        match (source, destination) {
+            (Node::Directory(_), _) if !options.recursive => {
+                Err(Error::new(ErrorKind::CopyDirectory))
+            }
+            (Node::Directory(_), Some(Node::File(_))) => {
+                Err(Error::new(ErrorKind::CopyDirectoryToNonDirectory))
+            }
+            (Node::Directory(_), Some(Node::Symlink(_)))
+            | (Node::Symlink(_), Some(Node::Directory(_))) => {
+                Err(Error::new(ErrorKind::NotDirectory))
+            }
+            (Node::Directory(source), Some(Node::Directory(destination))) => {
+                self.copy_entries(&source, &destination, options, 0)
+            }
+            (Node::Directory(source), None) => {
+                match self.open_creating(&absolute_components(to)?)? {
+                    Some(Node::Directory(destination)) => {
+                        self.copy_entries(&source, &destination, options, 0)
+                    }
+                    Some(_) => Err(Error::new(ErrorKind::NotDirectory)),
+                    None => Err(Error::new(ErrorKind::InvalidInput)),
+                }
+            }
+            (Node::File(_), Some(Node::Directory(_))) => {
+                Err(Error::new(ErrorKind::CopyNonDirectoryToDirectory))
+            }
+            (_, Some(_)) if !options.force => {
+                if options.error_on_exist {
+                    return Err(Error::new(ErrorKind::CopyExists));
+                }
+                Ok(())
+            }
+            // workerd copies the destination link here, which leaves it as it
+            // was.
+            (Node::Symlink(_), Some(existing @ Node::Symlink(_))) => self.copy_entry(&existing, to),
+            (node, _) => self.copy_entry(&node, to),
         }
-        let node = self.copy_node(&source, from, options.dereference)?;
-        let (parent, name) = self.parent(&target)?;
-        if target_exists {
-            parent.remove(&name)?;
+    }
+
+    /// What `path` names for `cp`, following symbolic links when `follow`:
+    /// `None` when nothing does, or, when not following, a symbolic link is
+    /// on the way.
+    fn copy_lookup(&self, path: &str, follow: bool) -> Result<Option<Node>> {
+        if follow {
+            self.lookup(path)
+        } else {
+            self.node_without_links(path)
         }
-        parent.insert(name, node)
+    }
+
+    /// Puts a copy of the file or symbolic link `node` at `path`, replacing
+    /// what is there and creating missing parent directories.
+    fn copy_entry(&self, node: &Node, path: &str) -> Result<()> {
+        let (base, name) = split_name(path)?;
+        let parent = match self.open_creating(&base)? {
+            Some(Node::Directory(parent)) => parent,
+            Some(_) => return Err(Error::new(ErrorKind::NotDirectory)),
+            None => return Err(Error::new(ErrorKind::InvalidInput)),
+        };
+        parent.remove(&name)?;
+        parent.insert(name, copied(node)?)
+    }
+
+    /// Copies the entries of `source` into `destination`, as workerd copies a
+    /// directory: an entry replaces an existing file or symbolic link only
+    /// with `options.force`, and a directory is copied into an existing
+    /// directory. Existing symbolic links are followed with
+    /// `options.dereference`. `depth` counts the directories above; a
+    /// directory holds itself once a symbolic link to it is renamed into
+    /// it, and copying one ends at the path segment limit.
+    fn copy_entries(
+        &self,
+        source: &Directory,
+        destination: &Directory,
+        options: CopyOptions,
+        depth: usize,
+    ) -> Result<()> {
+        if !destination.writable() {
+            return Err(Error::with_message(
+                ErrorKind::NotPermitted,
+                "Destination directory is not writable",
+            ));
+        }
+        if source.same(destination) {
+            return Err(Error::with_message(
+                ErrorKind::InvalidInput,
+                "Source and destination directories are the same",
+            ));
+        }
+        if depth > MAX_PATH_SEGMENTS {
+            return Err(Error::new(ErrorKind::InvalidPath));
+        }
+        let mut entries = Vec::new();
+        for entry in source.entries()? {
+            if let Some(node) = source.lookup(&entry.name)? {
+                entries.push((entry.name, node));
+            }
+        }
+        for (name, node) in entries {
+            let existing = match destination.lookup(&name)? {
+                Some(Node::Symlink(target)) if options.dereference => self.lookup(&target)?,
+                existing => existing,
+            };
+            let conflict =
+                |kind, message: &str| Err(Error::with_message(kind, format!("{message}: {name}")));
+            match (node, existing) {
+                (node @ (Node::File(_) | Node::Symlink(_)), Some(existing))
+                    if node.same(&existing) => {}
+                (Node::File(_), Some(Node::Directory(_))) => {
+                    return conflict(ErrorKind::IsDirectory, "Cannot copy file to directory");
+                }
+                (Node::Symlink(_), Some(Node::Directory(_))) => {
+                    return conflict(ErrorKind::IsDirectory, "Cannot copy link to directory");
+                }
+                (Node::Directory(_), Some(Node::File(_))) => {
+                    return conflict(ErrorKind::NotDirectory, "Cannot copy directory to file");
+                }
+                (Node::Directory(_), Some(Node::Symlink(_))) => {
+                    return conflict(
+                        ErrorKind::IsDirectory,
+                        "Cannot copy directory to symbolic link",
+                    );
+                }
+                (Node::Directory(directory), Some(Node::Directory(existing))) => {
+                    self.copy_entries(&directory, &existing, options, depth + 1)?;
+                }
+                (Node::Directory(directory), None) => {
+                    let child = Directory::memory();
+                    destination.insert(name, Node::Directory(child.clone()))?;
+                    self.copy_entries(&directory, &child, options, depth + 1)?;
+                }
+                (node, Some(_)) if options.force => {
+                    destination.remove(&name)?;
+                    destination.insert(name, copied(&node)?)?;
+                }
+                (_, Some(_)) if options.error_on_exist => {
+                    return conflict(ErrorKind::AlreadyExists, "Destination already exists");
+                }
+                (_, Some(_)) => {}
+                (node, None) => destination.insert(name, copied(&node)?)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// What `components` name, following symbolic links and creating missing
+    /// directories, as workerd's `tryOpen` with `createAs` a directory does:
+    /// `None` when a file or a symbolic link that leads nowhere is on the
+    /// way, or a final symbolic link leads nowhere.
+    fn open_creating(&self, components: &[String]) -> Result<Option<Node>> {
+        let mut directory = self.root.clone();
+        for (index, name) in components.iter().enumerate() {
+            let node = match directory.lookup(name)? {
+                None => return create_directories(&directory, &components[index..]).map(Some),
+                Some(Node::Symlink(_)) => {
+                    match self.lookup_components(components[..=index].to_vec())? {
+                        Some(node) => node,
+                        None => return Ok(None),
+                    }
+                }
+                Some(node) => node,
+            };
+            if index + 1 == components.len() {
+                return Ok(Some(node));
+            }
+            let Node::Directory(child) = node else {
+                return Ok(None);
+            };
+            directory = child;
+        }
+        Ok(Some(Node::Directory(directory)))
     }
 
     /// Create a hard link at `new` to what `existing` names without following
@@ -654,7 +868,14 @@ impl VirtualFileSystem {
             Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
             Err(_) => {}
         }
-        self.parent(path).map_err(|error| match error.kind() {
+        let (base, name) = split_name(path)?;
+        if name.is_empty() {
+            return Err(Error::with_message(
+                ErrorKind::InvalidInput,
+                "Invalid filename",
+            ));
+        }
+        let parent = self.directory(base).map_err(|error| match error.kind() {
             ErrorKind::NotFound => {
                 Error::with_message(ErrorKind::NotFound, "Directory does not exist").at(target)
             }
@@ -662,11 +883,28 @@ impl VirtualFileSystem {
                 Error::with_message(ErrorKind::InvalidInput, "Not a directory")
             }
             _ => error,
-        })
+        })?;
+        Ok((parent, name))
     }
 
-    /// Create a unique temporary directory below an existing parent.
-    pub fn make_temp_dir(&mut self, prefix: &str) -> Result<String> {
+    /// Whether `path` names a directory, without following symbolic links,
+    /// as workerd's `mkdir` checks first: anything else there already exists.
+    fn is_existing_directory(&self, path: &str) -> Result<bool> {
+        match self.resolve(path, false) {
+            Ok(Node::Directory(_)) => Ok(true),
+            Ok(_) => Err(Error::new(ErrorKind::AlreadyExists)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Create a unique temporary directory below an existing parent, named
+    /// `prefix` and a suffix, as workerd's `mkdir` does for `mkdtemp`. `None`
+    /// when `prefix` names a directory, which that `mkdir` leaves alone.
+    pub fn make_temp_dir(&mut self, prefix: &str) -> Result<Option<String>> {
+        if self.is_existing_directory(prefix)? {
+            return Ok(None);
+        }
         let (mut components, name) = split_name(prefix)?;
         let parent = self
             .directory(components.clone())
@@ -679,7 +917,7 @@ impl VirtualFileSystem {
             if parent.lookup(&candidate)?.is_none() {
                 parent.insert(candidate.clone(), Node::Directory(Directory::memory()))?;
                 components.push(candidate);
-                return Ok(path_from_components(&components));
+                return Ok(Some(path_from_components(&components)));
             }
         }
         Err(Error::new(ErrorKind::AlreadyExists))
@@ -691,7 +929,7 @@ impl VirtualFileSystem {
             return Err(Error::new(ErrorKind::InvalidInput));
         }
         let (parent, name) = self.link_parent(path, target)?;
-        parent.insert(name, Node::Symlink(target.to_owned()))
+        parent.insert(name, Node::Symlink(normalized_path(target)?.into()))
     }
 
     /// Read a symbolic link target.
@@ -700,7 +938,7 @@ impl VirtualFileSystem {
             .resolve(path, false)
             .map_err(|error| missing_at(error, path))?
         {
-            Node::Symlink(target) => Ok(target),
+            Node::Symlink(target) => Ok(target.to_string()),
             _ => Err(Error::new(ErrorKind::InvalidInput)),
         }
     }
@@ -713,8 +951,8 @@ impl VirtualFileSystem {
             .resolve(path, false)
             .map_err(|error| missing_at(error, path))?
         {
-            Node::Symlink(target) => Ok(target),
-            _ => Ok(path_from_components(&absolute_components(path)?)),
+            Node::Symlink(target) => Ok(target.to_string()),
+            _ => normalized_path(path),
         }
     }
 
@@ -724,32 +962,44 @@ impl VirtualFileSystem {
             .map_err(|error| error.at(path))
     }
 
+    /// Opens what `path` names as workerd's `openFd` does: its parent must be
+    /// a directory, a missing file is created with `options.create`, and a
+    /// directory opens only for reading.
     fn open_file(&mut self, path: &str, options: OpenOptions) -> Result<u32> {
         if !options.read && !options.write {
             return Err(Error::new(ErrorKind::InvalidInput));
         }
-        let (node, existed) = match self.resolve(path, options.follow_symlinks) {
-            Ok(node) => (node, true),
-            Err(error) if error.kind() == ErrorKind::NotFound && options.create => {
-                let (parent, name) = self.parent(path)?;
+        let mut components = absolute_components(path)?;
+        let name = components.pop();
+        let parent = self.directory(components)?;
+        let node = match self.lookup(path)? {
+            Some(_) if options.create && options.exclusive => {
+                return Err(Error::new(ErrorKind::AlreadyExists));
+            }
+            Some(node) => node,
+            None if !options.create => return Err(Error::new(ErrorKind::NotFound)),
+            None => {
+                let name = name.ok_or_else(|| Error::new(ErrorKind::InvalidInput))?;
                 if parent.lookup(&name)?.is_some() {
-                    return Err(Error::new(ErrorKind::NotFound));
+                    // A symbolic link that leads nowhere is not replaced.
+                    return Err(Error::new(ErrorKind::Failed));
                 }
                 let node = Node::File(FileNode::memory());
                 parent.insert(name, node.clone())?;
-                (node, false)
+                node
             }
-            Err(error) => return Err(error),
         };
-        if existed && options.exclusive {
-            return Err(Error::new(ErrorKind::AlreadyExists));
-        }
-        let file = node.file()?;
-        if options.write && !file.writable() {
-            return Err(Error::new(ErrorKind::NotPermitted));
-        }
-        if options.truncate && options.write {
-            file.resize(0)?;
+        match &node {
+            Node::Directory(_) if options.write => return Err(Error::new(ErrorKind::IsDirectory)),
+            Node::File(file) if options.write => {
+                if !file.writable() {
+                    return Err(Error::new(ErrorKind::NotPermitted));
+                }
+                if options.truncate && file.size()? > 0 {
+                    file.resize(0)?;
+                }
+            }
+            _ => {}
         }
         let descriptor = self.next_descriptor;
         self.next_descriptor = self
@@ -788,7 +1038,7 @@ impl VirtualFileSystem {
     ) -> Result<Vec<u8>> {
         let open = self.descriptor_mut(descriptor)?;
         if !open.read {
-            return Err(Error::new(ErrorKind::NotPermitted));
+            return Err(Error::new(ErrorKind::InvalidDescriptor));
         }
         let offset = position.unwrap_or(open.position);
         let bytes = open.node.read(offset, length)?;
@@ -799,11 +1049,9 @@ impl VirtualFileSystem {
     }
 
     /// Write to a descriptor. `position` does not move the descriptor cursor.
+    /// As in workerd, a descriptor opened without write access writes too.
     pub fn write(&mut self, descriptor: u32, data: &[u8], position: Option<u64>) -> Result<usize> {
         let open = self.descriptor_mut(descriptor)?;
-        if !open.write {
-            return Err(Error::new(ErrorKind::NotPermitted));
-        }
         if !open.append && position.is_some_and(|position| position > MAX_WRITE_POSITION) {
             return Err(Error::with_message(
                 ErrorKind::InvalidInput,
@@ -820,6 +1068,43 @@ impl VirtualFileSystem {
             };
         }
         Ok(written)
+    }
+
+    /// Whether writing a whole file to `descriptor` appends to it, failing as
+    /// workerd's `writeAll` does for a descriptor it cannot write a file to.
+    pub fn whole_write_appends(&self, descriptor: u32) -> Result<bool> {
+        let open = self.descriptor(descriptor)?;
+        if !open.write {
+            return Err(Error::new(ErrorKind::InvalidDescriptor));
+        }
+        let file = open
+            .node
+            .file()
+            .map_err(|_| Error::new(ErrorKind::InvalidDescriptor))?;
+        if !file.writable() {
+            return Err(Error::new(ErrorKind::NotPermitted));
+        }
+        Ok(open.append)
+    }
+
+    /// The size of the file `descriptor` names, failing as workerd's
+    /// `readAll` does for a descriptor it cannot read a whole file from.
+    pub fn whole_read_size(&self, descriptor: u32) -> Result<u64> {
+        let open = self.descriptor(descriptor)?;
+        if !open.read {
+            return Err(Error::new(ErrorKind::InvalidDescriptor));
+        }
+        open.node
+            .file()
+            .map_err(|_| Error::new(ErrorKind::InvalidDescriptor))?
+            .size()
+    }
+
+    /// Moves `descriptor` to the end of its file.
+    pub fn seek_end(&mut self, descriptor: u32) -> Result<()> {
+        let open = self.descriptor_mut(descriptor)?;
+        open.position = open.node.size()?;
+        Ok(())
     }
 
     /// Read from a descriptor into multiple buffers.
@@ -869,13 +1154,10 @@ impl VirtualFileSystem {
             .resize(size)
     }
 
-    /// Truncate a descriptor.
+    /// Truncate a descriptor. As in workerd, a descriptor opened without
+    /// write access truncates too.
     pub fn ftruncate(&mut self, descriptor: u32, size: u64) -> Result<()> {
-        let open = self.descriptor(descriptor)?;
-        if !open.write {
-            return Err(Error::new(ErrorKind::NotPermitted));
-        }
-        open.node.resize(size)
+        self.descriptor(descriptor)?.node.resize(size)
     }
 
     fn descriptor(&self, descriptor: u32) -> Result<&OpenFile> {
@@ -890,20 +1172,30 @@ impl VirtualFileSystem {
             .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor))
     }
 
-    fn mkdir_recursive(&mut self, components: &[String]) -> Result<()> {
+    fn mkdir_recursive(&mut self, components: &[String]) -> Result<Option<String>> {
+        let Some((name, parents)) = components.split_last() else {
+            return Ok(None);
+        };
         let mut current = self.root.clone();
-        for component in components {
-            current = match current.lookup(component)? {
+        let mut created = None;
+        for (index, component) in parents.iter().enumerate() {
+            let node = match current.lookup(component)? {
+                Some(Node::Symlink(_)) => self.lookup_components(components[..=index].to_vec())?,
+                node => node,
+            };
+            current = match node {
                 Some(Node::Directory(directory)) => directory,
                 Some(_) => return Err(Error::new(ErrorKind::NotDirectory)),
                 None => {
                     let child = Directory::memory();
                     current.insert(component.clone(), Node::Directory(child.clone()))?;
+                    created.get_or_insert_with(|| path_from_components(&components[..=index]));
                     child
                 }
             };
         }
-        Ok(())
+        current.insert(name.clone(), Node::Directory(Directory::memory()))?;
+        Ok(created)
     }
 
     /// Appends the tree below `directory`, reached at `path`, to `entries`.
@@ -922,7 +1214,7 @@ impl VirtualFileSystem {
             let Ok(Node::Directory(child_directory)) = self.resolve(&child, true) else {
                 continue;
             };
-            let real_path = path_from_components(&self.resolve_with_path(&child, true)?.1);
+            let real_path = path_from_components(&self.resolve_with_path(&child)?.1);
             if ancestors.contains(&real_path) {
                 return Err(Error::new(ErrorKind::SymlinkLoop));
             }
@@ -933,77 +1225,19 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    fn copy_target(&self, from: &str, to: &str, source: &Node) -> Result<String> {
-        let destination = self.resolve(to, true);
-        if destination
-            .as_ref()
-            .is_ok_and(|node| matches!(node, Node::Directory(_)))
-        {
-            let name = absolute_components(from)?
-                .pop()
-                .ok_or_else(|| Error::new(ErrorKind::InvalidInput))?;
-            return Ok(join_child(to, &name));
-        }
-        if matches!(source, Node::Directory(_)) && destination.is_err() {
-            let (_, name) = self.parent(to)?;
-            if name.is_empty() {
-                return Err(Error::new(ErrorKind::InvalidInput));
-            }
-        }
-        Ok(to.to_owned())
-    }
-
-    /// A copy of `node`, which `path` names. A directory holds itself once a
-    /// symbolic link to it is renamed into it; copying one ends at the path
-    /// segment limit.
-    fn copy_node(&self, node: &Node, path: &str, dereference: bool) -> Result<Node> {
-        match node {
-            Node::File(file) if file.is_device() => Err(Error::new(ErrorKind::Unsupported)),
-            Node::File(file) => Ok(Node::File(file.copied()?)),
-            Node::Symlink(_) if !dereference => Ok(node.clone()),
-            Node::Symlink(_) => {
-                let resolved = self.resolve(path, true)?;
-                self.copy_node(&resolved, path, dereference)
-            }
-            Node::Directory(directory) => {
-                let target = Directory::memory();
-                for entry in directory.entries()? {
-                    let child_path = join_child(path, &entry.name);
-                    absolute_components(&child_path)?;
-                    let child = directory
-                        .lookup(&entry.name)?
-                        .ok_or_else(|| Error::new(ErrorKind::NotFound))?;
-                    target.insert(
-                        entry.name,
-                        self.copy_node(&child, &child_path, dereference)?,
-                    )?;
-                }
-                Ok(Node::Directory(target))
-            }
-        }
-    }
-
-    /// The directory holding the last component of `path`, and that
-    /// component's name.
-    fn parent(&self, path: &str) -> Result<(Directory, String)> {
-        let (base, name) = split_name(path)?;
-        Ok((self.directory(base)?, name))
-    }
-
     /// The directory `components` name, following symbolic links.
     fn directory(&self, components: Vec<String>) -> Result<Directory> {
-        let (node, _) = self.resolve_components(components, true)?;
+        let (node, _) = self.resolve_components(components)?;
         node.as_directory()
             .ok_or_else(|| Error::new(ErrorKind::NotDirectory))
     }
 
     /// The directory holding the last component of `path`, and that
-    /// component's name; `/` is held by itself under an empty name. A missing
-    /// directory is reported under the name.
+    /// component's name, as `split_name` splits them. A missing directory is
+    /// reported under the name.
     fn containing_directory(&self, path: &str) -> Result<(Directory, String)> {
-        let mut components = absolute_components(path)?;
-        let name = components.pop().unwrap_or_default();
-        match self.lookup_components(components)? {
+        let (base, name) = split_name(path)?;
+        match self.lookup_components(base)? {
             Some(Node::Directory(directory)) => Ok((directory, name)),
             Some(_) => Err(Error::new(ErrorKind::NotDirectory)),
             None => Err(Error::new(ErrorKind::NotFound).at(name)),
@@ -1033,29 +1267,32 @@ impl VirtualFileSystem {
     }
 
     fn lookup_components(&self, components: Vec<String>) -> Result<Option<Node>> {
-        match self.resolve_components(components, true) {
+        match self.resolve_components(components) {
             Ok((node, _)) => Ok(Some(node)),
-            Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotDirectory) => {
-                Ok(None)
-            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
     }
 
-    fn resolve(&self, path: &str, follow_final: bool) -> Result<Node> {
-        self.resolve_with_path(path, follow_final)
-            .map(|(node, _)| node)
+    /// The node `path` names, following symbolic links when `follow`. As
+    /// with workerd's `tryOpen`, a lookup that does not follow symbolic links
+    /// follows none on the way either, and a file on the way leaves nothing
+    /// found.
+    fn resolve(&self, path: &str, follow: bool) -> Result<Node> {
+        if follow {
+            return self.resolve_with_path(path).map(|(node, _)| node);
+        }
+        self.node_without_links(path)?
+            .ok_or_else(|| Error::new(ErrorKind::NotFound))
     }
 
-    fn resolve_with_path(&self, path: &str, follow_final: bool) -> Result<(Node, Vec<String>)> {
-        self.resolve_components(absolute_components(path)?, follow_final)
+    fn resolve_with_path(&self, path: &str) -> Result<(Node, Vec<String>)> {
+        self.resolve_components(absolute_components(path)?)
     }
 
-    fn resolve_components(
-        &self,
-        mut pending: Vec<String>,
-        follow_final: bool,
-    ) -> Result<(Node, Vec<String>)> {
+    /// The node `pending` names, following symbolic links, and the
+    /// components of its real path.
+    fn resolve_components(&self, mut pending: Vec<String>) -> Result<(Node, Vec<String>)> {
         let root = Node::Directory(self.root.clone());
         let mut current = root.clone();
         let mut resolved = Vec::new();
@@ -1066,16 +1303,13 @@ impl VirtualFileSystem {
                 return Ok((current, resolved));
             }
             let name = pending[index].clone();
-            let directory = current
+            let child = current
                 .as_directory()
-                .ok_or_else(|| Error::new(ErrorKind::NotDirectory))?;
-            let child = directory
-                .lookup(&name)?
+                .map(|directory| directory.lookup(&name))
+                .transpose()?
+                .flatten()
                 .ok_or_else(|| Error::new(ErrorKind::NotFound))?;
-            let final_component = index + 1 == pending.len();
-            if let Node::Symlink(target) = &child
-                && (follow_final || !final_component)
-            {
+            if let Node::Symlink(target) = &child {
                 symlinks += 1;
                 if symlinks > 40 {
                     return Err(Error::new(ErrorKind::SymlinkLoop));
@@ -1097,13 +1331,41 @@ impl VirtualFileSystem {
 
 /// The components of the directory holding the last component of `path`,
 /// and that component's name, as workerd splits a path it creates or removes
-/// an entry at.
+/// an entry at: a path ending in `/` names an empty name in the directory the
+/// path itself names.
 fn split_name(path: &str) -> Result<(Vec<String>, String)> {
     let mut components = absolute_components(path)?;
+    if path.ends_with('/') {
+        return Ok((components, String::new()));
+    }
     let name = components
         .pop()
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput))?;
     Ok((components, name))
+}
+
+/// A copy of the file or symbolic link `node`, as workerd's `cp` makes one:
+/// a file's content is copied, and a symbolic link is shared.
+fn copied(node: &Node) -> Result<Node> {
+    match node {
+        Node::File(file) => Ok(Node::File(file.copied()?)),
+        node => Ok(node.clone()),
+    }
+}
+
+/// Creates the directories `names` name, each in the one before, in
+/// `parent`, returning the last.
+fn create_directories(parent: &Directory, names: &[String]) -> Result<Node> {
+    if !parent.writable() {
+        return Err(Error::new(ErrorKind::NotPermitted));
+    }
+    let mut current = parent.clone();
+    for name in names {
+        let child = Directory::memory();
+        current.insert(name.clone(), Node::Directory(child.clone()))?;
+        current = child;
+    }
+    Ok(Node::Directory(current))
 }
 
 /// `error`, naming `path` when nothing exists there, as workerd reports a

@@ -123,7 +123,8 @@ function pattern(value, encoding) {
 
 export class Buffer extends Uint8Array {
   static from(value, encodingOrOffset, length) {
-    if (typeof value === "string") return new Buffer(stringBytes(value, encodingOrOffset));
+    // Like workerd's, a string with an encoding that is not a non-empty string is utf8.
+    if (typeof value === "string") return new Buffer(stringBytes(value, typeof encodingOrOffset === "string" && encodingOrOffset !== "" ? encodingOrOffset : "utf8"));
     if (value && value.type === "Buffer" && Array.isArray(value.data)) return new Buffer(value.data);
     if (isArrayBufferLike(value)) {
       const offset = encodingOrOffset === undefined ? 0 : integer(encodingOrOffset);
