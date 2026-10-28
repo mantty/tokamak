@@ -81,12 +81,6 @@ done
 EOF
   chmod +x "$compiler"
   export ANDROID_NDK_HOME=$temporary/ndk
-  # Builds create no gateway certificate unless a case gives them the JDK.
-  jdk=${JAVA_HOME:-}
-  mkdir -p "$temporary/jdk/bin"
-  printf '#!/bin/sh\n' > "$temporary/jdk/bin/keytool"
-  chmod +x "$temporary/jdk/bin/keytool"
-  export JAVA_HOME=$temporary/jdk
 else
   pack=$TOKAMAK_TEST_ANDROID_PACK
 fi
@@ -152,50 +146,6 @@ test_builds_shrunk_lint_checked_release_apps() {
   contains "$gradle/tokamak-exports.map" "    Java_*;"
   lacks "$gradle/tokamak-exports.map" tokamak_storage
   [[ -f "$gradle/app/src/main/jniLibs/arm64-v8a/libtokamak.so" ]] || fail "the runtime was not linked"
-}
-
-test_trusts_the_gateway_certificate_each_build_creates() {
-  new_case gateway
-  entrypoint JAVA_HOME="$jdk"
-  local resources=$gradle/app/src/main/res
-  local config=$resources/xml/tokamak_network_security_config.xml
-  local manifest=$gradle/app/src/main/AndroidManifest.xml
-  contains "$manifest" 'android:networkSecurityConfig="@xml/tokamak_network_security_config"'
-  lacks "$manifest" usesCleartextTraffic
-  contains "$config" '<base-config cleartextTrafficPermitted="false" />'
-  contains "$config" '<domain includeSubdomains="false">demo-app.tokamak.local</domain>'
-  contains "$config" '<certificates src="@raw/tokamak_gateway_authority" />'
-  local keytool=${jdk:+$jdk/bin/}keytool
-  local p12=$gradle/app/src/main/assets/tokamak-gateway.p12
-  "$keytool" -list -v -keystore "$p12" -storepass tokamak > "$case/keystore"
-  "$keytool" -printcert -file "$resources/raw/tokamak_gateway_authority.pem" > "$case/authority"
-  # The keystore holds the gateway's key and chain, not the authority's key.
-  contains "$case/keystore" "Your keystore contains 1 entry"
-  contains "$case/keystore" "Alias name: gateway"
-  contains "$case/keystore" "Certificate chain length: 2"
-  contains "$case/keystore" "Owner: CN=demo-app.tokamak.local"
-  contains "$case/keystore" "DNSName: demo-app.tokamak.local"
-  contains "$case/keystore" "serverAuth"
-  contains "$case/keystore" "DigitalSignature"
-  contains "$case/authority" "Owner: CN=tokamak gateway"
-  contains "$case/authority" "CA:true"
-  contains "$case/authority" "PathLen:0"
-  # Installed apps trust both certificates for as long as they stay installed.
-  local year
-  for year in $(grep "until:" "$case/keystore" | awk '{print $NF}'); do
-    ((year >= $(date +%Y) + 99)) || fail "a gateway certificate expires in $year"
-  done
-  # Older Android releases read only PKCS#12 files in the classic format.
-  openssl pkcs12 -in "$p12" -info -noout -passin pass:tokamak > "$case/pkcs12" 2>&1
-  contains "$case/pkcs12" "Shrouded Keybag: pbeWithSHA1And3-KeyTripleDES-CBC, Iteration 1"
-  lacks "$case/pkcs12" "Encrypted data"
-  local authority
-  authority=$(grep -m1 "SHA256:" "$case/authority")
-  contains "$case/keystore" "$authority"
-  entrypoint JAVA_HOME="$jdk"
-  "$keytool" -printcert -file "$resources/raw/tokamak_gateway_authority.pem" > "$case/rebuilt"
-  lacks "$case/rebuilt" "$authority"
-  fails_with "Android builds create the gateway certificate with keytool" entrypoint JAVA_HOME="$case/no-jdk"
 }
 
 test_exports_the_runtime_parts_the_app_links() {
@@ -344,7 +294,6 @@ if [[ -n "${TOKAMAK_TEST_ANDROID_PACK:-}" ]]; then
 else
   tests=(
     test_builds_shrunk_lint_checked_release_apps
-    test_trusts_the_gateway_certificate_each_build_creates
     test_exports_the_runtime_parts_the_app_links
     test_signs_release_builds_with_the_configured_keystore
     test_builds_development_apps_as_debug_builds

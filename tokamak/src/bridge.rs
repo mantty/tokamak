@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::packaging::PackageLayout;
-use crate::{
-    Config, DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime, ServerIdentity,
-};
+use crate::{Config, DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime};
 
 /// What the shell gives a runtime it starts.
 pub(crate) struct Shell {
@@ -15,8 +13,6 @@ pub(crate) struct Shell {
     pub(crate) foreground: bool,
     /// The plugins the Worker calls.
     pub(crate) plugins: Arc<dyn PluginHandler>,
-    /// The gateway's server certificate, when the shell provides one.
-    pub(crate) server_identity: Option<ServerIdentity>,
     /// Logs the runtime's events.
     pub(crate) report: fn(&Event),
 }
@@ -36,7 +32,6 @@ pub(crate) fn start(
         host: host.to_owned(),
         foreground: shell.foreground,
         plugins: Some(shell.plugins),
-        server_identity: shell.server_identity,
     };
     let report = shell.report;
     Runtime::start(config, move |event| report(&event)).map_err(|error| error.to_string())
@@ -60,7 +55,6 @@ pub(crate) fn start_development(
         },
         foreground: shell.foreground,
         plugins: Some(shell.plugins),
-        server_identity: shell.server_identity,
     };
     let report = shell.report;
     Runtime::start_development(config, move |event| report(&event))

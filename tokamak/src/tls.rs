@@ -3,11 +3,20 @@
 use std::io;
 use std::sync::{Arc, LazyLock};
 
-use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
-use rustls::crypto::CryptoProvider;
-use rustls::{ClientConfig, RootCertStore, ServerConfig};
-use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer, pem::PemObject};
+#[cfg(target_os = "android")]
+use rustls::RootCertStore;
+use rustls::client::danger::HandshakeSignatureValid;
+use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+use rustls::{
+    CertificateError, ClientConfig, DigitallySignedStruct, DistinguishedName, Error, ServerConfig,
+    SignatureScheme,
+};
+use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer, UnixTime};
+use x509_cert::Certificate;
+use x509_cert::der::{DecodePem, Encode};
 
+use crate::cert_validation::client_certificate_is_issued_by;
 use crate::certificates::ServerIdentity;
 
 static PROVIDER: LazyLock<Arc<CryptoProvider>> =
@@ -44,60 +53,98 @@ fn build_client_config() -> Result<ClientConfig, rustls::Error> {
     Ok(builder.with_no_client_auth())
 }
 
-/// Server configuration presenting `identity`, requesting (but not requiring at
-/// the TLS layer) a client certificate issued by the gateway CA.
+/// Server configuration presenting `identity`, requesting (but not requiring
+/// at the TLS layer) a client certificate that `authority`, a PEM certificate,
+/// issued.
 pub(crate) fn server_config(
     identity: &ServerIdentity,
-    ca_cert_pem: &[u8],
+    authority: &str,
 ) -> io::Result<Arc<ServerConfig>> {
     let chain = identity
         .certificate_chain
         .iter()
         .map(|certificate| CertificateDer::from(certificate.clone()))
         .collect();
-    let private_key = PrivatePkcs8KeyDer::from(with_public_key(&identity.private_key)).into();
-    let mut roots = RootCertStore::empty();
-    for authority in CertificateDer::pem_slice_iter(ca_cert_pem) {
-        roots
-            .add(authority.map_err(tls_error)?)
-            .map_err(tls_error)?;
-    }
-    let verifier =
-        rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider())
-            .allow_unauthenticated()
-            .build()
-            .map_err(tls_error)?;
+    let private_key = PrivatePkcs8KeyDer::from(identity.private_key.clone()).into();
+    let authority = Certificate::from_pem(authority.as_bytes()).map_err(tls_error)?;
+    let subject = authority
+        .tbs_certificate()
+        .subject()
+        .to_der()
+        .map_err(tls_error)?;
+    let verifier = IssuedClientCerts {
+        authority,
+        subjects: vec![DistinguishedName::from(subject)],
+        algorithms: PROVIDER.signature_verification_algorithms,
+    };
     let config = ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
         .map_err(tls_error)?
-        .with_client_cert_verifier(verifier)
+        .with_client_cert_verifier(Arc::new(verifier))
         .with_single_cert(chain, private_key)
         .map_err(tls_error)?;
     Ok(Arc::new(config))
 }
 
-/// The PKCS#8 key `pkcs8` with the public key that ring requires and that a
-/// P-256 key may leave out, as the JDK's do. Other keys are unchanged.
-fn with_public_key(pkcs8: &[u8]) -> Vec<u8> {
-    match p256::SecretKey::from_pkcs8_der(pkcs8).and_then(|key| key.to_pkcs8_der()) {
-        Ok(document) => document.as_bytes().to_vec(),
-        Err(_) => pkcs8.to_vec(),
+/// Accepts the client certificates the runtime's `authority` issued, at any
+/// date. The handshake proves possession of the certificate's key, and the
+/// runtime issues and renews the certificates itself, so the device's clock
+/// does not decide validity. Certificates from before a renewal still pass:
+/// a `WebView` keeps presenting the one it was first given.
+#[derive(Debug)]
+struct IssuedClientCerts {
+    authority: Certificate,
+    subjects: Vec<DistinguishedName>,
+    algorithms: WebPkiSupportedAlgorithms,
+}
+
+impl ClientCertVerifier for IssuedClientCerts {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &self.subjects
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, Error> {
+        if client_certificate_is_issued_by(end_entity, &self.authority) {
+            Ok(ClientCertVerified::assertion())
+        } else {
+            Err(Error::InvalidCertificate(
+                CertificateError::ApplicationVerificationFailure,
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
     }
 }
 
 fn tls_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::with_public_key;
-
-    #[test]
-    fn leaves_keys_other_than_p256_unchanged() -> Result<(), rcgen::Error> {
-        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384)?.serialize_der();
-
-        assert_eq!(with_public_key(&key), key);
-        Ok(())
-    }
 }

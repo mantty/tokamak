@@ -23,6 +23,9 @@ class TokamakActivity : Activity() {
         get() = application as TokamakApplication
     internal lateinit var webView: WebView
         private set
+    private var runtime: TokamakRuntime? = null
+    private var proxyPort: Int? = null
+    private var restoreGeneration = 0L
     private var destroyed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,6 +52,13 @@ class TokamakActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         deliver(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        restoreGeneration += 1
+        val generation = restoreGeneration
+        runtime?.let { restoreGateway(it, generation) }
     }
 
     override fun onDestroy() {
@@ -85,7 +95,33 @@ class TokamakActivity : Activity() {
             show(FAILED)
             return
         }
+        this.runtime = runtime
+        proxyPort = runtime.port
         TokamakProxy.route(this, tokamak.appHost, runtime.port) { load(runtime) }
+    }
+
+    /** Waits for the gateway and re-routes the proxy once its port moved. */
+    private fun restoreGateway(runtime: TokamakRuntime, generation: Long) {
+        Thread {
+            val result = runCatching { runtime.restoreGateway() }
+            runOnUiThread {
+                if (
+                    destroyed ||
+                    this.runtime !== runtime ||
+                    generation != restoreGeneration
+                ) return@runOnUiThread
+                result
+                    .onSuccess { port ->
+                        if (port != proxyPort) {
+                            proxyPort = port
+                            TokamakProxy.route(this, tokamak.appHost, port) { load(runtime) }
+                        }
+                    }
+                    .onFailure { error ->
+                        Log.w(TAG, "tokamak gateway could not recover", error)
+                    }
+            }
+        }.start()
     }
 
     private fun load(runtime: TokamakRuntime) {

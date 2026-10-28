@@ -223,7 +223,6 @@ impl Started {
                 host: "app.tokamak.local".to_owned(),
                 foreground: true,
                 plugins: plugins.then(|| Arc::new(Shell(sender)) as Arc<dyn PluginHandler>),
-                server_identity: None,
             },
             |_| {},
         )?;

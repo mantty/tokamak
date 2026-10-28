@@ -759,7 +759,7 @@ fn request_tasks_run_concurrently_on_tokio_blocking_workers()
 }
 
 pub(crate) fn certificates(directory: &Path) -> io::Result<Arc<Certificates>> {
-    Certificates::start(directory.join("state"), HOST.to_owned(), None)
+    Certificates::start(directory.join("state"), HOST.to_owned())
         .map(Arc::new)
         .map_err(io::Error::other)
 }

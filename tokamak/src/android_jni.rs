@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bridge::{self, Shell};
-use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime, ServerIdentity};
+use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{JNI_TRUE, jboolean, jint, jlong};
 use jni::{JNIEnv, JavaVM};
@@ -114,10 +114,9 @@ impl KotlinPlugins {
     }
 }
 
-/// Start the runtime, which delivers `start` with `foreground`, whose Worker
-/// calls `plugins`, a `TokamakRuntime.Plugins`, and whose gateway presents
-/// `server_chain`, DER certificates leaf first, with `server_key`, a PKCS#8
-/// DER key. Return an opaque handle, or throw on failure.
+/// Start the runtime, which delivers `start` with `foreground` and whose Worker
+/// calls `plugins`, a `TokamakRuntime.Plugins`. Return an opaque handle, or
+/// throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     mut env: JNIEnv,
@@ -126,19 +125,10 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     state_dir: JString,
     storage_dir: JString,
     host: JString,
-    server_chain: JObjectArray,
-    server_key: JByteArray,
     foreground: jboolean,
     plugins: JObject,
 ) -> jlong {
-    let result = shell(
-        &mut env,
-        &server_chain,
-        &server_key,
-        foreground == JNI_TRUE,
-        &plugins,
-    )
-    .and_then(|shell| {
+    let result = shell(&mut env, foreground == JNI_TRUE, &plugins).and_then(|shell| {
         start(
             &mut env,
             [&packaged_dir, &state_dir, &storage_dir, &host],
@@ -148,10 +138,9 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     into_handle(&mut env, result, "runtime startup failed")
 }
 
-/// Start the development runtime, which delivers `start` with `foreground`,
-/// whose development Worker calls `plugins`, a `TokamakRuntime.Plugins`, and
-/// whose gateway presents `server_chain` with `server_key`, as `nativeStart`
-/// takes them. Return an opaque handle, or throw on failure.
+/// Start the development runtime, which delivers `start` with `foreground` and
+/// whose development Worker calls `plugins`, a `TokamakRuntime.Plugins`.
+/// Return an opaque handle, or throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelopment(
     mut env: JNIEnv,
@@ -160,19 +149,10 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelo
     host: JString,
     endpoint: JString,
     session_token: JString,
-    server_chain: JObjectArray,
-    server_key: JByteArray,
     foreground: jboolean,
     plugins: JObject,
 ) -> jlong {
-    let result = shell(
-        &mut env,
-        &server_chain,
-        &server_key,
-        foreground == JNI_TRUE,
-        &plugins,
-    )
-    .and_then(|shell| {
+    let result = shell(&mut env, foreground == JNI_TRUE, &plugins).and_then(|shell| {
         start_development(
             &mut env,
             [&state_dir, &host, &endpoint, &session_token],
@@ -256,6 +236,52 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativePort(
     handle: jlong,
 ) -> jint {
     runtime(handle).map_or(0, |runtime| jint::from(runtime.port()))
+}
+
+/// Return the authority a server certificate for `host` must chain to, or
+/// null when tokamak does not vouch for the host.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeServerAuthority<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass,
+    handle: jlong,
+    host: JString,
+) -> JByteArray<'local> {
+    let Some(runtime) = runtime(handle) else {
+        return null_array();
+    };
+    let Ok(host) = text(&mut env, &host) else {
+        return null_array();
+    };
+    match runtime
+        .certificates()
+        .decide(&Challenge::ServerTrust { host: &host })
+    {
+        Decision::TrustAuthority(authority) => env
+            .byte_array_from_slice(&authority)
+            .unwrap_or_else(|_| null_array()),
+        _ => null_array(),
+    }
+}
+
+/// Wait for the runtime's loopback gateway and return its current port.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeRestoreGateway(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+) -> jint {
+    let Some(runtime) = runtime(handle) else {
+        let _ = env.throw_new(FAILURE, "tokamak runtime is unavailable");
+        return 0;
+    };
+    match runtime.restore_gateway() {
+        Ok(port) => jint::from(port),
+        Err(error) => {
+            let _ = env.throw_new(FAILURE, error.to_string());
+            0
+        }
+    }
 }
 
 /// `value` milliseconds, or zero when `value` is negative.
@@ -367,37 +393,11 @@ fn start_development(
     )
 }
 
-fn shell(
-    env: &mut JNIEnv,
-    server_chain: &JObjectArray,
-    server_key: &JByteArray,
-    foreground: bool,
-    plugins: &JObject,
-) -> Result<Shell, String> {
-    let server_identity =
-        server_identity(env, server_chain, server_key).map_err(|error| error.to_string())?;
+fn shell(env: &mut JNIEnv, foreground: bool, plugins: &JObject) -> Result<Shell, String> {
     Ok(Shell {
         foreground,
         plugins: Arc::new(KotlinPlugins::new(env, plugins)?),
-        server_identity: Some(server_identity),
         report,
-    })
-}
-
-/// The DER certificates in `chain`, leaf first, with the PKCS#8 DER `key`.
-fn server_identity(
-    env: &mut JNIEnv,
-    chain: &JObjectArray,
-    key: &JByteArray,
-) -> jni::errors::Result<ServerIdentity> {
-    let mut certificate_chain = Vec::new();
-    for index in 0..env.get_array_length(chain)? {
-        let certificate = JByteArray::from(env.get_object_array_element(chain, index)?);
-        certificate_chain.push(env.convert_byte_array(certificate)?);
-    }
-    Ok(ServerIdentity {
-        certificate_chain,
-        private_key: env.convert_byte_array(key)?,
     })
 }
 
@@ -475,6 +475,10 @@ fn identity<'local>(
     env.set_object_array_element(&array, 0, env.byte_array_from_slice(certificate)?)?;
     env.set_object_array_element(&array, 1, env.byte_array_from_slice(private_key)?)?;
     Ok(array)
+}
+
+fn null_array<'local>() -> JByteArray<'local> {
+    JByteArray::from(JObject::null())
 }
 
 fn null_object_array<'local>() -> JObjectArray<'local> {

@@ -533,27 +533,12 @@ fn bind_loopback(port: u16) -> io::Result<TcpListener> {
 /// it.
 fn replace_lost_listener(shared: &Shared, lost: Listener) -> Option<Listener> {
     std::mem::forget(lost.socket);
-    let replacement = Listener::bind(lost.port)
-        .or_else(|error| handle_unavailable_port(shared, lost.port, &error));
+    let replacement = Listener::bind(lost.port).or_else(|error| bind_free_port(lost.port, &error));
     publish_replacement(shared, replacement)
 }
 
-/// Ends the process once the gateway cannot bind its port again: the `WebView`
-/// trusts a certificate whose key ships in the APK, so whatever holds the port
-/// could pose as the gateway.
-#[cfg(target_os = "android")]
-fn handle_unavailable_port(shared: &Shared, port: u16, error: &io::Error) -> io::Result<Listener> {
-    shared.events.emit(Event::Failed {
-        message: format!(
-            "gateway listener could not recover: port {port} is unavailable ({error})"
-        ),
-    });
-    std::process::abort()
-}
-
 /// A listener on a free port once the gateway cannot bind `port` again.
-#[cfg(not(target_os = "android"))]
-fn handle_unavailable_port(_: &Shared, port: u16, error: &io::Error) -> io::Result<Listener> {
+fn bind_free_port(port: u16, error: &io::Error) -> io::Result<Listener> {
     Listener::bind(0).map_err(|random_error| {
         io::Error::new(
             random_error.kind(),

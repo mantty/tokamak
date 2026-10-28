@@ -560,7 +560,6 @@ fn shell(foreground: bool, plugins: TokamakPluginHandler) -> Shell {
     Shell {
         foreground,
         plugins: Arc::new(plugins),
-        server_identity: None,
         report,
     }
 }
