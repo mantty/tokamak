@@ -2,14 +2,14 @@
 
 use std::time::SystemTime;
 
-use der::{DecodePem, Encode};
+use der::{Decode, DecodePem, Encode};
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{DerSignature, VerifyingKey};
 use p256::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePublicKey};
 use x509_cert::Certificate;
 use x509_cert::der;
-use x509_cert::ext::pkix::SubjectAltName;
 use x509_cert::ext::pkix::name::GeneralName;
+use x509_cert::ext::pkix::{ExtendedKeyUsage, SubjectAltName};
 
 /// The contents of the first PEM block in `pem`.
 pub(crate) fn pem_contents(pem: &str) -> Option<Vec<u8>> {
@@ -51,13 +51,29 @@ pub(crate) fn certificate_matches_key(certificate_pem: &str, key_pem: &str) -> b
 
 pub(crate) fn certificate_is_issued_by(certificate_pem: &str, issuer_pem: &str) -> bool {
     with_certificate(certificate_pem, |certificate| {
-        with_certificate(issuer_pem, |issuer| {
-            certificate.tbs_certificate().issuer() == issuer.tbs_certificate().subject()
-                && signature_is_valid(certificate, issuer)
-        })
+        with_certificate(issuer_pem, |issuer| issued_by(certificate, issuer))
     })
     .flatten()
     .unwrap_or(false)
+}
+
+/// Whether `issuer` issued the DER `certificate` for client authentication,
+/// whatever its validity dates.
+pub(crate) fn client_certificate_is_issued_by(certificate: &[u8], issuer: &Certificate) -> bool {
+    let Ok(certificate) = Certificate::from_der(certificate) else {
+        return false;
+    };
+    let client_auth = matches!(
+        certificate.tbs_certificate().get_extension::<ExtendedKeyUsage>(),
+        Ok(Some((_, usages))) if usages.0.contains(&const_oid::db::rfc5280::ID_KP_CLIENT_AUTH)
+    );
+    client_auth && issued_by(&certificate, issuer)
+}
+
+/// Whether `issuer` names and signed `certificate`.
+fn issued_by(certificate: &Certificate, issuer: &Certificate) -> bool {
+    certificate.tbs_certificate().issuer() == issuer.tbs_certificate().subject()
+        && signature_is_valid(certificate, issuer)
 }
 
 /// The DER `SubjectPublicKeyInfo` of `certificate`.

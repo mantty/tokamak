@@ -218,7 +218,6 @@ fn closed_listener_reclaims_its_port() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-#[cfg(not(target_os = "android"))]
 fn moves_to_a_free_port_once_its_port_is_unavailable() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
@@ -557,54 +556,5 @@ fn reports_failures_until_the_gateway_stops() -> Result<(), Box<dyn std::error::
         }
     );
     assert!(events.try_recv().is_err());
-    Ok(())
-}
-
-/// Run in its own process by `ends_the_process_once_its_port_is_unavailable`.
-#[test]
-#[ignore = "ends its process"]
-#[cfg(target_os = "android")]
-fn abandons_an_unavailable_port() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let shared = shared(
-        directory.path(),
-        Arc::new(UnreachableHandler),
-        &tokio,
-        Events::new(|event| eprintln!("{event:?}")),
-    )?;
-    let occupied = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = occupied.local_addr()?.port();
-
-    let _ = replace_lost_listener(
-        &shared,
-        Listener {
-            port,
-            ..Listener::bind(0)?
-        },
-    );
-    Ok(())
-}
-
-#[test]
-#[cfg(target_os = "android")]
-fn ends_the_process_once_its_port_is_unavailable() -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::process::ExitStatusExt;
-
-    let output = std::process::Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "--ignored",
-            "--nocapture",
-            "gateway::tests::abandons_an_unavailable_port",
-        ])
-        .output()?;
-
-    let events = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.signal(), Some(libc::SIGABRT), "{events}");
-    assert!(
-        events.contains("gateway listener could not recover"),
-        "{events}"
-    );
     Ok(())
 }

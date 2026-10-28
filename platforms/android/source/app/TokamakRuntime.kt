@@ -1,7 +1,6 @@
 package com.tokamak.runtime
 
 import java.io.File
-import java.security.KeyStore
 
 /** The tokamak runtime, running for the life of the process. */
 internal class TokamakRuntime private constructor(private val handle: Long) {
@@ -27,6 +26,15 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     /** The loopback port the gateway bound. */
     val port: Int
         get() = nativePort(handle)
+
+    /**
+     * The authority a server certificate for [host] must chain to, or null
+     * when tokamak does not vouch for the host.
+     */
+    fun serverAuthority(host: String): ByteArray? = nativeServerAuthority(handle, host)
+
+    /** Wait for the runtime's loopback gateway and return its current port. */
+    fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
     /**
      * Delivers the event [name] with its encoded [payload] to the Worker's listeners, blocking
@@ -68,15 +76,14 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         }
 
         /**
-         * Start the runtime, which delivers `start` with [foreground], whose Worker calls
-         * [plugins], and whose gateway presents [server], throwing when it cannot serve the app.
+         * Start the runtime, which delivers `start` with [foreground] and whose Worker calls
+         * [plugins], throwing when it cannot serve the app.
          */
         fun start(
             packagedDir: File,
             stateDir: File,
             storageDir: File,
             host: String,
-            server: KeyStore.PrivateKeyEntry,
             foreground: Boolean,
             plugins: Plugins,
         ): TokamakRuntime =
@@ -86,8 +93,6 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
                     stateDir.path,
                     storageDir.path,
                     host,
-                    server.chain(),
-                    server.privateKey.encoded,
                     foreground,
                     plugins,
                 ),
@@ -95,15 +100,13 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
 
         /**
          * Start the runtime against a host development server, delivering `start` with
-         * [foreground], whose development Worker calls [plugins], and whose gateway presents
-         * [server].
+         * [foreground] and whose development Worker calls [plugins].
          */
         fun startDevelopment(
             stateDir: File,
             host: String,
             endpoint: String,
             sessionToken: String,
-            server: KeyStore.PrivateKeyEntry,
             foreground: Boolean,
             plugins: Plugins,
         ): TokamakRuntime =
@@ -113,16 +116,10 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
                     host,
                     endpoint,
                     sessionToken,
-                    server.chain(),
-                    server.privateKey.encoded,
                     foreground,
                     plugins,
                 ),
             )
-
-        /** The entry's certificates, leaf first, in DER. */
-        private fun KeyStore.PrivateKeyEntry.chain(): Array<ByteArray> =
-            certificateChain.map { it.encoded }.toTypedArray()
 
         @JvmStatic
         private external fun nativeStart(
@@ -130,8 +127,6 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             stateDir: String,
             storageDir: String,
             host: String,
-            serverChain: Array<ByteArray>,
-            serverKey: ByteArray,
             foreground: Boolean,
             plugins: Plugins,
         ): Long
@@ -142,11 +137,15 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             host: String,
             endpoint: String,
             sessionToken: String,
-            serverChain: Array<ByteArray>,
-            serverKey: ByteArray,
             foreground: Boolean,
             plugins: Plugins,
         ): Long
+
+        @JvmStatic
+        private external fun nativeServerAuthority(handle: Long, host: String): ByteArray?
+
+        @JvmStatic
+        private external fun nativeRestoreGateway(handle: Long): Int
 
         @JvmStatic
         private external fun nativeSetForeground(handle: Long, foreground: Boolean): Boolean

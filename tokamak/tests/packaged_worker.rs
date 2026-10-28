@@ -18,8 +18,8 @@ use rustls_pki_types::ServerName;
 use serde_json::json;
 use tokamak::{
     AssetManifest, Config, Event, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout,
-    Runtime, ServerIdentity, StorageBinding, WorkerEnvironment, WorkerManifest,
-    write_asset_manifest, write_worker, write_worker_environment,
+    Runtime, StorageBinding, WorkerEnvironment, WorkerManifest, write_asset_manifest, write_worker,
+    write_worker_environment,
 };
 
 use common::{TestResult, connect_tls, read_header_block, reset_connection, write_masked_frame};
@@ -505,39 +505,6 @@ export default {
 }
 
 #[test]
-fn trusts_the_server_certificate_the_shell_provides() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let key = KeyPair::generate()?;
-    let certificate = CertificateParams::new(vec![HOST.to_owned()])?.self_signed(&key)?;
-    let runtime = Runtime::start(
-        Config {
-            app: package(
-                temporary.path(),
-                worker_source(),
-                &WorkerEnvironment::default(),
-            )?,
-            state_dir: temporary.path().join("state"),
-            storage_dir: temporary.path().join("storage"),
-            host: HOST.to_owned(),
-            foreground: true,
-            plugins: None,
-            server_identity: Some(ServerIdentity {
-                certificate_chain: vec![certificate.der().to_vec()],
-                private_key: key.serialize_der(),
-            }),
-        },
-        |_| {},
-    )?;
-
-    assert!(
-        runtime
-            .certificates()
-            .trusts_server_certificate(HOST, &certificate.pem())
-    );
-    Ok(())
-}
-
-#[test]
 fn ends_without_a_failure_when_the_client_rejects_the_certificate() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, _, failures) = start_close_runtime(temporary.path())?;
@@ -948,7 +915,6 @@ fn start_runtime(
             host: HOST.to_owned(),
             foreground: true,
             plugins,
-            server_identity: None,
         },
         listener,
     )?;
