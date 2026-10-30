@@ -10,10 +10,10 @@
   "build": "build/index.mjs",
   "platforms": {
     "macos": {
-      "class": "TokamakNotificationsPlugin"
+      "class": "TokamakNotifications.TokamakNotificationsPlugin"
     },
     "ios": {
-      "class": "TokamakNotificationsPlugin",
+      "class": "TokamakNotifications.TokamakNotificationsPlugin",
       "plist": "apple/Info.plist"
     },
     "android": {

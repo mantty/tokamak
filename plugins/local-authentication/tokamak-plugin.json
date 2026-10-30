@@ -3,10 +3,10 @@
   "id": "local-authentication",
   "platforms": {
     "macos": {
-      "class": "TokamakLocalAuthenticationPlugin"
+      "class": "TokamakLocalAuthentication.TokamakLocalAuthenticationPlugin"
     },
     "ios": {
-      "class": "TokamakLocalAuthenticationPlugin",
+      "class": "TokamakLocalAuthentication.TokamakLocalAuthenticationPlugin",
       "plist": "apple/Info.plist"
     },
     "android": {

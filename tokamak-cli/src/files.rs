@@ -29,7 +29,28 @@ pub fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
 /// Returns an error when `from` holds anything but files and directories, or
 /// a copy fails.
 pub fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
-    for entry in WalkDir::new(from).follow_links(true).min_depth(1) {
+    copy_dir_contents_except(from, to, |_| false)
+}
+
+/// Copy the contents of the directory `from` into `to`, as `copy_dir_contents`
+/// does, leaving out each entry, with its contents, whose path in `from`
+/// `skip` matches.
+///
+/// # Errors
+///
+/// Returns an error when `from` holds anything but files and directories, or
+/// a copy fails.
+pub fn copy_dir_contents_except(
+    from: &Path,
+    to: &Path,
+    skip: impl Fn(&Path) -> bool,
+) -> Result<()> {
+    let entries = WalkDir::new(from)
+        .follow_links(true)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| !entry.path().strip_prefix(from).is_ok_and(&skip));
+    for entry in entries {
         let entry = entry.map_err(std::io::Error::other)?;
         let destination = to.join(entry.path().strip_prefix(from)?);
         let metadata = entry.metadata()?;
@@ -68,6 +89,23 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn leaves_out_skipped_entries_with_their_contents() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("source");
+        let destination = temporary.path().join("destination");
+        std::fs::create_dir_all(source.join("kept/build"))?;
+        std::fs::create_dir_all(source.join("build/outputs"))?;
+        std::fs::write(source.join("kept/build/file"), "kept")?;
+        std::fs::write(source.join("build/outputs/file"), "left out")?;
+
+        super::copy_dir_contents_except(&source, &destination, |path| path.starts_with("build"))?;
+
+        assert!(destination.join("kept/build/file").is_file());
+        assert!(!destination.join("build").exists());
         Ok(())
     }
 

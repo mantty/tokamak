@@ -397,6 +397,32 @@ fn stages_the_entry_points_of_the_runtime_parts_the_app_links() -> TestResult {
 }
 
 #[cfg(unix)]
+#[cfg(unix)]
+#[test]
+fn stages_the_family_s_lock_files_and_keeps_those_the_build_writes() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    // A build that records the lock files it received and resolves one more pin.
+    fs::write(
+        platform_pack.join("build/entrypoint"),
+        "#!/usr/bin/env bash\nset -euo pipefail\nrm -rf \"$3\"\nmkdir -p \"$3\" \"$2/lock\"\ncp -R \"$2/lock\" \"$3/received\"\nprintf 'pin\\n' >> \"$2/lock/Package.resolved\"\n",
+    )?;
+    let lock = project.join("tokamak-lock/apple/Package.resolved");
+    let received = project.join("build/macos/demo-app.app/received/Package.resolved");
+
+    build_command("macos", &project, &platform_pack)?
+        .assert()
+        .success();
+    assert_missing(&received);
+    assert_eq!(fs::read_to_string(&lock)?, "pin\n");
+
+    build_command("macos", &project, &platform_pack)?
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&received)?, "pin\n");
+    assert_eq!(fs::read_to_string(&lock)?, "pin\npin\n");
+    Ok(())
+}
+
 #[test]
 fn stages_the_app_and_its_metadata_and_runs_the_entrypoint_from_the_pack_root() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;

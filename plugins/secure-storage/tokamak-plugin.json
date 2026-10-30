@@ -3,10 +3,10 @@
   "id": "secure-storage",
   "platforms": {
     "macos": {
-      "class": "TokamakSecureStoragePlugin"
+      "class": "TokamakSecureStorage.TokamakSecureStoragePlugin"
     },
     "ios": {
-      "class": "TokamakSecureStoragePlugin",
+      "class": "TokamakSecureStorage.TokamakSecureStoragePlugin",
       "plist": "apple/Info.plist"
     },
     "android": {

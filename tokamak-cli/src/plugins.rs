@@ -11,7 +11,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use tokamak_cli::{
-    Platform, PlatformPackManifest, PluginKeyKind, copy_dir_contents, copy_file, is_valid_key,
+    Platform, PlatformPackManifest, PluginKeyKind, copy_dir_contents_except, copy_file,
+    is_valid_key,
 };
 
 use super::paths::{command_path, reset_path};
@@ -255,7 +256,8 @@ pub(crate) fn check(
 
 /// Stage each plugin's section for the pack's platform, with the keys its
 /// build script `generated`, under `destination/<id>`, and the package's
-/// directory of the platform's family, such as `apple`, as `native`.
+/// directory of the platform's family, such as `apple`, as `native`, without
+/// its build outputs.
 pub(crate) fn stage(
     plugins: &[Plugin],
     pack: &PlatformPackManifest,
@@ -272,10 +274,19 @@ pub(crate) fn stage(
         write_staged_files(&root, files)?;
         let native = plugin.root.join(family);
         if native.is_dir() {
-            copy_dir_contents(&native, &root.join("native"))?;
+            copy_dir_contents_except(&native, &root.join("native"), is_build_output)?;
         }
     }
     Ok(())
+}
+
+/// Whether `path`, in a plugin package's family directory, is a build's
+/// output or a tool's state, such as Gradle's `build` or Swift's `.build`.
+pub(crate) fn is_build_output(path: &Path) -> bool {
+    path.starts_with("build")
+        || path
+            .components()
+            .any(|component| component.as_os_str().to_string_lossy().starts_with('.'))
 }
 
 /// Writes the staged `files`, by path under `root`.
@@ -722,7 +733,8 @@ mod tests {
     }
 
     #[test]
-    fn stages_native_sources_of_plugins_with_worker_api_factories() -> TestResult {
+    fn stages_native_sources_of_plugins_with_worker_api_factories_without_build_outputs()
+    -> TestResult {
         let project = tempfile::tempdir()?;
         let plugin = install_plugin(
             project.path(),
@@ -737,6 +749,10 @@ mod tests {
         fs::create_dir_all(plugin.join("android"))?;
         fs::write(plugin.join("apple/Widgets.swift"), "native source")?;
         fs::write(plugin.join("android/Widgets.kt"), "other family")?;
+        for output in [".build/debug", ".swiftpm", "build", "Sources/build"] {
+            fs::create_dir_all(plugin.join("apple").join(output))?;
+            fs::write(plugin.join("apple").join(output).join("file"), "")?;
+        }
         let plugins = discover(project.path())?;
         let staged = project.path().join("staged");
         stage(
@@ -750,6 +766,11 @@ mod tests {
             "native source"
         );
         assert!(!staged.join("widgets/native/Widgets.kt").exists());
+        let native = staged.join("widgets/native");
+        assert!(native.join("Sources/build/file").is_file());
+        for output in [".build", ".swiftpm", "build"] {
+            assert!(!native.join(output).exists(), "{output}");
+        }
         Ok(())
     }
 

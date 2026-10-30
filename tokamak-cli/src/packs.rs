@@ -68,19 +68,26 @@ impl PlatformPack {
     }
 
     /// Describe the methods the plugin package at `plugin` exports on the
-    /// pack's `platforms` into `output`: `description.json`, and the native
-    /// files the package's family directory holds. Returns false when the
-    /// host lacks the tools describing needs, which the entrypoint says.
+    /// pack's `platforms`, which its `registration` file lists, into
+    /// `output`: `description.json`, and the native files that go beside the
+    /// registration file. Returns false when the host lacks the tools
+    /// describing needs, which the entrypoint says.
     pub(crate) fn describe(
         &self,
         plugin: &Path,
+        registration: &Path,
         output: &Path,
         platforms: &[&str],
     ) -> Result<bool> {
-        let (plugin, output) = (command_path(plugin), command_path(output));
+        let (plugin, registration, output) = (
+            command_path(plugin),
+            command_path(registration),
+            command_path(output),
+        );
         let mut arguments = vec![
             OsStr::new("describe"),
             plugin.as_os_str(),
+            registration.as_os_str(),
             output.as_os_str(),
         ];
         arguments.extend(platforms.iter().map(OsStr::new));

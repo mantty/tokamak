@@ -1,6 +1,6 @@
 //! The Apple platform pack's entrypoint, run as the CLI runs it: from a pack
-//! root holding a test runtime, a stub shell, and the real Apple tool, whose
-//! signing is faked.
+//! root holding a test runtime, a stub shell, the plugin API, and the real
+//! Apple tool, whose signing is faked.
 #![cfg(target_os = "macos")]
 
 use std::ffi::OsString;
@@ -14,6 +14,11 @@ use plist::{Dictionary, Value};
 
 const TOOL: &str = env!("CARGO_BIN_EXE_tokamak-apple-signing");
 const BUILD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../build");
+const SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../source");
+const PLUGIN_API: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../plugins/core/apple/TokamakPlugin"
+);
 
 /// A pack for one target, an app's build input, and the log of the fake tools.
 struct Fixture {
@@ -65,6 +70,21 @@ impl Fixture {
             pack.join("native-shell/TokamakShell.swift"),
             include_str!("fixtures/TokamakShell.swift"),
         )?;
+        let plugin_api = pack.join("plugin-api/TokamakPlugin");
+        fs::create_dir_all(plugin_api.join("Sources/TokamakPlugin"))?;
+        fs::copy(
+            Path::new(PLUGIN_API).join("Package.swift"),
+            plugin_api.join("Package.swift"),
+        )?;
+        for source in fs::read_dir(Path::new(PLUGIN_API).join("Sources/TokamakPlugin"))? {
+            let source = source?;
+            fs::copy(
+                source.path(),
+                plugin_api
+                    .join("Sources/TokamakPlugin")
+                    .join(source.file_name()),
+            )?;
+        }
         self.create_runtime()?;
         let log = self.log();
         let log = path_text(&log)?;
@@ -103,7 +123,7 @@ printf 'sign - %s\n' "$(cat "$bundle/{app}/worker-environment.json")" >> '{log}'
                 r#"#!/bin/sh
 set -eu
 case " $* " in
-  *" actool "*|*" swiftc "*|*" strip "*) ;;
+  *" actool "*|*" strip "*) ;;
   *) exec /usr/bin/xcrun "$@" ;;
 esac
 printf '%s\n' "$*" >> '{log}'
@@ -112,26 +132,57 @@ for argument in "$@"; do
   case "$next" in
     compile) mkdir -p "$argument" && printf assets > "$argument/Assets.car" ;;
     partial) printf '%s' '<plist version="1.0"><dict><key>CFBundleIconName</key><string>AppIcon</string></dict></plist>' > "$argument" ;;
-    output) mkdir -p "$(dirname "$argument")" && printf '#!/bin/sh\n' > "$argument" ;;
   esac
   case "$argument" in
     --compile) next=compile ;;
     --output-partial-info-plist) next=partial ;;
-    -o) next=output ;;
     *) next= ;;
   esac
 done
 "#
             ),
+        )?;
+        // Writes the app's executable where a build for the destination does.
+        write_executable(
+            &self.fake_tools().join("xcodebuild"),
+            &format!(
+                r#"#!/bin/sh
+set -eu
+if [ "$1" = -version ]; then
+  exec /usr/bin/xcodebuild "$@"
+fi
+printf 'xcodebuild %s\n' "$*" >> '{log}'
+next=
+for argument in "$@"; do
+  case "$next" in
+    derived) derived=$argument ;;
+    destination) destination=$argument ;;
+  esac
+  case "$argument" in
+    -derivedDataPath) next=derived ;;
+    -destination) next=destination ;;
+    *) next= ;;
+  esac
+done
+case "$destination" in
+  *'iOS Simulator') products=Release-iphonesimulator ;;
+  *iOS) products=Release-iphoneos ;;
+  *) products=Release ;;
+esac
+mkdir -p "$derived/Build/Products/$products"
+printf '#!/bin/sh\n' > "$derived/Build/Products/$products/App"
+"#
+            ),
         )
     }
 
-    /// A static runtime library that defines the storage entry point.
+    /// A static runtime library that defines the storage entry point, with
+    /// the runtime's header, as the pack's XCFramework.
     fn create_runtime(&self) -> Result<()> {
-        let framework = self.pack().join("frameworks/TokamakRuntime.framework");
-        fs::create_dir_all(&framework)?;
         let source = self.root.path().join("runtime.c");
         let object = self.root.path().join("runtime.o");
+        let library = self.root.path().join("libtokamak.a");
+        let headers = self.root.path().join("headers");
         fs::write(
             &source,
             "void tokamak_test(void) {}\nconst char tokamak_storage = 0;",
@@ -144,8 +195,20 @@ done
             .arg(&object))?;
         run(Command::new("xcrun")
             .args(["libtool", "-static", "-o"])
-            .arg(framework.join("TokamakRuntime"))
-            .arg(&object))
+            .arg(&library)
+            .arg(&object))?;
+        fs::create_dir_all(&headers)?;
+        for header in ["TokamakRuntime.h", "module.modulemap"] {
+            fs::copy(Path::new(SOURCE).join(header), headers.join(header))?;
+        }
+        run(Command::new("xcodebuild")
+            .arg("-create-xcframework")
+            .arg("-library")
+            .arg(&library)
+            .arg("-headers")
+            .arg(&headers)
+            .arg("-output")
+            .arg(self.pack().join("frameworks/TokamakRuntime.xcframework")))
     }
 
     fn platform(&self) -> &'static str {
@@ -207,7 +270,7 @@ done
         command
     }
 
-    /// The build command with fake `actool`, `swiftc`, `strip`, and `codesign`.
+    /// The build command with fake `actool`, `xcodebuild`, `strip`, and `codesign`.
     fn fake_build(&self) -> Result<Command> {
         let mut path = OsString::from(self.fake_tools());
         path.push(":");
@@ -310,43 +373,83 @@ fn ios_minimum() -> Result<String> {
     )
 }
 
-/// Stages the plugin `id` in `input`, whose one source, `Plugin.swift`,
-/// defines `class`.
-fn stage_plugin(input: &Path, id: &str, class: &str) -> Result<()> {
+fn macos_minimum() -> Result<String> {
+    Ok(
+        fs::read_to_string(Path::new(BUILD).join("macos-deployment-target"))?
+            .trim_end()
+            .to_owned(),
+    )
+}
+
+/// Stages the plugin `id` in `input`, a Swift package whose module `Module`,
+/// with the one source `Plugin.swift`, defines `Class`, its class
+/// `Module.Class`. Returns the package's directory.
+fn stage_plugin(input: &Path, id: &str, class: &str) -> Result<PathBuf> {
     let plugin = input.join("plugins").join(id);
-    fs::create_dir_all(plugin.join("native"))?;
+    let (module, name) = class
+        .split_once('.')
+        .context("the class names its module")?;
+    let package = plugin.join("native");
+    let (ios, macos) = (ios_minimum()?, macos_minimum()?);
+    fs::create_dir_all(package.join("Sources").join(module))?;
     fs::write(plugin.join("class"), class)?;
     fs::write(
-        plugin.join("native/Plugin.swift"),
+        package.join("Package.swift"),
         format!(
-            r#"final class {class}: TokamakPlugin {{
-  let id = "{id}"
-  init(host: TokamakHost) {{}}
-  func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply) -> (() -> Void)? {{ nil }}
+            r#"// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+  name: "{module}",
+  platforms: [.iOS("{ios}"), .macOS("{macos}")],
+  products: [.library(name: "{module}", targets: ["{module}"])],
+  dependencies: [.package(path: "../node_modules/@tokamakdev/plugin/apple/TokamakPlugin")],
+  targets: [
+    .target(name: "{module}", dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin")])
+  ]
+)
+"#
+        ),
+    )?;
+    fs::write(
+        package.join("Sources").join(module).join("Plugin.swift"),
+        format!(
+            r#"import TokamakPlugin
+
+public final class {name}: TokamakPlugin {{
+  public let id = "{id}"
+  public init(host: TokamakHost) {{}}
 }}
 "#
         ),
     )?;
-    Ok(())
+    Ok(package)
 }
 
 #[test]
 fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     let fixture = Fixture::new("macos-arm64")?;
+    // Each plugin is its own module, so their sources may share a file name.
     for (id, class) in [
-        ("location", "TokamakLocationPlugin"),
-        ("echo", "TokamakEchoPlugin"),
-        ("ping", "TokamakPingPlugin"),
+        ("location", "TokamakLocation.TokamakLocationPlugin"),
+        ("echo", "TokamakEcho.TokamakEchoPlugin"),
+        ("ping", "TokamakPing.TokamakPingPlugin"),
     ] {
         stage_plugin(&fixture.input(), id, class)?;
     }
-    // Plugins' sources may share a file name, as may a plugin's own in its
-    // directories: the build compiles each, so the registry finds every class.
+    // A plugin's package resources reach the bundle, where `Bundle.module` finds them.
     let plugin = fixture.input().join("plugins/location");
-    fs::create_dir_all(plugin.join("native/types"))?;
+    let manifest = fs::read_to_string(plugin.join("native/Package.swift"))?;
     fs::write(
-        plugin.join("native/types/Plugin.swift"),
-        "struct LocationTypes {}\n",
+        plugin.join("native/Package.swift"),
+        manifest.replace(
+            r#"dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin")])"#,
+            r#"dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin")], resources: [.copy("regions.json")])"#,
+        ),
+    )?;
+    fs::write(
+        plugin.join("native/Sources/TokamakLocation/regions.json"),
+        "[]",
     )?;
     fs::write(
         plugin.join("plist"),
@@ -383,6 +486,101 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     assert!(plist.contains_key("NSLocationUsageDescription"));
     assert!(!plist.contains_key("CFBundleIconName"));
     assert!(!bundle.join("Contents/Resources/Assets.car").exists());
+    let mut resource_bundles = Vec::new();
+    for entry in fs::read_dir(bundle.join("Contents/Resources"))? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".bundle") {
+            resource_bundles.push(name);
+        }
+    }
+    assert_eq!(resource_bundles, ["TokamakLocation_TokamakLocation.bundle"]);
+    Ok(())
+}
+
+#[test]
+fn pins_the_versions_of_plugins_dependencies_in_the_lock_file() -> Result<()> {
+    let fixture = Fixture::new("macos-arm64")?;
+    // A package that a plugin depends on by URL, as on a remote host.
+    let greeting = fixture.root.path().join("greeting");
+    fs::create_dir_all(greeting.join("Sources/Greeting"))?;
+    fs::write(
+        greeting.join("Package.swift"),
+        format!(
+            r#"// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+  name: "Greeting",
+  platforms: [.iOS("{}"), .macOS("{}")],
+  products: [.library(name: "Greeting", targets: ["Greeting"])],
+  targets: [.target(name: "Greeting")]
+)
+"#,
+            ios_minimum()?,
+            macos_minimum()?
+        ),
+    )?;
+    let release = |version: &str| -> Result<()> {
+        fs::write(
+            greeting.join("Sources/Greeting/Greeting.swift"),
+            format!("public let greeting = \"{version}\"\n"),
+        )?;
+        for arguments in [
+            &["add", "."][..],
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                version,
+            ],
+            &["tag", version],
+        ] {
+            run(Command::new("git").arg("-C").arg(&greeting).args(arguments))?;
+        }
+        Ok(())
+    };
+    run(Command::new("git").args(["init", "-q"]).arg(&greeting))?;
+    release("1.0.0")?;
+    // The lock file records the location as SwiftPM resolves it, without links.
+    let greeting = fs::canonicalize(&greeting)?;
+    let plugin = stage_plugin(&fixture.input(), "hello", "TokamakHello.TokamakHelloPlugin")?;
+    let manifest = fs::read_to_string(plugin.join("Package.swift"))?;
+    fs::write(
+        plugin.join("Package.swift"),
+        manifest
+            .replace(
+                "dependencies: [.package(path:",
+                &format!(
+                    "dependencies: [.package(url: \"file://{}\", from: \"1.0.0\"), .package(path:",
+                    path_text(&greeting)?
+                ),
+            )
+            .replace(
+                r#"dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin")]"#,
+                r#"dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin"), .product(name: "Greeting", package: "greeting")]"#,
+            ),
+    )?;
+    let lock = fixture.input().join("lock/Package.resolved");
+    let built = |page: &str| -> Result<String> {
+        fs::write(fixture.input().join("app/index.html"), page)?;
+        run(&mut fixture.build())?;
+        Ok(fs::read_to_string(&lock)?)
+    };
+
+    let first = built("<html>1</html>")?;
+    assert!(first.contains("\"1.0.0\""), "{first}");
+
+    // A newer release leaves the build at the pinned version until the lock file goes.
+    release("1.1.0")?;
+    assert!(built("<html>2</html>")?.contains("\"1.0.0\""));
+    fs::remove_file(&lock)?;
+    assert!(built("<html>3</html>")?.contains("\"1.1.0\""));
+    // A lock file that pins another version, such as an earlier commit's, is followed.
+    fs::write(&lock, &first)?;
+    assert!(built("<html>4</html>")?.contains("\"1.0.0\""));
     Ok(())
 }
 
@@ -550,22 +748,28 @@ fn rejects_invalid_icons_plugin_classes_and_build_numbers() -> Result<()> {
         )
     );
 
-    let plugin = fixture.input().join("plugins/location");
-    fs::create_dir_all(&plugin)?;
-    fs::write(plugin.join("class"), "Location-Plugin")?;
-    assert!(
-        failure(&mut fixture.fake_build()?)?
-            .contains("plugin 'location' has invalid macos class 'Location-Plugin'")
-    );
+    let plugin = stage_plugin(
+        &fixture.input(),
+        "location",
+        "TokamakLocation.TokamakLocationPlugin",
+    )?;
+    let class = fixture.input().join("plugins/location/class");
+    for invalid in ["Location-Plugin", "TokamakLocationPlugin"] {
+        fs::write(&class, invalid)?;
+        let message = failure(&mut fixture.fake_build()?)?;
+        assert!(
+            message.contains(&format!(
+                "plugin 'location' has invalid macos class '{invalid}'; name it with its module, as Module.Class"
+            )),
+            "{message}"
+        );
+    }
 
-    // Swift needs unique file names, which staged sources from different paths can share.
-    stage_plugin(&fixture.input(), "location", "TokamakLocationPlugin")?;
-    fs::create_dir_all(plugin.join("native/regions"))?;
-    fs::write(plugin.join("native/regions/Store.swift"), "")?;
-    fs::write(plugin.join("native/regions-Store.swift"), "")?;
+    fs::write(&class, "TokamakLocation.TokamakLocationPlugin")?;
+    fs::remove_file(plugin.join("Package.swift"))?;
     assert!(
         failure(&mut fixture.fake_build()?)?
-            .contains("stages as location-regions-Store.swift, as another source does")
+            .contains("plugin 'location' has no Swift package, apple/Package.swift")
     );
     Ok(())
 }
@@ -590,7 +794,7 @@ fn reuses_the_bundle_while_only_the_environment_and_signing_settings_change() ->
         build(r#"{"API":"test"}"#, "1", "TEAM")?;
         build(r#"{"API":"production"}"#, "2", "OTHER")?;
 
-        assert_eq!(fixture.logged(" swiftc ")?.len(), 1, "{target}");
+        assert_eq!(fixture.logged("xcodebuild build ")?.len(), 1, "{target}");
         assert_eq!(fixture.logged(" actool ")?.len(), 1, "{target}");
         let signatures = fixture.logged("sign ")?;
         assert_eq!(signatures.len(), 2, "{target}");
@@ -614,7 +818,7 @@ fn reuses_the_bundle_while_only_the_environment_and_signing_settings_change() ->
         // A changed pack rebuilds the bundle.
         fs::write(fixture.pack().join("native-shell/Extra.swift"), "")?;
         build(r#"{"API":"production"}"#, "2", "OTHER")?;
-        assert_eq!(fixture.logged(" swiftc ")?.len(), 2, "{target}");
+        assert_eq!(fixture.logged("xcodebuild build ")?.len(), 2, "{target}");
     }
     Ok(())
 }

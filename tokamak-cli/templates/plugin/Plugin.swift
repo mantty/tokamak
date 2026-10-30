@@ -1,15 +1,16 @@
 import Foundation
+import TokamakPlugin
 
-final class {{class}}: TokamakPlugin {
+public final class {{class}}: TokamakPlugin {
   /// A message the native implementation echoed.
   struct Echo: Codable {
     let message: String
   }
 
-  let id = "{{id}}"
-  let host: TokamakHost
+  public let id = "{{id}}"
+  public let host: TokamakHost
 
-  init(host: TokamakHost) {
+  public init(host: TokamakHost) {
     self.host = host
   }
 

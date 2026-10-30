@@ -35,13 +35,12 @@ case "$target" in
     ;;
 esac
 
-framework=$output/frameworks/TokamakRuntime.framework
 rm -rf "$output"
 mkdir -p \
   "$output/build" \
-  "$framework/Headers" \
-  "$framework/Modules" \
+  "$output/frameworks" \
   "$output/native-shell" \
+  "$output/plugin-api" \
   "$output/tools"
 
 for host_target in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -75,8 +74,15 @@ if [[ ! -f "$library" ]]; then
   exit 1
 fi
 
-cp "$library" "$framework/TokamakRuntime"
-cp "$workspace/platforms/apple/source/TokamakRuntime.h" "$framework/Headers/TokamakRuntime.h"
-cp "$workspace/platforms/apple/source/module.modulemap" "$framework/Modules/module.modulemap"
+# The runtime is a static library that apps link as a binary package target.
+headers=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-headers.XXXXXX")
+trap 'rm -rf "$headers"' EXIT
+cp "$workspace/platforms/apple/source/TokamakRuntime.h" "$workspace/platforms/apple/source/module.modulemap" "$headers/"
+xcodebuild -create-xcframework -library "$library" -headers "$headers" \
+  -output "$output/frameworks/TokamakRuntime.xcframework" > /dev/null
 cp "$workspace/platforms/apple/source/"*.swift "$output/native-shell/"
+# The plugin API apps build plugins against.
+plugin_api=$workspace/plugins/core/apple/TokamakPlugin
+mkdir "$output/plugin-api/TokamakPlugin"
+cp -R "$plugin_api/Package.swift" "$plugin_api/Sources" "$output/plugin-api/TokamakPlugin/"
 cp "$build/entrypoint" "$build"/*-deployment-target "$output/build/"

@@ -10,6 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokamak_cli::Platform;
+use walkdir::WalkDir;
 
 use super::packs::PlatformPack;
 use super::plugins;
@@ -129,8 +130,8 @@ struct Alternative {
 }
 
 /// A family of platforms that share a plugin's native code, in the package directory of its
-/// name, and its registration file, which lists the methods the Worker calls and the events it
-/// receives.
+/// name, which holds one registration file, listing the methods the Worker calls and the events
+/// it receives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum Family {
     Apple,
@@ -159,11 +160,11 @@ impl Family {
         }
     }
 
-    /// The registration file's path in the plugin package.
+    /// The registration file's name.
     pub(crate) fn registration(self) -> &'static str {
         match self {
-            Self::Apple => "apple/Exports.swift",
-            Self::Android => "android/Exports.kt",
+            Self::Apple => "Exports.swift",
+            Self::Android => "Exports.kt",
         }
     }
 
@@ -199,10 +200,10 @@ pub(crate) fn generate(root: &Path, family: Family) -> Result<()> {
 /// differ from what this host generates. Families this host cannot describe are not checked.
 pub(crate) fn check(root: &Path) -> Result<()> {
     let mut stale = Vec::new();
-    let registered = Family::ALL
-        .into_iter()
-        .filter(|family| root.join(family.registration()).is_file());
-    for family in registered {
+    for family in Family::ALL {
+        if registration(root, family)?.is_none() {
+            continue;
+        }
         let Ok(files) = generated(root, family)?.inspect_err(|reason| {
             eprintln!("{} files are not checked: {reason}", family.name());
         }) else {
@@ -243,12 +244,13 @@ fn generated(root: &Path, family: Family) -> Result<Result<Files, String>> {
     if platforms.is_empty() {
         bail!("tokamak-plugin.json has no {} platform", family.name());
     }
-    if !root.join(family.registration()).is_file() {
+    let Some(registration) = registration(root, family)? else {
         bail!(
-            "{} is missing: it lists the native methods the Worker calls and the events it receives",
+            "{} has no {}: it lists the native methods the Worker calls and the events it receives",
+            family.name(),
             family.registration()
         );
-    }
+    };
     let pack = match PlatformPack::installed(family.platform())? {
         Ok(pack) => pack,
         Err(missing) => return Ok(Err(missing)),
@@ -258,7 +260,7 @@ fn generated(root: &Path, family: Family) -> Result<Result<Files, String>> {
         .iter()
         .map(|platform| platform.namespace())
         .collect::<Vec<_>>();
-    if !pack.describe(root, output.path(), &namespaces)? {
+    if !pack.describe(root, &root.join(&registration), output.path(), &namespaces)? {
         return Ok(Err(format!(
             "this host cannot describe {} plugins",
             family.name()
@@ -269,20 +271,66 @@ fn generated(root: &Path, family: Family) -> Result<Result<Files, String>> {
             .context("the platform pack wrote an invalid description")?;
     description
         .validate()
-        .with_context(|| format!("{} cannot be called from TypeScript", family.registration()))?;
+        .with_context(|| format!("{registration} cannot be called from TypeScript"))?;
     let mut files = vec![(
         family.api().to_owned(),
         typescript(&description, &plugin.id, family, &platforms).into_bytes(),
     )];
+    // The native files go beside the registration file.
+    let directory = registration
+        .rsplit_once('/')
+        .map_or("", |(directory, _)| directory);
     for entry in fs::read_dir(output.path())? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if name != "description.json" {
-            files.push((format!("{}/{name}", family.name()), fs::read(entry.path())?));
+            files.push((format!("{directory}/{name}"), fs::read(entry.path())?));
         }
     }
     files.sort();
     Ok(Ok(files))
+}
+
+/// The path, in the plugin package at `root`, of the registration file `family`'s directory
+/// holds outside its build outputs, if it holds one.
+fn registration(root: &Path, family: Family) -> Result<Option<String>> {
+    let directory = root.join(family.name());
+    if !directory.is_dir() {
+        return Ok(None);
+    }
+    let entries = WalkDir::new(&directory)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| {
+            !entry
+                .path()
+                .strip_prefix(&directory)
+                .is_ok_and(plugins::is_build_output)
+        });
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type().is_file() && entry.file_name() == family.registration() {
+            let path = entry.path().strip_prefix(root)?;
+            found.push(
+                path.components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            );
+        }
+    }
+    found.sort();
+    match found.as_slice() {
+        [] => Ok(None),
+        [path] => Ok(Some(path.clone())),
+        paths => bail!(
+            "{} has more than one {}: {}",
+            family.name(),
+            family.registration(),
+            paths.join(", ")
+        ),
+    }
 }
 
 /// Names the generated API declares or imports, which a described type cannot have.

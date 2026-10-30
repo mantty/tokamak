@@ -39,18 +39,24 @@ struct PlatformUnion {
 }
 
 /// Describes the methods and events the registration file `exports` lists,
-/// resolved in each platform's symbol graph.
+/// resolved in each platform's symbol graphs: the plugin module's and those of
+/// the modules it uses, such as the plugin API's.
 public func describe(
-  exports: String, file: String, symbolGraphs: [(platform: String, graph: Data)]
+  exports: String, file: String, symbolGraphs: [(platform: String, graphs: [Data])]
 ) throws(DescribeError) -> Described {
   let registrations = try readRegistrations(exports, file: file)
   var resolved: [Resolved] = []
-  for (platform, data) in symbolGraphs {
-    let graph: SymbolGraph
-    do {
-      graph = try JSONDecoder().decode(SymbolGraph.self, from: data)
-    } catch {
-      throw DescribeError("the \(platform) symbol graph cannot be read: \(error)")
+  for (platform, graphs) in symbolGraphs {
+    var graph = SymbolGraph(symbols: [], relationships: [])
+    for data in graphs {
+      do {
+        let module = try JSONDecoder().decode(SymbolGraph.self, from: data)
+        graph = SymbolGraph(
+          symbols: graph.symbols + module.symbols,
+          relationships: graph.relationships + module.relationships)
+      } catch {
+        throw DescribeError("a \(platform) symbol graph cannot be read: \(error)")
+      }
     }
     var resolver = try Resolver(graph, plugin: registrations.plugin)
     var exports: [Export?] = []

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokamak_cli::{Platform, PlatformPackManifest};
+use tokamak_cli::{Platform, PlatformPackManifest, copy_dir_contents};
 
 use super::packs::PlatformPack;
 use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
@@ -230,6 +230,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     .context("write development metadata")?;
 
     let bundle_dir = output_path(&build_dir, request.platform, &app.slug);
+    stage_locks(request.project, request.platform, &input)?;
     request
         .pack
         .build(&input, &bundle_dir, &platform_settings.pack_environment)
@@ -239,6 +240,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
                 request.platform.display_name()
             )
         })?;
+    keep_locks(request.project, request.platform, &input)?;
     Ok(DevelopmentSummary {
         platform: request.platform,
         bundle_dir,
@@ -309,6 +311,7 @@ fn build_platform(build: &PlatformBuild, context: &BuildContext<'_>) -> Result<B
     .context("write platform build metadata")?;
 
     let output = output_path(context.build_dir, platform, &app.slug);
+    stage_locks(context.project, platform, &input)?;
     pack.build(&input, &output, &platform_settings.pack_environment)
         .with_context(|| {
             format!(
@@ -316,6 +319,7 @@ fn build_platform(build: &PlatformBuild, context: &BuildContext<'_>) -> Result<B
                 platform.display_name()
             )
         })?;
+    keep_locks(context.project, platform, &input)?;
     Ok(BuildSummary {
         platform,
         bundle_dir: output,
@@ -434,6 +438,34 @@ fn prepare_platform_input(build_dir: &Path, platform: Platform) -> Result<PathBu
     })?;
     fs::create_dir_all(input.join("app"))?;
     Ok(input)
+}
+
+/// The project's lock files of `platform`'s family, which pin the versions
+/// of plugins' native dependencies that builds resolve.
+fn locks(project: &Path, platform: Platform) -> PathBuf {
+    project.join("tokamak-lock").join(platform.family())
+}
+
+/// Stages the project's lock files of `platform`'s family as the build
+/// input's `lock`.
+fn stage_locks(project: &Path, platform: Platform, input: &Path) -> Result<()> {
+    let locks = locks(project, platform);
+    if locks.is_dir() {
+        copy_dir_contents(&locks, &input.join("lock"))
+            .with_context(|| format!("stage {}", locks.display()))?;
+    }
+    Ok(())
+}
+
+/// Keeps the lock files a build left in its input's `lock` in the project.
+fn keep_locks(project: &Path, platform: Platform, input: &Path) -> Result<()> {
+    let written = input.join("lock");
+    if written.is_dir() {
+        let locks = locks(project, platform);
+        copy_dir_contents(&written, &locks)
+            .with_context(|| format!("update {}", locks.display()))?;
+    }
+    Ok(())
 }
 
 fn output_path(build_dir: &Path, platform: Platform, app_slug: &str) -> PathBuf {

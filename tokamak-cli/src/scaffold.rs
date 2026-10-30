@@ -26,7 +26,8 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
         })
         .collect::<String>();
     let factory = format!("create{class}");
-    let class = format!("Tokamak{class}Plugin");
+    let module = format!("Tokamak{class}");
+    let class = format!("{module}Plugin");
     let names = families
         .iter()
         .map(|(family, _)| family.name())
@@ -43,6 +44,7 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
             .replace("{{id}}", id)
             .replace("{{factory}}", &factory)
             .replace("{{class}}", &class)
+            .replace("{{module}}", &module)
             .replace("{{family}}", names.first().copied().unwrap_or_default())
             .replace("{{families}}", &names.join(", "))
             .replace("{{imports}}", &imports)
@@ -64,7 +66,7 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
     let mut sections = Map::new();
     for (family, named) in &families {
         sections.extend(write_native(
-            directory, *family, named, id, &class, &template,
+            directory, *family, named, id, &module, &class, &template,
         )?);
     }
     write_json(
@@ -163,50 +165,65 @@ fn write_typescript(
     Ok(())
 }
 
-/// Writes the native endpoint of `family`, with its registration file and the files generated
-/// from it, returning its class's manifest sections, by platform.
+/// Writes the native package of `family`, the `module` with its registration file and the files
+/// generated from it, returning its class's manifest sections, by platform.
 fn write_native(
     directory: &Path,
     family: Family,
     platforms: &[Platform],
     id: &str,
+    module: &str,
     class: &str,
     template: &dyn Fn(&str) -> String,
 ) -> Result<Map<String, Value>> {
-    let native = directory.join(family.name());
-    fs::create_dir(&native)?;
     let (files, class) = match family {
-        Family::Apple => (
-            [
-                (
-                    "Plugin.swift",
-                    include_str!("../templates/plugin/Plugin.swift"),
-                ),
-                (
-                    "Exports.swift",
-                    include_str!("../templates/plugin/Exports.swift"),
-                ),
-                (
-                    "Exports.generated.swift",
-                    include_str!("../templates/plugin/Exports.generated.swift"),
-                ),
-            ],
-            class.to_owned(),
-        ),
+        Family::Apple => {
+            let sources = format!("Sources/{module}");
+            (
+                vec![
+                    (
+                        "Package.swift".to_owned(),
+                        include_str!("../templates/plugin/Package.swift"),
+                    ),
+                    (
+                        format!("{sources}/Plugin.swift"),
+                        include_str!("../templates/plugin/Plugin.swift"),
+                    ),
+                    (
+                        format!("{sources}/Exports.swift"),
+                        include_str!("../templates/plugin/Exports.swift"),
+                    ),
+                    (
+                        format!("{sources}/Exports.generated.swift"),
+                        include_str!("../templates/plugin/Exports.generated.swift"),
+                    ),
+                ],
+                format!("{module}.{class}"),
+            )
+        }
         Family::Android => (
-            [
-                ("Plugin.kt", include_str!("../templates/plugin/Plugin.kt")),
-                ("Exports.kt", include_str!("../templates/plugin/Exports.kt")),
+            vec![
                 (
-                    "Exports.generated.kt",
+                    "Plugin.kt".to_owned(),
+                    include_str!("../templates/plugin/Plugin.kt"),
+                ),
+                (
+                    "Exports.kt".to_owned(),
+                    include_str!("../templates/plugin/Exports.kt"),
+                ),
+                (
+                    "Exports.generated.kt".to_owned(),
                     include_str!("../templates/plugin/Exports.generated.kt"),
                 ),
             ],
             format!("tokamak.plugins.{class}"),
         ),
     };
-    for (name, source) in files {
-        fs::write(native.join(name), template(source))?;
+    let native = directory.join(family.name());
+    for (path, source) in files {
+        let path = native.join(path);
+        fs::create_dir_all(path.parent().unwrap_or(&native))?;
+        fs::write(path, template(source))?;
     }
     fs::write(
         directory.join(family.api()),

@@ -34,7 +34,7 @@ pub struct TokamakIdentity {
 }
 
 /// A call or subscription of the Worker on the shell's plugin `plugin`.
-pub type TokamakPluginRequest = unsafe extern "C" fn(
+pub type TokamakPluginRequestCallback = unsafe extern "C" fn(
     context: *mut c_void,
     id: u64,
     plugin: *const c_char,
@@ -52,10 +52,10 @@ pub struct TokamakPluginHandler {
     /// Passed to each function.
     pub context: *mut c_void,
     /// Calls `method` of `plugin` with encoded arguments.
-    pub call: TokamakPluginRequest,
+    pub call: TokamakPluginRequestCallback,
     /// Calls `method` of `plugin` with encoded arguments and a body, whose
     /// chunks the shell pulls with [`tokamak_runtime_pull`].
-    pub call_with_body: TokamakPluginRequest,
+    pub call_with_body: TokamakPluginRequestCallback,
     /// Passes the chunk of the call `id`'s body that the shell pulled: bytes,
     /// or an encoded error when `failed`, and `done` with the last.
     pub chunk: unsafe extern "C" fn(
@@ -67,7 +67,7 @@ pub struct TokamakPluginHandler {
         done: bool,
     ),
     /// Subscribes to `method` of `plugin` with encoded arguments.
-    pub subscribe: TokamakPluginRequest,
+    pub subscribe: TokamakPluginRequestCallback,
     /// Cancels the pending call or subscription `id`.
     pub cancel: unsafe extern "C" fn(context: *mut c_void, id: u64),
 }
@@ -117,7 +117,7 @@ impl TokamakPluginHandler {
     /// names no plugin, so passes as empty.
     fn request(
         &self,
-        function: TokamakPluginRequest,
+        function: TokamakPluginRequestCallback,
         id: u64,
         plugin: &str,
         method: &str,
