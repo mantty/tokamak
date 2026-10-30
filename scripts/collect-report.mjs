@@ -107,6 +107,11 @@ function test() {
   const r = run("cargo", ["test", "--workspace", "--exclude", "windows-shell"]);
   const out = (r.stdout ?? "") + (r.stderr ?? "");
   const fails = [...out.matchAll(/(\d+) failed/g)].reduce((a, m) => a + Number(m[1]), 0);
+  if (r.status !== 0) {
+    // The report only counts failures; the log keeps why they failed.
+    const lines = out.split("\n").filter((line) => /^error|FAILED|panicked|failures:/.test(line));
+    console.error(lines.slice(0, 40).join("\n"));
+  }
   write("test", { test: section(r.status === 0 ? "passed" : "failed", fails, 0) });
 }
 
