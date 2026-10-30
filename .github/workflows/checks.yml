@@ -11,7 +11,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: tokamak-checks-${{ github.ref }}
+  group: tokamak-report-checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
