@@ -1896,18 +1896,23 @@ mod tests {
     }
 
     /// Serializes `value` and parses it back as the profile at `path`.
-    fn parsed_profile(platform: Platform, path: &str, value: &Value) -> anyhow::Result<Profile> {
+    fn parsed_profile(
+        platform: Platform,
+        path: &str,
+        value: &Value,
+    ) -> anyhow::Result<crate::Profile> {
         let mut bytes = Vec::new();
         value.to_writer_xml(&mut bytes)?;
         parse_profile(platform, Path::new(path), &bytes)
     }
 
     /// The profile of `identity`'s `team_id` for `bundle_id`.
+    #[cfg(target_os = "macos")]
     fn team_profile(
         identity: &Identity,
         team_id: &str,
         bundle_id: &str,
-    ) -> anyhow::Result<Profile> {
+    ) -> anyhow::Result<crate::Profile> {
         let mut value = profile_value(&format!("{team_id}.{bundle_id}"), "DEVICE");
         let root = value
             .as_dictionary_mut()
@@ -1924,13 +1929,14 @@ mod tests {
     }
 
     /// An expired profile of `team_id` for `bundle_id`, named `name`.
+    #[cfg(target_os = "macos")]
     fn expired_profile(
         name: &str,
         team_id: &str,
         bundle_id: &str,
         certificate: Vec<u8>,
     ) -> Profile {
-        Profile {
+        crate::Profile {
             path: Path::new(&format!("{}.mobileprovision", name.to_lowercase())).to_owned(),
             id: name.to_lowercase(),
             name: name.to_owned(),
