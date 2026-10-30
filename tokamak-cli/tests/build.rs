@@ -351,6 +351,7 @@ fn assert_missing(path: &Path) {
     assert!(!path.exists(), "{} exists", path.display());
 }
 
+#[cfg(unix)]
 fn read_json(path: &Path) -> TestResult<serde_json::Value> {
     Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
 }
@@ -435,6 +436,7 @@ fn stages_the_family_s_lock_files_and_keeps_those_the_build_writes() -> TestResu
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn stages_the_app_and_its_metadata_and_runs_the_entrypoint_from_the_pack_root() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
