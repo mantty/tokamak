@@ -2,7 +2,9 @@
   "minTokens": 50,
   "minLines": 5,
   "threshold": 90,
-  "reporters": ["json"],
+  "reporters": [
+    "json"
+  ],
   "output": "reports",
   "silent": true,
   "absolute": false,
@@ -15,6 +17,14 @@
     "**/pnpm-lock.yaml",
     "**/package-lock.json",
     "**/*.generated.*",
-    "**/fixture/**"
+    "**/fixture/**",
+    "**/tests/**",
+    "**/test/**",
+    "**/*tests.rs",
+    "**/*test.rs",
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/test-setup.*",
+    "**/__tests__/**"
   ]
 }
