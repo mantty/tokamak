@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Builds a concise PR comment comparing reports/ against main's committed reports.
+// Builds a single PR comment from reports/: each check section's result,
+// compared against main's committed reports.
 // Usage: node scripts/check-comment.mjs <project>
 // Writes the comment to .check-comment.md and exits 0; comment content states failures.
 import { execFileSync } from "node:child_process";
@@ -22,32 +23,38 @@ function reportFor(kind, fromGit) {
   return null;
 }
 
-function summarize(report) {
-  if (!report) return `${dash}`;
-  const parts = Object.entries(report.sections ?? {}).map(([name, s]) => {
-    const n = (s.errors ?? 0) + (s.warnings ?? 0);
-    return `${name}: ${s.status}${n ? ` (${s.errors ?? 0}e/${s.warnings ?? 0}w)` : ""}`;
-  });
-  const failed = Object.values(report.sections ?? {}).some((s) => s.status === "failed");
-  return `${failed ? "\u274c failed" : "\u2705 passed"} \u2014 ${parts.join("; ")}`;
+function cell(section) {
+  if (!section) return dash;
+  const errors = section.errors ?? 0;
+  const warnings = section.warnings ?? 0;
+  const detail = errors || warnings ? ` (${errors}e/${warnings}w)` : "";
+  return section.status === "failed" ? `\u274c failed${detail}` : `\u2705 passed${detail}`;
 }
 
 let anyFailed = false;
-const rows = kinds.map((kind) => {
+const rows = [];
+for (const kind of kinds) {
   const current = reportFor(kind, false);
+  if (!current || !Object.keys(current.sections ?? {}).length) {
+    rows.push(`| ${kind} | | ${dash} | missing |`);
+    continue;
+  }
   const main = reportFor(kind, true);
-  if (current && Object.values(current.sections ?? {}).some((s) => s.status === "failed")) anyFailed = true;
-  return `| ${kind} | ${summarize(main)} | ${summarize(current)} |`;
-});
+  for (const [name, section] of Object.entries(current.sections)) {
+    if (section.status === "failed") anyFailed = true;
+    rows.push(`| ${kind} | ${name} | ${cell(main?.sections?.[name])} | ${cell(section)} |`);
+  }
+}
 
+const head = execFileSync("git", ["rev-parse", "--short", "HEAD"]).toString().trim();
 const body = [
   "<!-- check-results -->",
   `## Check results \u2014 ${project}`,
   "",
-  `Checks ${anyFailed ? "**failed**" : "passed"} against the current PR head.`,
+  `Checks ${anyFailed ? "**failed**" : "passed"} at \`${head}\`.`,
   "",
-  "| report | main | this PR |",
-  "|---|---|---|",
+  "| report | section | main | this PR |",
+  "|---|---|---|---|",
   ...rows,
   "",
   "<!-- end-check-results -->",
