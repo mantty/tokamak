@@ -11,7 +11,7 @@ use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
 use super::vite::VitePlugin;
 use super::worker_graph::{CompiledWorker, WorkerGraph};
 use super::wrangler_config::WranglerConfig;
-use super::{paths, plugins, project, settings};
+use super::{lock, paths, plugins, project, settings};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -25,6 +25,8 @@ pub(crate) struct BuildRequest {
     /// `--build`; `TOKAMAK_BUILD` applies without it.
     pub(crate) build_command: Option<String>,
     pub(crate) skip_project_build: bool,
+    /// `--update-lock`: resolve plugins' native dependencies afresh.
+    pub(crate) update_lock: bool,
 }
 
 pub(crate) struct BuildSummary {
@@ -61,6 +63,7 @@ struct BuildContext<'a> {
     workers: &'a [CompiledWorker<'a>],
     plugins: &'a [plugins::Plugin],
     version: &'a str,
+    update_lock: bool,
 }
 
 /// A platform whose pack is loaded and whose settings are resolved.
@@ -165,6 +168,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         workers: &workers,
         plugins,
         version: &version,
+        update_lock: request.update_lock,
     };
 
     builds
@@ -230,6 +234,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     .context("write development metadata")?;
 
     let bundle_dir = output_path(&build_dir, request.platform, &app.slug);
+    lock::stage(request.project, request.platform.family(), &input, false)?;
     request
         .pack
         .build(&input, &bundle_dir, &platform_settings.pack_environment)
@@ -239,6 +244,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
                 request.platform.display_name()
             )
         })?;
+    lock::keep(request.project, request.platform.family(), &input)?;
     Ok(DevelopmentSummary {
         platform: request.platform,
         bundle_dir,
@@ -309,6 +315,12 @@ fn build_platform(build: &PlatformBuild, context: &BuildContext<'_>) -> Result<B
     .context("write platform build metadata")?;
 
     let output = output_path(context.build_dir, platform, &app.slug);
+    lock::stage(
+        context.project,
+        platform.family(),
+        &input,
+        context.update_lock,
+    )?;
     pack.build(&input, &output, &platform_settings.pack_environment)
         .with_context(|| {
             format!(
@@ -316,6 +328,7 @@ fn build_platform(build: &PlatformBuild, context: &BuildContext<'_>) -> Result<B
                 platform.display_name()
             )
         })?;
+    lock::keep(context.project, platform.family(), &input)?;
     Ok(BuildSummary {
         platform,
         bundle_dir: output,

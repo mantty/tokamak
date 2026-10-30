@@ -21,17 +21,19 @@ typedef struct {
   TokamakBytes private_key;
 } TokamakIdentity;
 
-typedef void (*TokamakPluginRequest)(void *context, uint64_t id,
-                                     const char *plugin, const char *method,
-                                     const uint8_t *payload, size_t payload_len);
+typedef void (*TokamakPluginRequestCallback)(void *context, uint64_t id,
+                                             const char *plugin,
+                                             const char *method,
+                                             const uint8_t *payload,
+                                             size_t payload_len);
 
 typedef struct {
   void *context;
-  TokamakPluginRequest call;
-  TokamakPluginRequest call_with_body;
+  TokamakPluginRequestCallback call;
+  TokamakPluginRequestCallback call_with_body;
   void (*chunk)(void *context, uint64_t id, const uint8_t *payload,
                 size_t payload_len, bool failed, bool done);
-  TokamakPluginRequest subscribe;
+  TokamakPluginRequestCallback subscribe;
   void (*cancel)(void *context, uint64_t id);
 } TokamakPluginHandler;
 

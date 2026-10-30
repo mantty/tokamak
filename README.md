@@ -720,6 +720,16 @@ reject with `NotSupportedError`. Each family's events are there too, as
 functions that register listeners of that family's events alone, which the
 plugin's `/events` entry combines.
 
+Plugins' native code can depend on Swift packages and Maven artifacts. A build
+resolves them, as Swift Package Manager or Gradle resolves any project's
+dependencies, and records the versions in `tokamak.lock` in the project, which
+you commit. Apple builds use the recorded versions and record any that change,
+as Xcode does with `Package.resolved`. Android builds use each recorded
+version, or a later one that a dependency requires, as Gradle's lenient
+dependency locking does, and record versions when `tokamak.lock` has none for
+Android. `tok build <platform> --update-lock` resolves the
+platform family's dependencies afresh and records the new versions.
+
 A plugin can also run Worker code through [events](#events), such as
 `onPush` from `@tokamakdev/plugin-notifications/events` for a data-only push
 notification, or `onLocationUpdate` and `onRegionTransition` from
@@ -897,10 +907,17 @@ into `platform-pack.json`, and `tok` passes each setting to the entrypoint as
 entrypoint from the pack root, where it reads the pack's runtime and shell.
 
 `tok plugin generate` and `tok plugin check` run the entrypoint as
-`describe PLUGIN OUTPUT PLATFORM...`. It compiles the plugin package at
-`PLUGIN` for each platform, and writes the registered methods'
-`description.json` and the native dispatch into `OUTPUT`. It exits with 69
-when the host lacks the tools to compile the plugin.
+`describe PLUGIN REGISTRATION OUTPUT PLATFORM...`. It compiles the plugin
+package at `PLUGIN` for each platform, and writes the methods and events its
+registration file `REGISTRATION` lists into `OUTPUT`, as `description.json`
+and the native dispatch. It exits with 69 when the host lacks the tools to
+compile the plugin.
+
+A build's input holds the lock files of its platform family, from the app's
+`tokamak.lock`, in `lock/`. The entrypoint resolves plugins' dependencies as
+they pin, and leaves in `lock/` the lock files the build resolved, which `tok`
+records in `tokamak.lock`. Without lock files, as after `--update-lock`, it
+resolves them afresh.
 
 Each pack declares its minimum OS versions once:
 `platforms/apple/build/ios-deployment-target` and `macos-deployment-target`, and

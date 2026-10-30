@@ -10,18 +10,14 @@
   "build": "build/index.mjs",
   "platforms": {
     "macos": {
-      "class": "TokamakNotificationsPlugin"
+      "class": "TokamakNotifications.TokamakNotificationsPlugin"
     },
     "ios": {
-      "class": "TokamakNotificationsPlugin",
+      "class": "TokamakNotifications.TokamakNotificationsPlugin",
       "plist": "apple/Info.plist"
     },
     "android": {
-      "class": "com.tokamak.plugins.notifications.TokamakNotificationsPlugin",
-      "manifest": "android/AndroidManifest.xml",
-      "dependencies": [
-        "com.google.firebase:firebase-messaging:25.1.3"
-      ]
+      "class": "com.tokamak.plugins.notifications.TokamakNotificationsPlugin"
     }
   },
   "api": {

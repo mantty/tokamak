@@ -38,10 +38,10 @@
   "build": "build/index.mjs",
   "platforms": {
     "macos": {
-      "class": "TokamakLocationPlugin"
+      "class": "TokamakLocation.TokamakLocationPlugin"
     },
     "ios": {
-      "class": "TokamakLocationPlugin"
+      "class": "TokamakLocation.TokamakLocationPlugin"
     },
     "android": {
       "class": "com.tokamak.plugins.location.TokamakLocationPlugin"

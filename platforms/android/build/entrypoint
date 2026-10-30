@@ -4,11 +4,9 @@ set -euo pipefail
 # The CLI runs the entrypoint from the pack root.
 pack=$PWD
 
-# The build tools of apps and of describing plugins. Coroutines are the version
-# androidx.lifecycle brings, so plugins' coroutines add no code.
+# The build tools of apps and of describing plugins.
 agp_version=8.7.3
 kotlin_version=2.1.0
-coroutines_version=1.9.0
 
 # The start of a Gradle project's settings.gradle: the repositories it
 # resolves plugins and dependencies from.
@@ -22,7 +20,6 @@ pluginManagement {
   }
 }
 dependencyResolutionManagement {
-  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
   repositories {
     google()
     mavenCentral()
@@ -32,7 +29,10 @@ EOF
 }
 
 # The start of a Gradle project's build.gradle: the build tools its modules
-# apply.
+# apply, and the Kotlin options every module compiles with. Interface default
+# methods compile into the interface, not into each implementing class, which
+# incremental builds do not recompile when a Tokamak interface in another
+# module gains or changes one.
 gradle_plugins() {
   cat <<EOF
 plugins {
@@ -40,18 +40,30 @@ plugins {
   id 'com.android.library' version '$agp_version' apply false
   id 'org.jetbrains.kotlin.android' version '$kotlin_version' apply false
 }
+
+subprojects {
+  plugins.withId('org.jetbrains.kotlin.android') {
+    kotlin {
+      jvmToolchain(17)
+      compilerOptions {
+        freeCompilerArgs.add('-Xjvm-default=all')
+      }
+    }
+  }
+}
 EOF
 }
 
-# Describes the methods PLUGIN/android/Exports.kt exports into
+# Describes the methods REGISTRATION, the plugin's Exports.kt, exports into
 # OUTPUT/description.json, with the dispatch that serves them,
-# OUTPUT/Exports.generated.kt. A JVM unit test of the plugin, compiled with
-# the plugin API and its dependencies, runs the registration and reflects on
-# the methods it lists.
+# OUTPUT/Exports.generated.kt. A JVM unit test, which depends on the plugin's
+# module, runs the registration and reflects on the methods it lists. The
+# plugin's module builds outside its directory, without the dispatch
+# describing regenerates.
 describe() {
-  local plugin=$1 output=$2
-  if [[ $# -ne 3 || $3 != android ]]; then
-    echo "Android plugins run on android, not ${*:3}" >&2
+  local plugin=$1 registration=$2 output=$3
+  if [[ $# -ne 4 || $4 != android ]]; then
+    echo "Android plugins run on android, not ${*:4}" >&2
     exit 2
   fi
   local sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
@@ -62,15 +74,28 @@ describe() {
   # Global, for the exit trap.
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-describe.XXXXXX")
   trap 'rm -rf "$temporary"' EXIT
-  local module=$temporary/plugin
-  mkdir -p "$module"
+  local describer=$temporary/describer plugin_build=$temporary/plugin-build
+  mkdir -p "$describer"
   {
     gradle_repositories
-    printf '%s\n' "rootProject.name = 'tokamak-describe'" "include ':plugin'"
+    printf '%s\n' "rootProject.name = 'tokamak-describe'" "include ':tokamak-plugin', ':plugin', ':describer'"
+    printf "project(':tokamak-plugin').projectDir = file('%s')\n" "$pack/plugin-api"
+    printf "project(':plugin').projectDir = file('%s')\n" "$plugin/android"
   } > "$temporary/settings.gradle"
-  gradle_plugins > "$temporary/build.gradle"
+  {
+    gradle_plugins
+    cat <<EOF
+
+project(':plugin') {
+  layout.buildDirectory.set(file('$plugin_build'))
+  tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    exclude { it.file == file('${registration%/*}/Exports.generated.kt') }
+  }
+}
+EOF
+  } > "$temporary/build.gradle"
   printf '%s\n' 'android.useAndroidX=true' > "$temporary/gradle.properties"
-  cat > "$module/build.gradle" <<EOF
+  cat > "$describer/build.gradle" <<EOF
 plugins {
   id 'com.android.library'
   id 'org.jetbrains.kotlin.android'
@@ -79,9 +104,7 @@ plugins {
 android {
   namespace 'tokamak.describe'
   compileSdk 35
-  // The plugin's own files, so compiler errors name them.
   sourceSets {
-    main.kotlin.srcDirs = ['$pack/native-shell/plugin', '$plugin/android']
     test.kotlin.srcDirs = ['$pack/describer']
   }
   defaultConfig {
@@ -91,35 +114,22 @@ android {
     unitTests.returnDefaultValues = true
     unitTests.all {
       systemProperty 'tokamak.output', '$output'
-      systemProperty 'tokamak.classes', layout.buildDirectory.dir('tmp/kotlin-classes/debug').get().asFile.path
+      systemProperty 'tokamak.classes', '$plugin_build/tmp/kotlin-classes/debug'
       outputs.upToDateWhen { false }
     }
   }
 }
 
-kotlin {
-  jvmToolchain(17)
-  compilerOptions {
-    freeCompilerArgs.add('-Xjvm-default=all')
-  }
-}
-
-// The dispatch describing regenerates.
-tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-  exclude '**/Exports.generated.kt'
-}
-
-def manifest = new groovy.json.JsonSlurper().parse(file('$plugin/tokamak-plugin.json'))
 dependencies {
-  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version'
-  (manifest.platforms?.android?.dependencies ?: []).each { implementation it }
+  testImplementation project(':tokamak-plugin')
+  testImplementation project(':plugin')
   testImplementation 'junit:junit:4.13.2'
   testImplementation 'org.jetbrains.kotlin:kotlin-reflect:$kotlin_version'
   // android.jar's org.json is stubs; the describer writes JSON with the reference implementation.
   testImplementation 'org.json:json:20250517'
 }
 EOF
-  gradle --quiet --project-dir "$temporary" :plugin:testDebugUnitTest
+  gradle --quiet --project-dir "$temporary" :describer:testDebugUnitTest
   if [[ -f "$output/error" ]]; then
     cat "$output/error" >&2
     rm "$output/error"
@@ -132,7 +142,7 @@ if [[ $# -ge 1 && $1 == describe ]]; then
 fi
 
 if [[ $# -ne 3 || $1 != build ]]; then
-  echo "usage: entrypoint build INPUT OUTPUT | entrypoint describe PLUGIN OUTPUT android" >&2
+  echo "usage: entrypoint build INPUT OUTPUT | entrypoint describe PLUGIN REGISTRATION OUTPUT android" >&2
   exit 2
 fi
 
@@ -197,6 +207,7 @@ assets=$app/src/main/assets/app
 kotlin=$app/src/main/kotlin/com/tokamak/runtime
 plugin_api=$project/tokamak-plugin
 plugin_modules=$project/plugins
+generated_modules=$project/generated
 # The oldest Android API level the app supports.
 min_sdk=$(<"$pack/build/min-sdk")
 
@@ -269,26 +280,12 @@ xml_escape() {
       -e "s/'/\&apos;/g"
 }
 
-rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$app/user" "$plugin_api" "$plugin_modules" "$output"
-mkdir -p "$native" "$assets" "$kotlin" "$app/src/main/res" "$plugin_api/src/main/kotlin"
+rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$app/user" "$plugin_api" "$plugin_modules" "$generated_modules" "$output"
+mkdir -p "$native" "$assets" "$kotlin" "$app/src/main/res" "$plugin_modules" "$generated_modules"
 cp -R "$input/app/." "$assets/"
 link_runtime
 cp -R "$pack/native-shell/app/." "$kotlin/"
-cp -R "$pack/native-shell/plugin/." "$plugin_api/src/main/kotlin/"
-cat > "$plugin_api/build.gradle" <<EOF
-plugins {
-  id 'com.android.library'
-  id 'org.jetbrains.kotlin.android'
-}
-
-android {
-  namespace 'com.tokamak.runtime.plugin'
-}
-
-dependencies {
-  api 'org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version'
-}
-EOF
+cp -R "$pack/plugin-api" "$plugin_api"
 
 has_icon=false
 if [[ -n "$icon" ]]; then
@@ -302,44 +299,47 @@ if [[ -n "$icon" ]]; then
   has_icon=true
 fi
 
-# Each plugin is a library module, so its manifest merges below the app's and
-# its dependencies stay its own. Its class is a Kotlin class name in a package,
-# which the registry creates, and its dependencies are Maven coordinates.
+# Each plugin's Gradle module is a library module of the app, so its manifest
+# merges below the app's and its dependencies resolve with the app's. Its class
+# is a Kotlin class name in a package, which the registry creates. The
+# manifest and raw resources its build script generates are a library module of
+# their own.
 kotlin_class='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$'
-maven_coordinate='^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$'
 registry=$kotlin/TokamakPluginRegistry.kt
 printf '%s\n\n%s\n%s\n' 'package com.tokamak.runtime' 'internal fun tokamakPlugins(app: TokamakApplication): List<TokamakPlugin> =' '    listOf(' > "$registry"
 shopt -s nullglob
 raw_names=" "
-plugin_includes=
-plugin_dependencies=
+module_includes=
+module_dependencies=
+# Includes the module $1 in the build, as a dependency of the app.
+include_module() {
+  module_includes+="include '$1'"$'\n'
+  module_dependencies+="  implementation project('$1')"$'\n'
+}
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
-  plugin_includes+="include ':plugins:$plugin_id'"$'\n'
-  plugin_dependencies+="  implementation project(':plugins:$plugin_id')"$'\n'
   class=$(cat "$plugin/class" 2>/dev/null || true)
   if [[ ! "$class" =~ $kotlin_class ]]; then
     echo "plugin '$plugin_id' has invalid android class '$class'" >&2
     exit 1
   fi
+  if [[ ! -f "$plugin/native/build.gradle.kts" && ! -f "$plugin/native/build.gradle" ]]; then
+    echo "plugin '$plugin_id' has no Gradle module, android/build.gradle.kts" >&2
+    exit 1
+  fi
+  cp -R "$plugin/native" "$plugin_modules/$plugin_id"
+  include_module ":plugins:$plugin_id"
   # A plugin that exports methods runs behind the dispatch generated for it,
   # whose companion object converts its values for its host.
-  if [[ -f "$plugin/native/Exports.kt" ]]; then
+  if [[ -n "$(find "$plugin/native" -name Exports.kt -print -quit)" ]]; then
     printf '        %sDispatch(app.host("%s", %sDispatch)),\n' "$class" "$plugin_id" "$class" >> "$registry"
   else
     printf '        %s(app.host("%s")),\n' "$class" "$plugin_id" >> "$registry"
   fi
-  module=$plugin_modules/$plugin_id
-  mkdir -p "$module/src/main/kotlin"
-  if [[ -d "$plugin/native" ]]; then
-    while IFS= read -r -d '' source; do
-      relative=${source#"$plugin/native/"}
-      mkdir -p "$module/src/main/kotlin/$(dirname "$relative")"
-      cp "$source" "$module/src/main/kotlin/$relative"
-    done < <(find "$plugin/native" -name '*.kt' -print0)
-  fi
+  generated=$generated_modules/$plugin_id
   if [[ -f "$plugin/manifest" ]]; then
-    cp "$plugin/manifest" "$module/src/main/AndroidManifest.xml"
+    mkdir -p "$generated/src/main"
+    cp "$plugin/manifest" "$generated/src/main/AndroidManifest.xml"
   fi
   for resource in "$plugin/raw"/*; do
     [[ -f "$resource" ]] || continue
@@ -351,56 +351,60 @@ for plugin in "$input/plugins"/*/; do
       exit 1
     fi
     raw_names+=" ${name%%.*} "
-    mkdir -p "$module/src/main/res/raw"
-    cp "$resource" "$module/src/main/res/raw/$name"
+    mkdir -p "$generated/src/main/res/raw"
+    cp "$resource" "$generated/src/main/res/raw/$name"
   done
-  {
-    printf '%s\n' 'plugins {' "  id 'com.android.library'" "  id 'org.jetbrains.kotlin.android'"
-    printf '%s\n\n' '}'
-    printf '%s\n' 'android {'
-    printf "  namespace 'tokamak.plugins.%s'\n" "${plugin_id//-/_}"
-    printf '%s\n\n' '}'
-    printf '%s\n' 'dependencies {' "  implementation project(':tokamak-plugin')"
-    for dependency in "$plugin/dependencies"/*; do
-      coordinate=$(cat "$dependency")
-      if [[ ! "$coordinate" =~ $maven_coordinate ]]; then
-        echo "plugin '$plugin_id' has invalid android dependency '$coordinate'; use group:artifact:version" >&2
-        exit 1
-      fi
-      printf "  implementation '%s'\n" "$coordinate"
-    done
-    printf '%s\n' '}'
-  } > "$module/build.gradle"
+  if [[ -d "$generated" ]]; then
+    cat > "$generated/build.gradle" <<EOF
+plugins {
+  id 'com.android.library'
+}
+
+android {
+  namespace 'tokamak.generated.${plugin_id//-/_}'
+  compileSdk 35
+  defaultConfig {
+    minSdk $min_sdk
+  }
+}
+EOF
+    include_module ":generated:$plugin_id"
+  fi
 done
 printf '%s\n' '    )' >> "$registry"
 
 {
   gradle_repositories
   printf '%s\n' "rootProject.name = 'tokamak'" "include ':app', ':tokamak-plugin'"
-  printf '%s' "$plugin_includes"
+  printf '%s' "$module_includes"
 } > "$project/settings.gradle"
 
+# Every module's dependencies resolve to at least the versions the app's lock
+# pins, in Gradle's lock files. The lock is lenient because Gradle can resolve
+# a locked build differently from the build that wrote the lock
+# (gradle/gradle#21396). Without a lock, the build writes one, resolving every
+# module's compile and runtime classpaths, which debug and release builds use.
+lock=$input/lock
+gradle_arguments=("-Ptokamak.version=$version" ":app:lint$task" ":app:assemble$task")
+if [[ ! -d "$lock" ]]; then
+  gradle_arguments+=(--write-locks tokamakLockDependencies)
+  mkdir -p "$lock"
+fi
 {
   gradle_plugins
   cat <<EOF
 
 subprojects {
   plugins.withType(com.android.build.gradle.api.AndroidBasePlugin) {
-    android {
-      compileSdk 35
-      defaultConfig {
-        minSdk $min_sdk
-      }
+    dependencyLocking {
+      lockAllConfigurations()
+      lockMode = LockMode.LENIENT
+      lockFile = file('$lock/' + path.substring(1).replace(':', '.') + '.lockfile')
     }
-  }
-  plugins.withId('org.jetbrains.kotlin.android') {
-    kotlin {
-      jvmToolchain(17)
-      // Interface default methods compile into the interface, not into each
-      // implementing class, which incremental builds do not recompile when a
-      // Tokamak interface in another module gains or changes one.
-      compilerOptions {
-        freeCompilerArgs.add('-Xjvm-default=all')
+    tasks.register('tokamakLockDependencies') {
+      def classpaths = configurations.matching { it.name.endsWith('CompileClasspath') || it.name.endsWith('RuntimeClasspath') }
+      doLast {
+        classpaths.each { it.incoming.resolutionResult.root }
       }
     }
   }
@@ -417,9 +421,11 @@ plugins {
 
 android {
   namespace 'com.tokamak.runtime'
+  compileSdk 35
 
   defaultConfig {
     applicationId '$identifier'
+    minSdk $min_sdk
     targetSdk 35
     versionCode 1
     versionName providers.gradleProperty('tokamak.version').get()
@@ -450,7 +456,7 @@ dependencies {
   implementation 'androidx.webkit:webkit:1.12.1'
   implementation project(':tokamak-plugin')
 EOF
-printf '%s}\n' "$plugin_dependencies" >> "$project/app/build.gradle"
+printf '%s}\n' "$module_dependencies" >> "$project/app/build.gradle"
 
 if [[ -n "$user_manifest" ]]; then
   mkdir -p "$app/user"
@@ -499,6 +505,6 @@ printf '%s\n' \
   '-keepclassmembers class * implements com.tokamak.runtime.TokamakRuntime$Plugins { *; }' \
   > "$app/tokamak-rules.pro"
 
-gradle --no-daemon "-Ptokamak.version=$version" ":app:lint$task" ":app:assemble$task" --project-dir "$project"
+gradle --no-daemon "${gradle_arguments[@]}" --project-dir "$project"
 mkdir -p "$(dirname "$output")"
 cp "$app/build/outputs/apk/$variant/app-$variant.apk" "$output"

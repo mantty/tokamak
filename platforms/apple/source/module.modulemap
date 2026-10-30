@@ -1,4 +1,4 @@
-framework module TokamakRuntime {
-  umbrella header "TokamakRuntime.h"
+module TokamakRuntime {
+  header "TokamakRuntime.h"
   export *
 }

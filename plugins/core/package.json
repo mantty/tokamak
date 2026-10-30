@@ -17,7 +17,11 @@
     "./capabilities": "./src/capabilities.mjs"
   },
   "files": [
-    "src"
+    "src",
+    "apple/TokamakPlugin/Package.swift",
+    "apple/TokamakPlugin/Sources",
+    "android/build.gradle.kts",
+    "android/src"
   ],
   "publishConfig": {
     "access": "public"

@@ -68,7 +68,7 @@ private fun registration(classes: File): TokamakExports<*> {
         .filter { TokamakExports::class.java.isAssignableFrom(it) && !it.isInterface }
         .toList()
     val registration = registrations.singleOrNull()
-        ?: throw DescribeError("android/Exports.kt declares one object that implements TokamakExports, not ${registrations.size}")
+        ?: throw DescribeError("Exports.kt declares one object that implements TokamakExports, not ${registrations.size}")
     return registration.kotlin.objectInstance as? TokamakExports<*>
         ?: throw DescribeError("${registration.simpleName} is an object")
 }

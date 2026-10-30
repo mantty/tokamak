@@ -4,8 +4,9 @@ import Foundation
 // tokamak-swift-describe EXPORTS OUTPUT PLATFORM=SYMBOL-GRAPH...
 //
 // Describes the methods the registration file EXPORTS lists, resolved in each
-// platform's symbol graph, into OUTPUT/description.json, and writes the
-// dispatch that serves them to OUTPUT/Exports.generated.swift.
+// platform's symbol graphs, into OUTPUT/description.json, and writes the
+// dispatch that serves them to OUTPUT/Exports.generated.swift. A platform
+// named more than once has each of its graphs.
 let arguments = CommandLine.arguments.dropFirst()
 guard arguments.count >= 3 else {
   FileHandle.standardError.write(
@@ -15,11 +16,16 @@ guard arguments.count >= 3 else {
 let exports = URL(fileURLWithPath: arguments[arguments.startIndex])
 let output = URL(fileURLWithPath: arguments[arguments.startIndex + 1])
 do {
-  let symbolGraphs = try arguments.dropFirst(2).map { argument in
-    let (platform, path) = (argument.prefix { $0 != "=" }, argument.drop { $0 != "=" }.dropFirst())
-    return (
-      platform: String(platform), graph: try Data(contentsOf: URL(fileURLWithPath: String(path)))
-    )
+  var symbolGraphs: [(platform: String, graphs: [Data])] = []
+  for argument in arguments.dropFirst(2) {
+    let platform = String(argument.prefix { $0 != "=" })
+    let graph = try Data(
+      contentsOf: URL(fileURLWithPath: String(argument.drop { $0 != "=" }.dropFirst())))
+    if let index = symbolGraphs.firstIndex(where: { $0.platform == platform }) {
+      symbolGraphs[index].graphs.append(graph)
+    } else {
+      symbolGraphs.append((platform, [graph]))
+    }
   }
   let described = try describe(
     exports: try String(contentsOf: exports, encoding: .utf8), file: exports.path,

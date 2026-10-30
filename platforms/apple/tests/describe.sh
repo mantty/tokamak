@@ -9,6 +9,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 apple=$root/platforms/apple
 fixture=$apple/tests/fixture
+sources=$fixture/apple/Sources/TokamakExample
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 
@@ -19,34 +20,56 @@ describer=(swift build --package-path "$apple/describer")
 packs=$temporary/packs
 target=macos-$(uname -m | sed 's/x86_64/x64/')
 pack=$packs/$target
-framework=$pack/frameworks/TokamakRuntime.framework
-mkdir -p "$pack/build" "$pack/native-shell" "$pack/tools" "$framework/Headers" "$framework/Modules"
+mkdir -p "$pack/build" "$pack/plugin-api/TokamakPlugin" "$pack/tools"
 cp "$apple/build/entrypoint" "$apple/build/"*-deployment-target "$pack/build/"
-cp "$apple/source/"*.swift "$pack/native-shell/"
-cp "$apple/source/TokamakRuntime.h" "$framework/Headers/"
-cp "$apple/source/module.modulemap" "$framework/Modules/"
+cp -R "$root/plugins/core/apple/TokamakPlugin/Package.swift" "$root/plugins/core/apple/TokamakPlugin/Sources" \
+  "$pack/plugin-api/TokamakPlugin/"
 cp "$("${describer[@]}" --show-bin-path)/tokamak-swift-describe" "$pack/tools/"
 printf '#!/bin/sh\n' > "$pack/tools/tokamak-apple-signing"
 chmod +x "$pack/tools/tokamak-apple-signing"
 
 output=$temporary/output
 mkdir "$output"
-(cd "$pack" && bash build/entrypoint describe "$fixture" "$output" ios macos)
+(cd "$pack" && bash build/entrypoint describe "$fixture" "$sources/Exports.swift" "$output" ios macos)
 
 node -e '
   const { readFileSync } = require("node:fs");
   const [actual, expected] = process.argv.slice(1).map(path => JSON.parse(readFileSync(path, "utf8")));
   require("node:assert/strict").deepEqual(actual, expected);
 ' "$output/description.json" "$root/plugins/core/tests/fixtures/description.json"
-diff -u "$fixture/apple/Exports.generated.swift" "$output/Exports.generated.swift"
-xcrun swift-format lint --strict "$fixture/apple/"*.swift
+diff -u "$sources/Exports.generated.swift" "$output/Exports.generated.swift"
+xcrun swift-format lint --strict "$fixture/apple/Package.swift" "$sources/"*.swift
 
-xcrun swiftc -swift-version 5 -parse-as-library -F "$pack/frameworks" -module-cache-path "$temporary/cache" \
-  "$apple/source/TokamakPlugins.swift" "$apple/source/TokamakOrigin.swift" \
-  "$apple/source/TokamakResources.swift" "$apple/source/TokamakControls.swift" \
-  "$apple/source/TokamakExports.swift" "$fixture/apple/"*.swift "$apple/tests/dispatch.swift" \
-  -o "$temporary/dispatch"
-"$temporary/dispatch"
+# The dispatch tests run in a package that depends on the fixture's, staged
+# beside the plugin API at the path its dependency names.
+packages=$temporary/packages
+mkdir -p "$packages/node_modules/@tokamakdev/plugin/apple" "$packages/dispatch/Sources/DispatchTests"
+ln -s "$pack/plugin-api/TokamakPlugin" "$packages/node_modules/@tokamakdev/plugin/apple/TokamakPlugin"
+cp -R "$fixture/apple" "$packages/example"
+cp "$apple/tests/dispatch.swift" "$packages/dispatch/Sources/DispatchTests/"
+cat > "$packages/dispatch/Package.swift" <<EOF
+// swift-tools-version: 5.9
+
+import PackageDescription
+
+let package = Package(
+  name: "DispatchTests",
+  platforms: [.macOS("14.0")],
+  dependencies: [
+    .package(path: "$packages/node_modules/@tokamakdev/plugin/apple/TokamakPlugin"),
+    .package(path: "$packages/example"),
+  ],
+  targets: [
+    .executableTarget(
+      name: "DispatchTests",
+      dependencies: [
+        .product(name: "TokamakPlugin", package: "TokamakPlugin"),
+        .product(name: "TokamakExample", package: "example"),
+      ])
+  ]
+)
+EOF
+swift run --quiet --package-path "$packages/dispatch"
 
 cargo build --quiet --manifest-path "$root/Cargo.toml" -p tokamak-cli
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml")
@@ -54,8 +77,9 @@ printf '{"tokamakVersion": "%s", "target": "%s", "variables": {}, "pluginKeys": 
   > "$pack/platform-pack.json"
 # A new plugin starts with the files the pack generates, as do first-party ones.
 "$root/target/debug/tok" plugin new "$temporary/device-tools" --platforms ios,macos > /dev/null
-for registration in "$temporary/device-tools/apple/Exports.swift" "$root"/plugins/*/apple/Exports.swift; do
-  checked=$(cd "${registration%/apple/Exports.swift}" && TOKAMAK_PLATFORM_PACK_PATH=$packs "$root/target/debug/tok" plugin check 2>&1) ||
+for plugin in "$temporary/device-tools" "$root"/plugins/*/; do
+  [[ -f "$plugin/tokamak-plugin.json" && -d "$plugin/apple" ]] || continue
+  checked=$(cd "$plugin" && TOKAMAK_PLATFORM_PACK_PATH=$packs "$root/target/debug/tok" plugin check 2>&1) ||
     { echo "$checked" >&2; exit 1; }
   # The stand-in pack describes apple plugins, so they are checked, not skipped.
   if [[ $checked == *"apple files are not checked"* ]]; then

@@ -12,13 +12,14 @@ if [[ $# -eq 1 && $1 == certs ]]; then
   exec "$apple_tool" inventory
 fi
 
-# Describes the methods PLUGIN/apple/Exports.swift exports on each PLATFORM
-# into OUTPUT/description.json, with the dispatch that serves them,
-# OUTPUT/Exports.generated.swift. The compiler's symbol graph of the plugin,
-# built with the shell for each platform, gives the methods' types.
+# Describes the methods the plugin's registration file REGISTRATION exports
+# on each PLATFORM into OUTPUT/description.json, with the dispatch that serves
+# them, OUTPUT/Exports.generated.swift. The compiler's symbol graphs of the
+# plugin's module and the plugin API, built for each platform, give the
+# methods' types.
 describe() {
-  local plugin=$1 output=$2
-  shift 2
+  local plugin=$1 registration=$2 output=$3
+  shift 3
   if ! xcrun --sdk iphonesimulator --show-sdk-path > /dev/null 2>&1; then
     echo "Describing an Apple plugin needs Xcode" >&2
     exit 69
@@ -26,56 +27,56 @@ describe() {
   # Global, for the exit trap.
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-describe.XXXXXX")
   trap 'rm -rf "$temporary"' EXIT
-  printf '%s\n' 'func tokamakPlugins(app: TokamakApp) -> [any TokamakPlugin] { [] }' > "$temporary/registry.swift"
-  local sources=("$pack/native-shell"/*.swift "$temporary/registry.swift") source
-  while IFS= read -r -d '' source; do
-    [[ ${source##*/} == Exports.generated.swift ]] || sources+=("$source")
-  done < <(find "$plugin/apple" -name '*.swift' -print0 | sort -z)
-  local graphs=() compiles=() platform sdk triple
+  local platform destination class module packages graphs=() builds=()
   for platform in "$@"; do
     case "$platform" in
-      ios)
-        sdk=iphonesimulator
-        triple=$(uname -m)-apple-ios$(<"$pack/build/ios-deployment-target")-simulator
-        ;;
-      macos)
-        sdk=macosx
-        triple=$(uname -m)-apple-macos$(<"$pack/build/macos-deployment-target")
-        ;;
+      ios) destination='generic/platform=iOS Simulator' ;;
+      macos) destination='generic/platform=macOS' ;;
       *)
         echo "Apple plugins run on ios and macos, not $platform" >&2
         exit 2
         ;;
     esac
-    mkdir "$temporary/$platform"
-    # The platforms compile at once, each into its own log.
-    xcrun --sdk "$sdk" swiftc -emit-module -module-name TokamakDescribed -swift-version 5 \
-      -target "$triple" -F "$pack/frameworks" -module-cache-path "$temporary/cache" \
-      -emit-module-path "$temporary/$platform/TokamakDescribed.swiftmodule" \
-      -emit-symbol-graph -emit-symbol-graph-dir "$temporary/$platform" \
-      -symbol-graph-minimum-access-level private "${sources[@]}" > "$temporary/$platform.log" 2>&1 &
-    compiles+=("$!")
-    graphs+=("$platform=$temporary/$platform/TokamakDescribed.symbols.json")
+    class=$(plutil -extract "platforms.$platform.class" raw -o - "$plugin/tokamak-plugin.json")
+    module=${class%%.*}
+    # Each platform builds its own copy of the plugin's package, staged as the
+    # app's build stages it, without the dispatch describing regenerates.
+    packages=$temporary/$platform/packages
+    mkdir -p "$packages/node_modules/@tokamakdev/plugin/apple"
+    cp -R "$pack/plugin-api/TokamakPlugin" "$packages/node_modules/@tokamakdev/plugin/apple/"
+    rsync -a --exclude .build --exclude .swiftpm "$plugin/apple/" "$packages/plugin/"
+    find "$packages/plugin" -name Exports.generated.swift -delete
+    # The platforms build at once, each into its own log.
+    (
+      cd "$packages/plugin"
+      xcodebuild build -quiet -scheme "$module" -destination "$destination" \
+        -derivedDataPath "$temporary/$platform/build" \
+        -skipPackagePluginValidation -skipMacroValidation \
+        ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+        "OTHER_SWIFT_FLAGS=\$(inherited) -emit-symbol-graph -emit-symbol-graph-dir $temporary/$platform -symbol-graph-minimum-access-level private"
+    ) > "$temporary/$platform.log" 2>&1 &
+    builds+=("$!")
+    graphs+=("$platform=$temporary/$platform/$module.symbols.json" "$platform=$temporary/$platform/TokamakPlugin.symbols.json")
   done
   # The platforms report the same diagnostics, so only the first failure's
   # show, or else the first platform's warnings.
   local platforms=("$@") index failed=
-  for index in "${!compiles[@]}"; do
-    if ! wait "${compiles[index]}" && [[ -z $failed ]]; then
+  for index in "${!builds[@]}"; do
+    if ! wait "${builds[index]}" && [[ -z $failed ]]; then
       failed=$index
     fi
   done
   cat "$temporary/${platforms[${failed:-0}]}.log" >&2
   [[ -z $failed ]] || exit 1
-  "$pack/tools/tokamak-swift-describe" "$plugin/apple/Exports.swift" "$output" "${graphs[@]}"
+  "$pack/tools/tokamak-swift-describe" "$registration" "$output" "${graphs[@]}"
 }
-if [[ $# -ge 4 && $1 == describe ]]; then
+if [[ $# -ge 5 && $1 == describe ]]; then
   describe "${@:2}"
   exit
 fi
 
 if [[ $# -ne 3 || $1 != build ]]; then
-  echo "usage: entrypoint build INPUT OUTPUT | entrypoint describe PLUGIN OUTPUT PLATFORM... | entrypoint certs" >&2
+  echo "usage: entrypoint build INPUT OUTPUT | entrypoint describe PLUGIN REGISTRATION OUTPUT PLATFORM... | entrypoint certs" >&2
   exit 2
 fi
 
@@ -89,7 +90,6 @@ target=$(cat "$metadata/target")
 project_dir=$(cat "$metadata/project-dir")
 minimum=$(<"$pack/build/$platform-deployment-target")
 output_parent=$(dirname "$output")
-module_cache=$output_parent/.tokamak/module-cache
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-apple.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
 
@@ -197,7 +197,7 @@ fi
 
 rm -f "$bundle_key_file" "$icon_info_plist"
 rm -rf "$bundle"
-mkdir -p "$executable_dir" "$app_dir" "$module_cache"
+mkdir -p "$executable_dir" "$app_dir" "$output_parent/.tokamak"
 cp -R "$input/app/." "$app_dir/"
 
 if [[ -n "$icon" ]]; then
@@ -220,28 +220,46 @@ if [[ -n "$icon" ]]; then
 fi
 
 shopt -s nullglob
-swift_sources=("$pack/native-shell"/*.swift)
 
-# A plugin's class is a Swift type name, which the registry creates, and its
-# sources are the Swift files in its native directory.
-swift_type='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
-# Swift requires unique file names in a module, so a plugin's source
-# <directory>/<name> compiles as <plugin>-<directory>-<name>.
-plugin_sources=$temporary/plugin-sources
-mkdir "$plugin_sources"
+# The app is a Swift package, which xcodebuild builds: an executable of the
+# shell and the plugin registry that depends on the runtime, the plugin API
+# and each plugin's package. Each plugin's package is staged as its id, beside
+# the plugin API at the path its dependency on the API names. The packages are
+# generated here, then synced to the target's staging directory, whose
+# unchanged files the build reuses. Its fixed paths also keep the pins of the
+# lock file, which xcodebuild drops when the packages' paths change.
+generated=$temporary/swift
+packages=$generated/packages
+app_package=$generated/app
+staging=$output_parent/.tokamak/swift/$target
+plugin_api=$staging/packages/node_modules/@tokamakdev/plugin/apple/TokamakPlugin
+mkdir -p "$app_package/Sources/App" "$packages/node_modules/@tokamakdev/plugin/apple"
+cp -R "$pack/plugin-api/TokamakPlugin" "$packages/node_modules/@tokamakdev/plugin/apple/"
+cp "$pack/native-shell"/*.swift "$app_package/Sources/App/"
+ln -s "$pack/frameworks/TokamakRuntime.xcframework" "$app_package/TokamakRuntime.xcframework"
+
+# A plugin's class is a Swift type named with its module, which the package's
+# library product of the module's name provides.
+swift_type='^([A-Za-z_][A-Za-z0-9_]*)(\.[A-Za-z_][A-Za-z0-9_]*)+$'
 # A plugin's compilation conditions start with its id in capitals, such as
-# LOCATION_ for location, as every plugin compiles into one module.
-compilation_conditions=()
-registry=$temporary/TokamakPluginRegistry.swift
-printf '%s\n\n%s\n%s\n' 'import Foundation' 'func tokamakPlugins(app: TokamakApp) -> [any TokamakPlugin] {' '  [' > "$registry"
+# LOCATION_ for location, as each one applies to every module the app compiles.
+compilation_conditions=
+dependencies="    .package(path: \"$plugin_api\"),"$'\n'
+products="        .product(name: \"TokamakPlugin\", package: \"TokamakPlugin\"),"$'\n'
+imports=
+registrations=
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
   class=$(cat "$plugin/class" 2>/dev/null || true)
   if [[ ! "$class" =~ $swift_type ]]; then
-    echo "plugin '$plugin_id' has invalid $platform class '$class'" >&2
+    echo "plugin '$plugin_id' has invalid $platform class '$class'; name it with its module, as Module.Class" >&2
     exit 1
   fi
-  printf '    %s(host: TokamakHost(app: app, plugin: "%s")),\n' "$class" "$plugin_id" >> "$registry"
+  module=${BASH_REMATCH[1]}
+  if [[ ! -f "$plugin/native/Package.swift" ]]; then
+    echo "plugin '$plugin_id' has no Swift package, apple/Package.swift" >&2
+    exit 1
+  fi
   condition_prefix=$(printf '%s' "$plugin_id" | tr 'a-z-' 'A-Z_')_
   for condition_file in "$plugin/compilation-conditions"/*; do
     condition=$(<"$condition_file")
@@ -249,58 +267,136 @@ for plugin in "$input/plugins"/*/; do
       echo "plugin '$plugin_id' has compilation condition '$condition', which must be $condition_prefix followed by letters, digits or underscores" >&2
       exit 1
     fi
-    compilation_conditions+=(-D "$condition")
+    compilation_conditions+=" $condition"
   done
-  [[ -d "$plugin/native" ]] || continue
-  while IFS= read -r -d '' source; do
-    relative=${source#"$plugin/native/"}
-    named=$plugin_sources/$plugin_id-${relative//\//-}
-    if [[ -e "$named" ]]; then
-      echo "plugin '$plugin_id' source $relative stages as ${named##*/}, as another source does; rename one" >&2
-      exit 1
-    fi
-    cp "$source" "$named"
-    swift_sources+=("$named")
-  done < <(find "$plugin/native" -name '*.swift' -print0 | sort -z)
+  cp -R "$plugin/native" "$packages/$plugin_id"
+  dependencies+="    .package(path: \"$staging/packages/$plugin_id\"),"$'\n'
+  products+="        .product(name: \"$module\", package: \"$plugin_id\"),"$'\n'
+  imports+="import $module"$'\n'
+  registrations+="    $class(host: TokamakHost(app: app, plugin: \"$plugin_id\")),"$'\n'
 done
-printf '%s\n' '  ]' '}' >> "$registry"
+{
+  printf '%s\n' 'import TokamakPlugin'
+  printf '%s' "$imports"
+  printf '\n%s\n%s\n' 'func tokamakPlugins(app: TokamakApp) -> [any TokamakPlugin] {' '  ['
+  printf '%s' "$registrations"
+  printf '%s\n' '  ]' '}'
+} > "$app_package/Sources/App/TokamakPluginRegistry.swift"
 
 # The executable exports only the entry points of the runtime parts the app
-# links.
-exported_symbols=$temporary/exported-symbols
-sed 's/^/_/' "$metadata/exported-symbols" > "$exported_symbols"
-swift_args=(
-  "${swift_sources[@]}"
-  "$registry"
-  -target "$triple"
-  -swift-version 5
-  -Osize
-  -whole-module-optimization
-  -module-cache-path "$module_cache"
-  -F "$pack/frameworks"
-  -framework TokamakRuntime
-  -framework CoreFoundation
-  -lc++
-  -lresolv
-  -Xlinker -dead_strip
-  -Xlinker -exported_symbols_list -Xlinker "$exported_symbols"
-)
-# Bash 3.2 cannot expand an empty array under set -u.
-if [[ ${#compilation_conditions[@]} -gt 0 ]]; then
-  swift_args+=("${compilation_conditions[@]}")
+# links, and finds the dynamic frameworks of plugins' dependencies in the
+# bundle.
+sed 's/^/_/' "$metadata/exported-symbols" > "$app_package/exported-symbols"
+if [[ "$platform" == macos ]]; then
+  frameworks_path=@executable_path/../Frameworks
+else
+  frameworks_path=@executable_path/Frameworks
 fi
-
+linker_flags="\"-Xlinker\", \"-exported_symbols_list\", \"-Xlinker\", \"$staging/app/exported-symbols\", \"-Xlinker\", \"-rpath\", \"-Xlinker\", \"$frameworks_path\""
 # Simulator builds embed their entitlements in __TEXT,__entitlements, where
 # the simulator reads them.
 if [[ "$sdk" == iphonesimulator ]]; then
-  simulator_entitlements=$temporary/simulator.entitlements
-  "$apple_tool" simulator-entitlements --identifier "$identifier" --output "$simulator_entitlements"
-  swift_args+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$simulator_entitlements")
+  "$apple_tool" simulator-entitlements --identifier "$identifier" --output "$app_package/simulator.entitlements"
+  linker_flags+=", \"-Xlinker\", \"-sectcreate\", \"-Xlinker\", \"__TEXT\", \"-Xlinker\", \"__entitlements\", \"-Xlinker\", \"$staging/app/simulator.entitlements\""
 fi
+cat > "$app_package/Package.swift" <<EOF
+// swift-tools-version: 5.9
 
-xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
+import PackageDescription
+
+let package = Package(
+  name: "App",
+  platforms: [.iOS("$(<"$pack/build/ios-deployment-target")"), .macOS("$(<"$pack/build/macos-deployment-target")")],
+  dependencies: [
+$dependencies  ],
+  targets: [
+    .binaryTarget(name: "TokamakRuntime", path: "TokamakRuntime.xcframework"),
+    .executableTarget(
+      name: "App",
+      dependencies: [
+        "TokamakRuntime",
+$products      ],
+      linkerSettings: [
+        .linkedFramework("CoreFoundation"),
+        .linkedLibrary("c++"),
+        .linkedLibrary("resolv"),
+        .unsafeFlags([$linker_flags]),
+      ]
+    ),
+  ]
+)
+EOF
+
+swift_build=$output_parent/.tokamak/swift-build/$target
+# The app's lock file pins the versions of plugins' dependencies, which
+# resolving updates for changed requirements. Without one, the build resolves
+# the newest versions they allow, rather than those it resolved before.
+lock=$input/lock/Package.resolved
+if [[ -f "$lock" ]]; then
+  cp "$lock" "$app_package/Package.resolved"
+else
+  rm -rf "${swift_build:?}/SourcePackages"
+fi
+mkdir -p "$staging"
+rsync -rlp --checksum --delete --exclude .swiftpm "$generated/" "$staging/"
+case "$sdk" in
+  macosx)
+    destination='generic/platform=macOS'
+    products_dir=Release
+    ;;
+  iphoneos)
+    destination='generic/platform=iOS'
+    products_dir=Release-iphoneos
+    ;;
+  iphonesimulator)
+    destination='generic/platform=iOS Simulator'
+    products_dir=Release-iphonesimulator
+    ;;
+esac
+products=$swift_build/Build/Products/$products_dir
+# The build writes the resource bundles and frameworks of the packages the
+# app has now, without those of removed ones.
+rm -rf "${products:?}"/*.bundle "${products:?}/PackageFrameworks"
+# Packages' build tool plugins and macros run without the prompt Xcode
+# shows, as plugins' build scripts do. The build keeps the exported entry
+# points, which Xcode's own strip removes, and writes no dSYM.
+(
+  cd "$staging/app"
+  xcodebuild build -quiet \
+    -scheme App \
+    -destination "$destination" \
+    -configuration Release \
+    -derivedDataPath "$swift_build" \
+    -skipPackagePluginValidation \
+    -skipMacroValidation \
+    ARCHS="${triple%%-*}" \
+    ONLY_ACTIVE_ARCH=NO \
+    CODE_SIGNING_ALLOWED=NO \
+    SWIFT_OPTIMIZATION_LEVEL=-Osize \
+    SWIFT_COMPILATION_MODE=wholemodule \
+    DEAD_CODE_STRIPPING=YES \
+    STRIP_INSTALLED_PRODUCT=NO \
+    DEBUG_INFORMATION_FORMAT=dwarf \
+    "SWIFT_ACTIVE_COMPILATION_CONDITIONS=\$(inherited)$compilation_conditions"
+)
+if [[ -f "$staging/app/Package.resolved" ]]; then
+  mkdir -p "$input/lock"
+  cp "$staging/app/Package.resolved" "$lock"
+fi
+cp "$products/App" "$executable_dir/$app_slug"
 # Local symbols go; the exported entry points of linked parts stay.
 xcrun --sdk "$sdk" strip -x "$executable_dir/$app_slug"
+
+# Packages' resource bundles go in the bundle's resources directory, where
+# their Bundle.module finds them, and dynamic frameworks in its frameworks
+# directory.
+for resource_bundle in "$products"/*.bundle; do
+  cp -R "$resource_bundle" "$resources_dir/"
+done
+for framework in "$products"/PackageFrameworks/*.framework; do
+  mkdir -p "$contents/Frameworks"
+  cp -R "$framework" "$contents/Frameworks/"
+done
 
 write_plist
 

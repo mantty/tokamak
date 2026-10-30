@@ -7,6 +7,7 @@ mod cache;
 mod certs;
 mod dev;
 mod devices;
+mod lock;
 mod packs;
 mod paths;
 mod pinned_tls;
@@ -75,6 +76,9 @@ enum Command {
         /// Package the previous build's output instead of building the project.
         #[arg(long)]
         skip_project_build: bool,
+        /// Resolve plugins' native dependencies afresh, replacing their pins in tokamak.lock.
+        #[arg(long)]
+        update_lock: bool,
     },
     /// Run a development server against one target.
     #[command(after_help = DEV_PLATFORM_HELP)]
@@ -171,6 +175,7 @@ fn run() -> Result<()> {
             top,
             build_command,
             skip_project_build,
+            update_lock,
         } => build(&pipeline::BuildRequest {
             platforms: parse_platforms(&platforms)?,
             project_dir: project,
@@ -181,6 +186,7 @@ fn run() -> Result<()> {
             plugins,
             build_command,
             skip_project_build,
+            update_lock,
         }),
         Command::Dev {
             device_id,

@@ -14,8 +14,9 @@ tok plugin new device-tools --platforms ios,macos,android
 
 The default scaffold composes `ctx.webview` in TypeScript. A native scaffold
 adds one small method that emits an event, and the registration file that lists
-both: in Swift, in `apple/`, for iOS or macOS, and in Kotlin, in `android/`, for
-Android. Each scaffold has a browser implementation in `web/`. None requires
+both: in a Swift package, `apple/`, for iOS or macOS, and in a Kotlin Android
+library module, `android/`, for Android. Each scaffold has a browser
+implementation in `web/`. None requires
 Rust, a custom protocol, or a separately maintained frontend router.
 The directory must be new.
 
@@ -81,16 +82,41 @@ calls return promises at the caller. Functions, arbitrary class instances and
 remote objects cannot cross this boundary; invalid signatures fail generation.
 Keep low-level native objects inside the Tokamak worker.
 
+## Native projects
+
+Each family's native code is a project of its platform's package manager, with
+its own dependencies:
+
+- `apple/` is a Swift package whose library product, named for its module,
+  holds the plugin. It depends on the plugin API,
+  `.package(path: "../node_modules/@tokamakdev/plugin/apple/TokamakPlugin")`,
+  and on any other Swift package. The manifest's `class` names the plugin class
+  with its module, such as `TokamakAlarms.TokamakAlarmsPlugin`. The app creates
+  it, so the class, its `id`, `host` and `init(host:)` are `public`, as are the
+  members that implement Tokamak and system protocols.
+- `android/` is an Android library module, `build.gradle.kts`, with its sources
+  in `src/main/kotlin` and its manifest in `src/main/AndroidManifest.xml`. It
+  declares its namespace and SDK levels, and depends on the plugin API,
+  `project(":tokamak-plugin")`, and on artifacts in Google's Maven repository
+  and Maven Central. Its `settings.gradle.kts` opens it on its own in Android
+  Studio or Gradle, with the plugin API from `node_modules`; apps build it with
+  the platform pack's Android Gradle Plugin and Kotlin versions.
+
+An app resolves its plugins' dependencies together, as the package manager
+resolves any project's: plugins that need one library share one version, and a
+build fails when no version meets every plugin's requirements. The app's
+`tokamak.lock` records the versions.
+
 ## Native methods
 
 A native plugin lists the methods the Worker calls, and the events native code
-emits, in a registration file, `apple/Exports.swift` or `android/Exports.kt`,
-one line each:
+emits, in a registration file, `Exports.swift` in the Swift package or
+`Exports.kt` in the Android module, one line each:
 
 ```swift
-// apple/Exports.swift
+// apple/Sources/TokamakAlarms/Exports.swift
 extension TokamakAlarmsPlugin: TokamakExports {
-  static func exports(_ e: inout TokamakExporter<TokamakAlarmsPlugin>) {
+  public static func exports(_ e: inout TokamakExporter<TokamakAlarmsPlugin>) {
     e.call(set, doc: "Sets an alarm, replacing one with the same `id`.")
     e.stream(rings, doc: "Alarms as they ring.")
     e.event("rang", Alarm.self, doc: "Receives each alarm that rang, even in the background.")
@@ -99,7 +125,7 @@ extension TokamakAlarmsPlugin: TokamakExports {
 ```
 
 ```kotlin
-// android/Exports.kt
+// android/src/main/kotlin/Exports.kt
 object AlarmsExports : TokamakExports<TokamakAlarmsPlugin> {
     override fun exports(e: TokamakExporter<TokamakAlarmsPlugin>) {
         e.call(TokamakAlarmsPlugin::set, doc = "Sets an alarm, replacing one with the same `id`.")
@@ -128,9 +154,10 @@ types:
   a function per event that registers its listeners, such as `onRang`. Aborting
   `signal` cancels the methods' calls, streams and resource acquisitions, which
   fail with its reason.
-- `apple/Exports.generated.swift` or `android/Exports.generated.kt`: the native
-  dispatch, which decodes the Worker's arguments, calls the method, and encodes
-  its result, and which encodes the events native code emits.
+- `Exports.generated.swift` or `Exports.generated.kt`, beside the registration
+  file: the native dispatch, which decodes the Worker's arguments, calls the
+  method, and encodes its result, and which encodes the events native code
+  emits.
 
 Commit both, and export the TypeScript as `./apple` and `./android` so app
 code can call it too. Generating needs the family's toolchain: Xcode for
@@ -154,11 +181,8 @@ one class, such as a data class or `JSONObject`.
 | `TokamakPluginBody`, last | `TokamakPluginBody`, last | `ReadableStream<Uint8Array>` |
 | `TokamakReference<T>` | `TokamakReference<T>` | `NativeReference` |
 
-Every plugin's Swift compiles into the app's one module, where two plugins'
-top-level names collide. Declare a plugin's types in an extension of its plugin
-class, such as `extension TokamakAlarmsPlugin { struct Alarm: Codable { … } }`,
-which keeps the name `Alarm` in TypeScript, and keep extensions of system types
-`fileprivate`. Kotlin plugins have a package each.
+Each Swift plugin is a module, and each Kotlin plugin has a package, so one
+plugin's names do not collide with another's.
 
 A Swift enum's values are its cases' raw values. A Kotlin enum's are its
 constants' names with a lowercase first letter, so `enum class Permission {

@@ -26,7 +26,9 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
         })
         .collect::<String>();
     let factory = format!("create{class}");
-    let class = format!("Tokamak{class}Plugin");
+    let module = format!("Tokamak{class}");
+    let class = format!("{module}Plugin");
+    let package = android_package(id);
     let names = families
         .iter()
         .map(|(family, _)| family.name())
@@ -43,6 +45,8 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
             .replace("{{id}}", id)
             .replace("{{factory}}", &factory)
             .replace("{{class}}", &class)
+            .replace("{{module}}", &module)
+            .replace("{{package}}", &package)
             .replace("{{family}}", names.first().copied().unwrap_or_default())
             .replace("{{families}}", &names.join(", "))
             .replace("{{imports}}", &imports)
@@ -63,9 +67,7 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
     write_typescript(directory, native, &template)?;
     let mut sections = Map::new();
     for (family, named) in &families {
-        sections.extend(write_native(
-            directory, *family, named, id, &class, &template,
-        )?);
+        sections.extend(write_native(directory, *family, named, id, &template)?);
     }
     write_json(
         directory,
@@ -163,50 +165,72 @@ fn write_typescript(
     Ok(())
 }
 
-/// Writes the native endpoint of `family`, with its registration file and the files generated
+/// Writes the native package of `family`, with its registration file and the files generated
 /// from it, returning its class's manifest sections, by platform.
 fn write_native(
     directory: &Path,
     family: Family,
     platforms: &[Platform],
     id: &str,
-    class: &str,
     template: &dyn Fn(&str) -> String,
 ) -> Result<Map<String, Value>> {
-    let native = directory.join(family.name());
-    fs::create_dir(&native)?;
-    let (files, class) = match family {
+    let (files, class): (&[(&str, &str)], &str) = match family {
         Family::Apple => (
-            [
+            &[
                 (
-                    "Plugin.swift",
+                    "Package.swift",
+                    include_str!("../templates/plugin/Package.swift"),
+                ),
+                (
+                    "Sources/{{module}}/Plugin.swift",
                     include_str!("../templates/plugin/Plugin.swift"),
                 ),
                 (
-                    "Exports.swift",
+                    "Sources/{{module}}/Exports.swift",
                     include_str!("../templates/plugin/Exports.swift"),
                 ),
                 (
-                    "Exports.generated.swift",
+                    "Sources/{{module}}/Exports.generated.swift",
                     include_str!("../templates/plugin/Exports.generated.swift"),
                 ),
             ],
-            class.to_owned(),
+            "{{module}}.{{class}}",
         ),
         Family::Android => (
-            [
-                ("Plugin.kt", include_str!("../templates/plugin/Plugin.kt")),
-                ("Exports.kt", include_str!("../templates/plugin/Exports.kt")),
+            &[
                 (
-                    "Exports.generated.kt",
+                    "build.gradle.kts",
+                    include_str!("../templates/plugin/build.gradle.kts"),
+                ),
+                (
+                    "settings.gradle.kts",
+                    include_str!("../templates/plugin/settings.gradle.kts"),
+                ),
+                (
+                    "gradle.properties",
+                    include_str!("../templates/plugin/gradle.properties"),
+                ),
+                (
+                    "src/main/kotlin/Plugin.kt",
+                    include_str!("../templates/plugin/Plugin.kt"),
+                ),
+                (
+                    "src/main/kotlin/Exports.kt",
+                    include_str!("../templates/plugin/Exports.kt"),
+                ),
+                (
+                    "src/main/kotlin/Exports.generated.kt",
                     include_str!("../templates/plugin/Exports.generated.kt"),
                 ),
             ],
-            format!("tokamak.plugins.{class}"),
+            "{{package}}.{{class}}",
         ),
     };
-    for (name, source) in files {
-        fs::write(native.join(name), template(source))?;
+    let native = directory.join(family.name());
+    for (path, source) in files {
+        let path = native.join(template(path));
+        fs::create_dir_all(path.parent().unwrap_or(&native))?;
+        fs::write(path, template(source))?;
     }
     fs::write(
         directory.join(family.api()),
@@ -217,10 +241,17 @@ fn write_native(
             platforms,
         ),
     )?;
+    let class = template(class);
     Ok(platforms
         .iter()
         .map(|platform| (platform.namespace().to_owned(), json!({ "class": class })))
         .collect())
+}
+
+/// The Kotlin package and Android namespace of the plugin `id`, such as
+/// `tokamak.plugins.devicetools` for `device-tools`.
+fn android_package(id: &str) -> String {
+    format!("tokamak.plugins.{}", id.replace('-', ""))
 }
 
 fn plugin_id(directory: &Path) -> Result<&str> {

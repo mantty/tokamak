@@ -5,9 +5,9 @@ With the Kotlin compiler and an Android SDK installed, run from the repository r
 ```sh
 ANDROID_JAR="$(ls "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)"
 kotlinc -classpath "$ANDROID_JAR" \
-  platforms/android/source/plugin/TokamakPlugin.kt \
-  platforms/android/source/plugin/TokamakResources.kt \
-  platforms/android/source/plugin/TokamakPluginRequests.kt \
+  plugins/core/android/src/main/kotlin/TokamakPlugin.kt \
+  plugins/core/android/src/main/kotlin/TokamakResources.kt \
+  plugins/core/android/src/main/kotlin/TokamakPluginRequests.kt \
   platforms/android/tests/plugin-requests.kt \
   -include-runtime -d /tmp/tokamak-plugin-requests.jar
 # android.jar's org.json is stubs; the JVM runs the reference implementation.

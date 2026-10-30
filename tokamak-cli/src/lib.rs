@@ -6,7 +6,7 @@
 mod files;
 mod platform_pack;
 
-pub use files::{copy_dir_contents, copy_file};
+pub use files::{copy_dir_contents, copy_dir_contents_except, copy_file};
 pub use platform_pack::{
     MANIFEST_FILE, PackVariable, Platform, PlatformPackError, PlatformPackManifest, PluginKeyKind,
     SHARED_PLATFORM_KEYS, Target, VariableKind, is_valid_key, load_manifest, script_command,

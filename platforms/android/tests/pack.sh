@@ -6,6 +6,7 @@
 set -euo pipefail
 
 build=$(cd "$(dirname "${BASH_SOURCE[0]}")/../build" && pwd)
+root=$(cd "$build/../../.." && pwd)
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
 tools=$temporary/tools
@@ -63,11 +64,12 @@ export PATH="$tools:$PATH"
 
 if [[ -z "${TOKAMAK_TEST_ANDROID_PACK:-}" ]]; then
   pack=$temporary/pack
-  mkdir -p "$pack/build" "$pack/lib/TokamakRuntime" "$pack/native-shell/app" "$pack/native-shell/plugin"
+  mkdir -p "$pack/build" "$pack/lib/TokamakRuntime" "$pack/native-shell/app" "$pack/plugin-api/src/main/kotlin"
   cp "$build/entrypoint" "$build/min-sdk" "$pack/build/"
   printf runtime > "$pack/lib/TokamakRuntime/libtokamak.a"
   printf %s -llog > "$pack/lib/TokamakRuntime/link-libraries"
-  touch "$pack/native-shell/app/TokamakActivity.kt" "$pack/native-shell/plugin/TokamakPlugin.kt"
+  touch "$pack/native-shell/app/TokamakActivity.kt" "$pack/plugin-api/src/main/kotlin/TokamakPlugin.kt"
+  printf %s 'plugins {}' > "$pack/plugin-api/build.gradle.kts"
   compiler=$temporary/ndk/toolchains/llvm/prebuilt/host/bin/aarch64-linux-android$(<"$build/min-sdk")-clang
   mkdir -p "$(dirname "$compiler")"
   cat > "$compiler" <<'EOF'
@@ -110,17 +112,15 @@ entrypoint() {
   (cd "$pack" && env "$@" bash build/entrypoint build "$input" "$output")
 }
 
-# Stage the plugin `alerts`, whose Android section is test.alerts.Plugin.
+# Stage the plugin `alerts`, whose Android class is $1, or test.alerts.Plugin,
+# and whose Gradle module is native.
 stage_plugin() {
   local plugin=$input/plugins/alerts
-  mkdir -p "$plugin/native/rules" "$plugin/dependencies"
+  mkdir -p "$plugin/native/src/main/kotlin/rules"
   printf %s "${1:-test.alerts.Plugin}" > "$plugin/class"
-  : > "$plugin/native/Plugin.kt"
-  : > "$plugin/native/rules/Rules.kt"
-  : > "$plugin/native/rules/Plugin.kt"
-  : > "$plugin/native/Info.plist"
-  printf %s "${2:-com.example:messaging:1.2.3}" > "$plugin/dependencies/0"
-  printf %s '<manifest><uses-permission android:name="android.permission.USE_BIOMETRIC" /></manifest>' > "$plugin/manifest"
+  printf %s "implementation(\"com.example:messaging:1.2.3\")" > "$plugin/native/build.gradle.kts"
+  : > "$plugin/native/src/main/kotlin/Plugin.kt"
+  : > "$plugin/native/src/main/kotlin/rules/Rules.kt"
 }
 
 test_builds_shrunk_lint_checked_release_apps() {
@@ -132,7 +132,7 @@ test_builds_shrunk_lint_checked_release_apps() {
   contains "$gradle/gradle-arguments" "-Ptokamak.version=1.0'beta\" :app:lintRelease :app:assembleRelease"
   local script=$gradle/app/build.gradle
   contains "$script" "versionName providers.gradleProperty('tokamak.version').get()"
-  contains "$gradle/build.gradle" "minSdk $(<"$build/min-sdk")"
+  contains "$script" "minSdk $(<"$build/min-sdk")"
   contains "$script" "checkOnly 'NewApi'"
   contains "$script" "abortOnError true"
   contains "$script" "checkDependencies true"
@@ -212,45 +212,73 @@ test_uses_the_icon_resources() {
   contains "$gradle/app/src/main/AndroidManifest.xml" 'android:icon="@mipmap/ic_launcher"'
 }
 
-test_builds_each_plugin_as_a_library_module() {
+test_builds_each_plugin_s_gradle_module_into_the_app() {
   new_case plugins
   stage_plugin
   entrypoint
-  local module=$gradle/plugins/alerts
-  cmp -s "$input/plugins/alerts/manifest" "$module/src/main/AndroidManifest.xml" || fail "the plugin manifest was not staged"
-  local sources=$module/src/main/kotlin
-  [[ -f "$sources/Plugin.kt" && -f "$sources/rules/Rules.kt" && -f "$sources/rules/Plugin.kt" ]] || fail "the plugin sources were not staged by path"
-  [[ ! -e "$module/src/main/kotlin/Info.plist" ]] || fail "a file that is not Kotlin was staged as a source"
-  local coroutines
-  coroutines=$(sed -n 's/^coroutines_version=//p' "$build/entrypoint")
-  contains "$gradle/tokamak-plugin/build.gradle" "api 'org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines'"
-  contains "$module/build.gradle" "implementation project(':tokamak-plugin')"
-  contains "$module/build.gradle" "implementation 'com.example:messaging:1.2.3'"
+  diff -r "$input/plugins/alerts/native" "$gradle/plugins/alerts" || fail "the plugin module was not staged as it is"
+  diff -r "$pack/plugin-api" "$gradle/tokamak-plugin" || fail "the plugin API module was not staged as it is"
   contains "$gradle/settings.gradle" "include ':plugins:alerts'"
   contains "$gradle/app/build.gradle" "implementation project(':plugins:alerts')"
   contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" 'test.alerts.Plugin(app.host("alerts")),'
   contains "$gradle/app/src/main/AndroidManifest.xml" '<uses-permission android:name="android.permission.INTERNET" />'
+  [[ ! -e "$gradle/generated/alerts" ]] || fail "a plugin without generated files has a generated module"
+  lacks "$gradle/settings.gradle" ":generated:alerts"
+}
+
+test_builds_the_files_plugins_build_scripts_generate_as_library_modules() {
+  new_case generated
+  stage_plugin
+  local plugin=$input/plugins/alerts
+  printf %s '<manifest><uses-permission android:name="android.permission.USE_BIOMETRIC" /></manifest>' > "$plugin/manifest"
+  mkdir -p "$plugin/raw"
+  printf wav > "$plugin/raw/0-chime.wav"
+  entrypoint
+  local module=$gradle/generated/alerts
+  cmp -s "$plugin/manifest" "$module/src/main/AndroidManifest.xml" || fail "the generated manifest was not staged"
+  [[ $(<"$module/src/main/res/raw/chime.wav") == wav ]] || fail "the raw resource was not staged by its name"
+  contains "$module/build.gradle" "namespace 'tokamak.generated.alerts'"
+  contains "$module/build.gradle" "minSdk $(<"$build/min-sdk")"
+  contains "$gradle/settings.gradle" "include ':generated:alerts'"
+  contains "$gradle/app/build.gradle" "implementation project(':generated:alerts')"
   lacks "$gradle/app/src/main/AndroidManifest.xml" USE_BIOMETRIC
 }
 
 test_creates_the_dispatch_of_plugins_that_export_methods() {
   new_case exports
   stage_plugin
-  : > "$input/plugins/alerts/native/Exports.kt"
+  : > "$input/plugins/alerts/native/src/main/kotlin/rules/Exports.kt"
   entrypoint
   contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" 'test.alerts.PluginDispatch(app.host("alerts", test.alerts.PluginDispatch)),'
 }
 
-test_rejects_invalid_plugin_classes_and_dependencies() {
+test_rejects_invalid_plugin_classes_and_plugins_without_gradle_modules() {
   new_case invalid-class
   stage_plugin Plugin
   fails_with "plugin 'alerts' has invalid android class 'Plugin'" entrypoint
-  new_case invalid-dependency
-  stage_plugin test.alerts.Plugin com.example:library
-  fails_with "plugin 'alerts' has invalid android dependency 'com.example:library'; use group:artifact:version" entrypoint
-  new_case quoted-dependency
-  stage_plugin test.alerts.Plugin "com.example:library:1.0'"
-  fails_with "plugin 'alerts' has invalid android dependency 'com.example:library:1.0''" entrypoint
+  new_case no-module
+  stage_plugin
+  rm "$input/plugins/alerts/native/build.gradle.kts"
+  fails_with "plugin 'alerts' has no Gradle module, android/build.gradle.kts" entrypoint
+}
+
+test_writes_the_lock_without_one_and_otherwise_builds_as_it_pins() {
+  new_case lock
+  entrypoint
+  contains "$gradle/gradle-arguments" "--write-locks tokamakLockDependencies"
+  contains "$gradle/build.gradle" "lockAllConfigurations()"
+  contains "$gradle/build.gradle" "lockMode = LockMode.LENIENT"
+  contains "$gradle/build.gradle" "lockFile = file('$input/lock/' + path.substring(1).replace(':', '.') + '.lockfile')"
+  rm -rf "${input:?}/lock"
+  mkdir "$input/lock"
+  : > "$input/lock/app.lockfile"
+  entrypoint
+  lacks "$gradle/gradle-arguments" "--write-locks"
+  lacks "$gradle/gradle-arguments" tokamakLockDependencies
+}
+
+test_the_plugin_api_supports_the_pack_s_minimum_sdk() {
+  contains "$root/plugins/core/android/build.gradle.kts" "minSdk = $(<"$build/min-sdk")"
 }
 
 # Whether the runtime library of the last build exports the entry point $1 and
@@ -299,9 +327,12 @@ else
     test_builds_development_apps_as_debug_builds
     test_merges_the_app_manifest_while_it_is_set
     test_uses_the_icon_resources
-    test_builds_each_plugin_as_a_library_module
+    test_builds_each_plugin_s_gradle_module_into_the_app
+    test_builds_the_files_plugins_build_scripts_generate_as_library_modules
     test_creates_the_dispatch_of_plugins_that_export_methods
-    test_rejects_invalid_plugin_classes_and_dependencies
+    test_rejects_invalid_plugin_classes_and_plugins_without_gradle_modules
+    test_writes_the_lock_without_one_and_otherwise_builds_as_it_pins
+    test_the_plugin_api_supports_the_pack_s_minimum_sdk
   )
 fi
 for test in "${tests[@]}"; do

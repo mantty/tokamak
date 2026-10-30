@@ -16,5 +16,10 @@ tokamak-cli/npm/platforms/*/bin/
 tokamak-cli/npm/platform-packs/*/*/
 tokamak-cli/npm/dist/
 
-# Swift package builds
-/platforms/apple/describer/.build/
+# Swift and Gradle builds of native packages
+.build/
+.swiftpm/
+/plugins/*/android/build/
+/plugins/*/android/.gradle/
+/plugins/*/android/.kotlin/
+/plugins/*/android/local.properties

@@ -1,4 +1,5 @@
 import Foundation
+import TokamakPlugin
 import TokamakRuntime
 import WebKit
 
@@ -17,7 +18,7 @@ private let lifecycleDeadline: TimeInterval = 10
 /// The tokamak runtime and native plugins of this process. Both outlive any
 /// WebView, so plugins receive app events before a page loads and a Worker
 /// event can run while no page is loaded.
-final class TokamakApp {
+final class TokamakApp: TokamakHostApp {
   weak var webView: WKWebView?
   let resources = TokamakResources()
   /// Every plugin, by ID.
@@ -123,15 +124,27 @@ final class TokamakApp {
   }
 
   /// Delivers the event `name`, whose encoded data is `payload`, to the
-  /// Worker's listeners on `queue`, and calls `completion` on the main thread
-  /// with their encoded reply, which is empty when none replied. Fails unless
-  /// they return within `timeout`, which includes runtime startup. Call it on
-  /// the main thread.
+  /// Worker's listeners, and calls `completion` on the main thread with their
+  /// encoded reply, which is empty when none replied. Fails unless they
+  /// return within `timeout`, which includes runtime startup. Call it on the
+  /// main thread.
   func emit(
     _ name: String,
     payload: Data,
     timeout: TimeInterval,
-    on queue: DispatchQueue = .global(qos: .userInitiated),
+    completion: @escaping (Result<Data, Error>) -> Void
+  ) {
+    emit(
+      name, payload: payload, timeout: timeout, on: .global(qos: .userInitiated),
+      completion: completion)
+  }
+
+  /// `emit`, delivering on `queue`.
+  private func emit(
+    _ name: String,
+    payload: Data,
+    timeout: TimeInterval,
+    on queue: DispatchQueue,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
     let deadline = Date() + timeout
@@ -288,25 +301,6 @@ final class TokamakApp {
     }
     for callback in callbacks {
       callback(result)
-    }
-  }
-}
-
-/// What a plugin did with a background event, reported to the system.
-enum TokamakBackgroundResult {
-  case newData
-  case noData
-  case failed
-
-  /// New data when any plugin fetched some, otherwise a failure when any
-  /// plugin failed.
-  init(combining results: [Self]) {
-    if results.contains(.newData) {
-      self = .newData
-    } else if results.contains(.failed) {
-      self = .failed
-    } else {
-      self = .noData
     }
   }
 }

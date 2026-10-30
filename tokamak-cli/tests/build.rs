@@ -351,6 +351,11 @@ fn assert_missing(path: &Path) {
     assert!(!path.exists(), "{} exists", path.display());
 }
 
+#[cfg(unix)]
+fn read_json(path: &Path) -> TestResult<serde_json::Value> {
+    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+}
+
 /// Assert that the packaged ES module `module` is `source` compiled.
 #[track_caller]
 fn assert_compiled(app: &PackageLayout, module: &str, source: &Path) -> TestResult {
@@ -393,6 +398,41 @@ fn stages_the_entry_points_of_the_runtime_parts_the_app_links() -> TestResult {
     assert_eq!(exported_symbols()?, "");
     declare_storage(&project)?;
     assert_eq!(exported_symbols()?, "tokamak_storage\n");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn stages_the_family_s_lock_files_and_keeps_those_the_build_writes() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    // A build that records the lock files it received and resolves one more pin.
+    fs::write(
+        platform_pack.join("build/entrypoint"),
+        "#!/usr/bin/env bash\nset -euo pipefail\nrm -rf \"$3\"\nmkdir -p \"$3\" \"$2/lock\"\ncp -R \"$2/lock\" \"$3/received\"\nprintf 'pin\\n' >> \"$2/lock/Package.resolved\"\n",
+    )?;
+    let lock = project.join("tokamak.lock");
+    let received = project.join("build/macos/demo-app.app/received/Package.resolved");
+    let pins = |lines: &[&str]| serde_json::json!({ "apple": { "Package.resolved": lines } });
+
+    build_command("macos", &project, &platform_pack)?
+        .assert()
+        .success();
+    assert_missing(&received);
+    assert_eq!(read_json(&lock)?, pins(&["pin", ""]));
+
+    build_command("macos", &project, &platform_pack)?
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&received)?, "pin\n");
+    assert_eq!(read_json(&lock)?, pins(&["pin", "pin", ""]));
+
+    // An update resolves without the pins.
+    build_command("macos", &project, &platform_pack)?
+        .arg("--update-lock")
+        .assert()
+        .success();
+    assert_missing(&received);
+    assert_eq!(read_json(&lock)?, pins(&["pin", ""]));
     Ok(())
 }
 
@@ -1075,12 +1115,15 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
         .success();
 
     let plugin = project.join("build/macos/demo-app.app/plugins/location");
-    assert_texts(&[(plugin.join("class"), "TokamakLocationPlugin")])?;
+    assert_texts(&[(
+        plugin.join("class"),
+        "TokamakLocation.TokamakLocationPlugin",
+    )])?;
     assert!(
         fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
     assert_texts(&[(plugin.join("compilation-conditions/0"), "LOCATION_ALWAYS")])?;
-    assert_file(&plugin.join("native/LocationPlugin.swift"));
+    assert_file(&plugin.join("native/Sources/TokamakLocation/LocationPlugin.swift"));
     Ok(())
 }
 

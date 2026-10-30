@@ -91,7 +91,7 @@ fn assert_publishable_plugin(
         platforms.unwrap_or_default()
     );
     for family in families {
-        assert_native_package(path, &package, family)?;
+        assert_native_package(path, &package, &manifest, family)?;
     }
     Ok(())
 }
@@ -111,7 +111,7 @@ fn scaffolds_each_family_for_the_named_platforms() -> TestResult {
         serde_json::from_slice(&std::fs::read(path.join("package.json"))?)?;
     assert_eq!(declared_platforms(&manifest)?, "android,ios");
     for family in ["apple", "android"] {
-        assert_native_package(&path, &package, family)?;
+        assert_native_package(&path, &package, &manifest, family)?;
     }
     // Each family's listeners register on the named platforms only.
     assert!(
@@ -159,10 +159,12 @@ fn declared_platforms(manifest: &serde_json::Value) -> TestResult<String> {
 }
 
 /// Asserts that the scaffolded package exports and generates `family`'s platform API, in `src/`,
-/// and holds the family's native files, and only those, in the family's directory.
+/// and holds the family's native package, and only that, in the family's directory, whose
+/// module the manifest's classes name.
 fn assert_native_package(
     path: &std::path::Path,
     package: &serde_json::Value,
+    manifest: &serde_json::Value,
     family: &str,
 ) -> TestResult {
     assert_eq!(
@@ -174,19 +176,60 @@ fn assert_native_package(
         package["scripts"][format!("generate:{family}")],
         format!("tok plugin generate {family}")
     );
-    let extension = if family == "apple" { "swift" } else { "kt" };
-    let mut files = std::fs::read_dir(path.join(family))?
-        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
-        .collect::<std::io::Result<Vec<_>>>()?;
+    let words = path
+        .file_name()
+        .ok_or("no plugin name")?
+        .to_string_lossy()
+        .split('-')
+        .map(|word| word[..1].to_uppercase() + &word[1..])
+        .collect::<String>();
+    let module = format!("Tokamak{words}");
+    let (expected, platforms, class) = if family == "apple" {
+        (
+            vec![
+                "Package.swift".to_owned(),
+                format!("Sources/{module}/Exports.generated.swift"),
+                format!("Sources/{module}/Exports.swift"),
+                format!("Sources/{module}/Plugin.swift"),
+            ],
+            &["ios", "macos"][..],
+            format!("{module}.{module}Plugin"),
+        )
+    } else {
+        (
+            vec![
+                "build.gradle.kts".to_owned(),
+                "gradle.properties".to_owned(),
+                "settings.gradle.kts".to_owned(),
+                "src/main/kotlin/Exports.generated.kt".to_owned(),
+                "src/main/kotlin/Exports.kt".to_owned(),
+                "src/main/kotlin/Plugin.kt".to_owned(),
+            ],
+            &["android"][..],
+            format!("tokamak.plugins.{}.{module}Plugin", words.to_lowercase()),
+        )
+    };
+    let directory = path.join(family);
+    let mut files = walkdir::WalkDir::new(&directory)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .is_ok_and(|entry| entry.file_type().is_file())
+        })
+        .map(|entry| {
+            let path = entry?.into_path();
+            let relative = path.strip_prefix(&directory)?;
+            Ok(relative.to_string_lossy().replace('\\', "/"))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
     files.sort();
-    assert_eq!(
-        files,
-        [
-            format!("Exports.generated.{extension}"),
-            format!("Exports.{extension}"),
-            format!("Plugin.{extension}"),
-        ]
-    );
+    assert_eq!(files, expected);
+    for platform in platforms {
+        if let Some(section) = manifest["platforms"].get(platform) {
+            assert_eq!(section["class"], class.as_str(), "{platform}");
+        }
+    }
     Ok(())
 }
 
@@ -209,7 +252,7 @@ fn describing_pack(
         packs.path(),
         Platform::Macos.default_target()?,
         &format!(
-            "[ \"$1 $4 $5\" = 'describe ios macos' ] || exit 2\n[ {status} = 0 ] || exit {status}\nprintf '%s' '{description}' > \"$3/description.json\"\nprintf '%s' '{dispatch}' > \"$3/Exports.generated.swift\"\n"
+            "[ \"$1 $5 $6\" = 'describe ios macos' ] || exit 2\n[ -f \"$3\" ] || exit 3\n[ {status} = 0 ] || exit {status}\nprintf '%s' '{description}' > \"$4/description.json\"\nprintf '%s' '{dispatch}' > \"$4/Exports.generated.swift\"\n"
         ),
     )?;
     Ok(packs)
@@ -280,21 +323,25 @@ fn generates_and_checks_a_platform_api_with_the_family_pack() -> TestResult {
     let tok = |arguments: &[&str]| tok_plugin(&plugin, packs.path(), arguments);
 
     tok(&["check"])?.assert().failure().stderr(
-        contains("`tok plugin generate apple` changes apple/Exports.generated.swift\n")
+        contains(
+            "`tok plugin generate apple` changes apple/Sources/TokamakDeviceTools/Exports.generated.swift\n",
+        )
             .and(contains("apple.generated.ts").not()),
     );
     tok(&["generate", "apple"])?
         .assert()
         .success()
         .stdout(contains(
-            "Generated apple/Exports.generated.swift, src/apple.generated.ts",
+            "Generated apple/Sources/TokamakDeviceTools/Exports.generated.swift, src/apple.generated.ts",
         ));
     assert_eq!(
         std::fs::read_to_string(plugin.join("src/apple.generated.ts"))?,
         scaffolded
     );
     assert_eq!(
-        std::fs::read_to_string(plugin.join("apple/Exports.generated.swift"))?,
+        std::fs::read_to_string(
+            plugin.join("apple/Sources/TokamakDeviceTools/Exports.generated.swift")
+        )?,
         "dispatch"
     );
     tok(&["check"])?.assert().success();
@@ -364,13 +411,30 @@ fn reports_why_the_family_pack_cannot_generate() -> TestResult {
         .assert()
         .failure()
         .stderr(contains(
-            "apple/Exports.swift cannot be called from TypeScript",
+            "apple/Sources/TokamakDeviceTools/Exports.swift cannot be called from TypeScript",
         ));
 
-    // A registration file's family is one the plugin builds for.
+    // The family's directory holds one registration file outside its build outputs.
     let packs = describing_pack(ECHO, "dispatch", 0)?;
-    std::fs::create_dir_all(plugin.join("android"))?;
-    std::fs::write(plugin.join("android/Exports.kt"), "")?;
+    for copy in [".build/checkouts/other", "build/other", "Sources/Other"] {
+        std::fs::create_dir_all(plugin.join("apple").join(copy))?;
+        std::fs::write(plugin.join("apple").join(copy).join("Exports.swift"), "")?;
+    }
+    tok_plugin(&plugin, packs.path(), &["check"])?
+        .assert()
+        .failure()
+        .stderr(contains(
+            "apple has more than one Exports.swift: apple/Sources/Other/Exports.swift, apple/Sources/TokamakDeviceTools/Exports.swift\n",
+        ));
+    std::fs::remove_dir_all(plugin.join("apple/Sources"))?;
+    tok_plugin(&plugin, packs.path(), &["generate", "apple"])?
+        .assert()
+        .failure()
+        .stderr(contains("apple has no Exports.swift"));
+
+    // A registration file's family is one the plugin builds for.
+    std::fs::create_dir_all(plugin.join("android/src/main/kotlin"))?;
+    std::fs::write(plugin.join("android/src/main/kotlin/Exports.kt"), "")?;
     tok_plugin(&plugin, packs.path(), &["check"])?
         .assert()
         .failure()

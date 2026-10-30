@@ -75,6 +75,9 @@ fi
 cp "$library" "$runtime/libtokamak.a"
 cp "$libraries" "$runtime/link-libraries"
 cp -R "$workspace/platforms/android/source/." "$output/native-shell/"
+# The plugin API module, which plugins' modules and the app depend on.
+mkdir -p "$output/plugin-api"
+cp -R "$workspace/plugins/core/android/build.gradle.kts" "$workspace/plugins/core/android/src" "$output/plugin-api/"
 mkdir -p "$output/describer"
 cp "$workspace/platforms/android/describer/"*.kt "$output/describer/"
 cp "$build/entrypoint" "$build/min-sdk" "$output/build/"

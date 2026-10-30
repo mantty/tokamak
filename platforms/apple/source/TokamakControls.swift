@@ -1,4 +1,5 @@
 import Foundation
+import TokamakPlugin
 import WebKit
 
 /// Core device operations use the same endpoint and ownership as plugins.

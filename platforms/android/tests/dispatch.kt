@@ -219,7 +219,7 @@ class DispatchTest {
         val region = host.fromJson(JSONObject("""{"id":"home","radius":5,"tags":[],"counts":{}}"""), Region::class)
         check(region.id == "home" && region.radius == 5.0) { "$region" }
         val unlisted = runCatching { host.json("text") }.exceptionOrNull()
-        check(unlisted?.message == "android/Exports.kt uses no String") { "$unlisted" }
+        check(unlisted?.message == "Exports.kt uses no String") { "$unlisted" }
         val wrong = runCatching { host.fromJson("loud", Alert::class) }.exceptionOrNull()
         check(wrong?.message == "json must be one of Alert's forms") { "$wrong" }
     }
@@ -236,7 +236,7 @@ class DispatchTest {
         check(chose == "\"approximate\"") { chose }
         val mistakes = listOf(
             Triple("entered", "home", "event entered takes Region, not String"),
-            Triple("left", region, "android/Exports.kt lists no event left"),
+            Triple("left", region, "Exports.kt lists no event left"),
         )
         for ((name, event, message) in mistakes) {
             val error = runCatching { codec.eventPayload(name, event) }.exceptionOrNull() as TokamakPluginError
@@ -252,7 +252,7 @@ class DispatchTest {
         check(answer("", Precision::class) == "null" && answer("null", Precision::class) == "null")
         check(answer("\"vague\"", Precision::class).startsWith("reply "))
         answer("\"precise\"", String::class).let { check(it == "event asked replies with Precision, not String") { it } }
-        answer("\"precise\"", Precision::class, "entered").let { check(it == "android/Exports.kt lists no reply to event entered") { it } }
+        answer("\"precise\"", Precision::class, "entered").let { check(it == "Exports.kt lists no reply to event entered") { it } }
         // An event without a reply ignores what its listeners return.
         host.emit("entered", region, 1_000)
     }
