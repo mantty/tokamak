@@ -1,0 +1,20 @@
+{
+  "minTokens": 50,
+  "minLines": 5,
+  "threshold": 90,
+  "reporters": ["json"],
+  "output": "reports",
+  "silent": true,
+  "absolute": false,
+  "ignore": [
+    "**/node_modules/**",
+    "**/target/**",
+    "**/reports/**",
+    "**/libsqlite3-sys/**",
+    "**/rquickjs/**",
+    "**/pnpm-lock.yaml",
+    "**/package-lock.json",
+    "**/*.generated.*",
+    "**/fixture/**"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "project": "tokamak",
+  "language": "rust",
+  "kind": "lint",
+  "sections": {
+    "lint": {
+      "status": "passed",
+      "errors": 0,
+      "warnings": 0
+    },
+    "cognitive_complexity": {
+      "status": "failed",
+      "errors": 2,
+      "warnings": 0
+    },
+    "function_length": {
+      "status": "passed",
+      "errors": 0,
+      "warnings": 0
+    },
+    "nesting": {
+      "status": "passed",
+      "errors": 0,
+      "warnings": 0
+    },
+    "pedantic-checks": {
+      "status": "passed",
+      "errors": 0,
+      "warnings": 0
+    },
+    "duplication": {
+      "status": "failed",
+      "errors": 1,
+      "warnings": 0
+    }
+  }
+}

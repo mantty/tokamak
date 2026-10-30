@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "project": "tokamak",
+  "language": "rust",
+  "kind": "test",
+  "sections": {
+    "test": {
+      "status": "passed",
+      "errors": 0,
+      "warnings": 0
+    }
+  }
+}
