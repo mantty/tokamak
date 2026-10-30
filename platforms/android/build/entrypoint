@@ -412,7 +412,9 @@ subprojects {
 EOF
 } > "$project/build.gradle"
 
-printf '%s\n' 'android.useAndroidX=true' > "$project/gradle.properties"
+# Lint and R8 run in the Gradle daemon, whose default 512 MiB heap runs out
+# when they analyse an app with several plugin modules.
+printf '%s\n' 'android.useAndroidX=true' 'org.gradle.jvmargs=-Xmx4g' > "$project/gradle.properties"
 cat > "$project/app/build.gradle" <<EOF
 plugins {
   id 'com.android.application'

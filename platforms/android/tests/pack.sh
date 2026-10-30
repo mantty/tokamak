@@ -137,6 +137,7 @@ test_builds_shrunk_lint_checked_release_apps() {
   contains "$script" "abortOnError true"
   contains "$script" "checkDependencies true"
   contains "$gradle/build.gradle" "freeCompilerArgs.add('-Xjvm-default=all')"
+  contains "$gradle/gradle.properties" "org.gradle.jvmargs=-Xmx4g"
   contains "$script" "minifyEnabled true"
   contains "$script" "signingConfig signingConfigs.debug"
   lacks "$script" "signingConfigs {"
