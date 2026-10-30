@@ -10,8 +10,7 @@
       "plist": "apple/Info.plist"
     },
     "android": {
-      "class": "com.tokamak.plugins.securestorage.TokamakSecureStoragePlugin",
-      "manifest": "android/AndroidManifest.xml"
+      "class": "com.tokamak.plugins.securestorage.TokamakSecureStoragePlugin"
     }
   },
   "api": {

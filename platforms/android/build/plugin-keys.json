@@ -1,6 +1,5 @@
 {
   "class": "string",
   "manifest": "path",
-  "dependencies": "strings",
   "raw": "paths"
 }

@@ -1,6 +1,6 @@
 import Foundation
-import TokamakPlugin
 import LocalAuthentication
+import TokamakPlugin
 
 extension TokamakLocalAuthenticationPlugin {
   /// The authentication the device owner performs.

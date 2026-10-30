@@ -9,6 +9,7 @@ let package = Package(
   dependencies: [.package(path: "../node_modules/@tokamakdev/plugin/apple/TokamakPlugin")],
   targets: [
     .target(
-      name: "TokamakExample", dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin")])
+      name: "TokamakExample",
+      dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin")])
   ]
 )

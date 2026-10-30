@@ -39,6 +39,7 @@ pub(crate) const RESERVED_WORDS: &[&str] = &[
     "project",
     "platform",
     "skip",
+    "update",
     "host",
     "help",
     "vite",

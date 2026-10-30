@@ -1,4 +1,4 @@
-package tokamak.plugins
+package {{package}}
 
 import com.tokamak.runtime.TokamakExporter
 import com.tokamak.runtime.TokamakExports

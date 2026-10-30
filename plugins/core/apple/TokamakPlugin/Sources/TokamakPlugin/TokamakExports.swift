@@ -353,7 +353,9 @@ public func tokamakCall<T: Encodable>(
   return nil
 }
 
-public func tokamakCall(_ reply: TokamakPluginBytesReply, _ method: () throws -> Void) -> (() -> Void)? {
+public func tokamakCall(_ reply: TokamakPluginBytesReply, _ method: () throws -> Void) -> (
+  () -> Void
+)? {
   reply(
     result {
       try method()

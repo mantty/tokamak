@@ -17,7 +17,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * The methods a plugin's `android/Exports.kt` lists for the Worker to call, and the events the Worker
+ * The methods a plugin's `Exports.kt` lists for the Worker to call, and the events the Worker
  * receives. `tok plugin generate android` runs [exports] to write the plugin's dispatch and
  * TypeScript API; the app never does.
  */
@@ -35,32 +35,38 @@ enum class TokamakOverflow {
 }
 
 /** Records the methods a plugin exports, with their options, and the events it emits. */
-class TokamakExporter<P : TokamakPlugin> internal constructor() {
-    internal class Export(val kind: String, val method: KFunction<*>, val doc: String, val overflow: TokamakOverflow)
+class TokamakExporter<P : TokamakPlugin> {
+    class Export(val kind: String, val method: KFunction<*>, val doc: String, val overflow: TokamakOverflow)
 
-    internal class Event(val name: String, val type: KClass<*>, val reply: KClass<*>?, val doc: String)
+    class Event(val name: String, val type: KClass<*>, val reply: KClass<*>?, val doc: String)
 
-    internal val exports = mutableListOf<Export>()
-    internal val events = mutableListOf<Event>()
+    private val listedExports = mutableListOf<Export>()
+    private val listedEvents = mutableListOf<Event>()
+
+    /** The methods exported, in order. */
+    val exports: List<Export> get() = listedExports
+
+    /** The events listed, in order. */
+    val events: List<Event> get() = listedEvents
 
     /** Lists the event [name], whose listeners receive a [type] and may reply with a [reply]. */
     fun event(name: String, type: KClass<*>, reply: KClass<*>? = null, doc: String = "") {
-        events += Event(name, type, reply, doc)
+        listedEvents += Event(name, type, reply, doc)
     }
 
     /** Exports [method], which returns once. */
     fun call(method: KFunction<*>, doc: String = "") {
-        exports += Export("call", method, doc, TokamakOverflow.ERROR)
+        listedExports += Export("call", method, doc, TokamakOverflow.ERROR)
     }
 
     /** Exports [method], whose values the Worker reads until it cancels. */
     fun stream(method: KFunction<Flow<*>>, overflow: TokamakOverflow = TokamakOverflow.ERROR, doc: String = "") {
-        exports += Export("stream", method, doc, overflow)
+        listedExports += Export("stream", method, doc, overflow)
     }
 
     /** Exports [method], which returns a native object the Worker holds as a `NativeReference`. */
     fun resource(method: KFunction<Any>, doc: String = "") {
-        exports += Export("resource", method, doc, TokamakOverflow.ERROR)
+        listedExports += Export("resource", method, doc, TokamakOverflow.ERROR)
     }
 }
 
@@ -99,16 +105,16 @@ class TokamakListeners<T>(private val holding: Boolean = false) {
 }
 
 /**
- * Converts the values a plugin's `android/Exports.kt` uses to and from JSON: its data classes and
+ * Converts the values a plugin's `Exports.kt` uses to and from JSON: its data classes and
  * sealed types, and its events and their replies. Each generated dispatch's companion object is
  * one, which the plugin's host uses, even while the plugin is being created.
  */
 interface TokamakCodec {
     /** [value] as the JSON org.json writes. */
-    fun encodeValue(value: Any): Any = throw TokamakPluginError.typeError("android/Exports.kt uses no ${value.javaClass.simpleName}")
+    fun encodeValue(value: Any): Any = throw TokamakPluginError.typeError("Exports.kt uses no ${value.javaClass.simpleName}")
 
     /** [json] as a [type]. */
-    fun decodeValue(json: TokamakValue, type: KClass<*>): Any = throw TokamakPluginError.typeError("android/Exports.kt uses no ${type.simpleName}")
+    fun decodeValue(json: TokamakValue, type: KClass<*>): Any = throw TokamakPluginError.typeError("Exports.kt uses no ${type.simpleName}")
 
     /** The JSON [json], as org.json reads it, as a [type], which [decodeValue] decodes. */
     fun <T : Any> fromJson(json: Any?, type: KClass<T>): T {
@@ -116,10 +122,10 @@ interface TokamakCodec {
         return type.castOrNull(value) ?: throw TokamakPluginError.typeError("json is ${value.javaClass.simpleName}, not ${type.simpleName}")
     }
 
-    /** [event] as the JSON payload of the event [name], which `android/Exports.kt` lists. */
+    /** [event] as the JSON payload of the event [name], which `Exports.kt` lists. */
     fun eventPayload(name: String, event: Any): ByteArray = throw TokamakPluginError.unlistedEvent(name)
 
-    /** The listeners' [reply] to the event [name], which `android/Exports.kt` lists with a reply, as its type. */
+    /** The listeners' [reply] to the event [name], which `Exports.kt` lists with a reply, as its type. */
     fun eventReply(name: String, reply: TokamakValue): Any = throw TokamakPluginError.unlistedReply(name)
 
     /** The listeners' encoded [payload] in reply to the event [name] as a [type], or null when none replied. */
@@ -231,7 +237,7 @@ class TokamakValue(private val json: Any?, private val path: String) {
 }
 
 /**
- * A plugin with the dispatch generated from its `android/Exports.kt`. The app's registry creates the
+ * A plugin with the dispatch generated from its `Exports.kt`. The app's registry creates the
  * generated subclass in place of [plugin], which plugins find with `tokamakPlugin(id)`.
  */
 abstract class TokamakDispatch<P : TokamakPlugin>(val plugin: P, protected val host: TokamakHost) : TokamakPlugin by plugin {

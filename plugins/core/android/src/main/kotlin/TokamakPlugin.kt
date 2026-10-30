@@ -30,10 +30,10 @@ class TokamakPluginError(
         fun needsUI() = TokamakPluginError("NeedsUIError", "The app cannot show UI while it is in the background")
 
         /** The plugin emitted an event its registration does not list. */
-        fun unlistedEvent(name: String) = typeError("android/Exports.kt lists no event $name")
+        fun unlistedEvent(name: String) = typeError("Exports.kt lists no event $name")
 
         /** The plugin asked for the reply to an event its registration lists without one. */
-        fun unlistedReply(name: String) = typeError("android/Exports.kt lists no reply to event $name")
+        fun unlistedReply(name: String) = typeError("Exports.kt lists no reply to event $name")
     }
 }
 
@@ -195,7 +195,7 @@ interface TokamakHost {
 
     /**
      * Delivers [event] to the Worker's listeners of the plugin's event [name], which
-     * `android/Exports.kt` lists. Starts the runtime when it is not running. Blocks, so call it off
+     * `Exports.kt` lists. Starts the runtime when it is not running. Blocks, so call it off
      * the main thread; throws unless the listeners return within [timeoutMillis], which includes
      * runtime startup.
      */
@@ -205,13 +205,13 @@ interface TokamakHost {
     fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R?
 
     /**
-     * [value], of a data class or sealed type `android/Exports.kt`'s methods and events use, as
+     * [value], of a data class or sealed type `Exports.kt`'s methods and events use, as
      * the JSON the Worker receives, which org.json writes, for a value the plugin stores.
      */
     fun json(value: Any): Any
 
     /**
-     * The JSON [json], as org.json reads it, as a data class or sealed [type] `android/Exports.kt`'s
+     * The JSON [json], as org.json reads it, as a data class or sealed [type] `Exports.kt`'s
      * methods and events use, for a value the plugin stored with [json].
      */
     fun <T : Any> fromJson(json: Any?, type: KClass<T>): T

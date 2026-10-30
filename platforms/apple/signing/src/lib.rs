@@ -96,6 +96,15 @@ impl Platform {
         }
     }
 
+    /// The directory of the frameworks a bundle embeds.
+    #[cfg(target_os = "macos")]
+    const fn frameworks(self) -> &'static str {
+        match self {
+            Self::Ios => "Frameworks",
+            Self::Macos => "Contents/Frameworks",
+        }
+    }
+
     /// The stem of the selection cache file and the saved-profile directory.
     #[cfg(target_os = "macos")]
     const fn cache_name(self) -> &'static str {
@@ -659,6 +668,7 @@ fn sign_bundle(
         .context("provisioning profile application identifier is missing")?;
     let application_identifier = format!("{prefix}.{bundle_id}");
     codesign(
+        platform,
         bundle,
         &selection.identity,
         &entitlements::for_signing(permitted, platform, &application_identifier, declared),
@@ -680,11 +690,29 @@ fn sign_ad_hoc(bundle: &Path, declared: Option<&Dictionary>) -> Result<()> {
     if embedded.exists() {
         fs::remove_file(&embedded).context("remove the embedded provisioning profile")?;
     }
-    codesign(bundle, "-", &declared).context("ad-hoc sign macOS application bundle")
+    codesign(Platform::Macos, bundle, "-", &declared)
+        .context("ad-hoc sign macOS application bundle")
 }
 
+/// Sign `bundle` and, first, the frameworks it embeds, whose signatures the
+/// bundle's seals.
 #[cfg(target_os = "macos")]
-fn codesign(bundle: &Path, identity: &str, entitlements: &Dictionary) -> Result<()> {
+fn codesign(
+    platform: Platform,
+    bundle: &Path,
+    identity: &str,
+    entitlements: &Dictionary,
+) -> Result<()> {
+    let frameworks = bundle.join(platform.frameworks());
+    if frameworks.is_dir() {
+        for framework in fs::read_dir(&frameworks).context("list the bundle's frameworks")? {
+            let framework = framework.context("list the bundle's frameworks")?.path();
+            run(Command::new("codesign")
+                .args(["--force", "--timestamp=none", "--sign", identity])
+                .arg(&framework))
+            .with_context(|| format!("sign {}", framework.display()))?;
+        }
+    }
     let temporary = tempfile::tempdir().context("create signing directory")?;
     let entitlements_path = temporary.path().join("entitlements.plist");
     PlistValue::Dictionary(entitlements.clone())

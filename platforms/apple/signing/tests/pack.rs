@@ -70,21 +70,7 @@ impl Fixture {
             pack.join("native-shell/TokamakShell.swift"),
             include_str!("fixtures/TokamakShell.swift"),
         )?;
-        let plugin_api = pack.join("plugin-api/TokamakPlugin");
-        fs::create_dir_all(plugin_api.join("Sources/TokamakPlugin"))?;
-        fs::copy(
-            Path::new(PLUGIN_API).join("Package.swift"),
-            plugin_api.join("Package.swift"),
-        )?;
-        for source in fs::read_dir(Path::new(PLUGIN_API).join("Sources/TokamakPlugin"))? {
-            let source = source?;
-            fs::copy(
-                source.path(),
-                plugin_api
-                    .join("Sources/TokamakPlugin")
-                    .join(source.file_name()),
-            )?;
-        }
+        self.copy_plugin_api()?;
         self.create_runtime()?;
         let log = self.log();
         let log = path_text(&log)?;
@@ -108,6 +94,15 @@ printf 'sign %s %s\n' "$settings" "$(cat "$bundle/{app}/worker-environment.json"
 "#
             ),
         )?;
+        self.create_fake_tools()
+    }
+
+    /// The `codesign`, `xcrun`, and `xcodebuild` that fake builds run, which
+    /// log their work.
+    fn create_fake_tools(&self) -> Result<()> {
+        let log = self.log();
+        let log = path_text(&log)?;
+        let app = self.bundle_app_path();
         write_executable(
             &self.fake_tools().join("codesign"),
             &format!(
@@ -176,8 +171,25 @@ printf '#!/bin/sh\n' > "$derived/Build/Products/$products/App"
         )
     }
 
+    /// The plugin API package, which plugins' packages depend on.
+    fn copy_plugin_api(&self) -> Result<()> {
+        let sources = self
+            .pack()
+            .join("plugin-api/TokamakPlugin/Sources/TokamakPlugin");
+        fs::create_dir_all(&sources)?;
+        fs::copy(
+            Path::new(PLUGIN_API).join("Package.swift"),
+            self.pack().join("plugin-api/TokamakPlugin/Package.swift"),
+        )?;
+        for source in fs::read_dir(Path::new(PLUGIN_API).join("Sources/TokamakPlugin"))? {
+            let source = source?;
+            fs::copy(source.path(), sources.join(source.file_name()))?;
+        }
+        Ok(())
+    }
+
     /// A static runtime library that defines the storage entry point, with
-    /// the runtime's header, as the pack's XCFramework.
+    /// the runtime's header, as the pack's `XCFramework`.
     fn create_runtime(&self) -> Result<()> {
         let source = self.root.path().join("runtime.c");
         let object = self.root.path().join("runtime.o");
@@ -581,6 +593,84 @@ let package = Package(
     // A lock file that pins another version, such as an earlier commit's, is followed.
     fs::write(&lock, &first)?;
     assert!(built("<html>4</html>")?.contains("\"1.0.0\""));
+    Ok(())
+}
+
+#[test]
+fn signs_the_dynamic_frameworks_of_plugins_dependencies_in_the_bundle() -> Result<()> {
+    for (target, frameworks) in [
+        ("macos-arm64", "Contents/Frameworks"),
+        ("ios-simulator-arm64", "Frameworks"),
+    ] {
+        let fixture = Fixture::new(target)?;
+        let shared = fixture.root.path().join("shared");
+        fs::create_dir_all(shared.join("Sources/Shared"))?;
+        fs::write(
+            shared.join("Package.swift"),
+            format!(
+                r#"// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+  name: "Shared",
+  platforms: [.iOS("{}"), .macOS("{}")],
+  products: [.library(name: "Shared", type: .dynamic, targets: ["Shared"])],
+  targets: [.target(name: "Shared")]
+)
+"#,
+                ios_minimum()?,
+                macos_minimum()?
+            ),
+        )?;
+        fs::write(
+            shared.join("Sources/Shared/Shared.swift"),
+            "public let shared = 1\n",
+        )?;
+        let plugin = stage_plugin(&fixture.input(), "hello", "TokamakHello.TokamakHelloPlugin")?;
+        let manifest = fs::read_to_string(plugin.join("Package.swift"))?;
+        fs::write(
+            plugin.join("Package.swift"),
+            manifest
+                .replace(
+                    "dependencies: [.package(path:",
+                    &format!(
+                        "dependencies: [.package(path: \"{}\"), .package(path:",
+                        path_text(&shared)?
+                    ),
+                )
+                .replace(
+                    r#"dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin")]"#,
+                    r#"dependencies: [.product(name: "TokamakPlugin", package: "TokamakPlugin"), .product(name: "Shared", package: "shared")]"#,
+                ),
+        )?;
+        fs::write(
+            plugin.join("Sources/TokamakHello/Shared.swift"),
+            "import Shared\n\nlet hello = shared\n",
+        )?;
+
+        run(&mut fixture.build())?;
+
+        let bundle = fixture.output();
+        assert!(
+            bundle.join(frameworks).join("Shared.framework").is_dir(),
+            "{target}"
+        );
+        // The pack's signing tool is faked for macOS; the real one signs
+        // ad hoc without a team.
+        if fixture.platform() == "macos" {
+            run(Command::new(TOOL)
+                .args(["sign", "--platform", "macos", "--project"])
+                .arg(fixture.root.path())
+                .arg("--bundle")
+                .arg(&bundle)
+                .args(["--bundle-id", "com.example.demo"])
+                .env_remove("TOKAMAK_MACOS_TEAM_ID")
+                .env_remove("TOKAMAK_MACOS_ENTITLEMENTS"))?;
+        }
+        run(Command::new("codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(&bundle))?;
+    }
     Ok(())
 }
 

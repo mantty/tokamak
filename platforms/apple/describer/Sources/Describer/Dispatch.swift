@@ -40,7 +40,9 @@ func dispatch(
       ], switching: "method", requests(methods.filter { $0.export.registration.kind != .call }),
       otherwise: unsupported("is not supported"), platforms),
     function(
-      ["public func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data {"],
+      [
+        "public func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data {"
+      ],
       switching: "name",
       events.map { event in
         let registration = event.event.registration
@@ -49,7 +51,9 @@ func dispatch(
           body: ["return try tokamakEvent(name, event, as: \(registration.type).self)"])
       }, otherwise: "throw .unlistedEvent(name)", platforms),
     function(
-      ["public func eventReply(_ name: String, _ reply: Data) throws(TokamakPluginError) -> Any? {"],
+      [
+        "public func eventReply(_ name: String, _ reply: Data) throws(TokamakPluginError) -> Any? {"
+      ],
       switching: "name",
       events.compactMap { event in
         let registration = event.event.registration

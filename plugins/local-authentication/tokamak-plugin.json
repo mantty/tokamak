@@ -10,8 +10,7 @@
       "plist": "apple/Info.plist"
     },
     "android": {
-      "class": "com.tokamak.plugins.localauthentication.TokamakLocalAuthenticationPlugin",
-      "manifest": "android/AndroidManifest.xml"
+      "class": "com.tokamak.plugins.localauthentication.TokamakLocalAuthenticationPlugin"
     }
   },
   "api": {

@@ -73,7 +73,7 @@ jobs:
       - name: Test native plugin requests
         run: |
           android_jar="$(ls "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)"
-          kotlinc -classpath "$android_jar" platforms/android/source/plugin/TokamakPlugin.kt platforms/android/source/plugin/TokamakResources.kt platforms/android/source/plugin/TokamakPluginRequests.kt platforms/android/tests/plugin-requests.kt -include-runtime -d "$RUNNER_TEMP/plugin-requests.jar"
+          kotlinc -classpath "$android_jar" plugins/core/android/src/main/kotlin/TokamakPlugin.kt plugins/core/android/src/main/kotlin/TokamakResources.kt plugins/core/android/src/main/kotlin/TokamakPluginRequests.kt platforms/android/tests/plugin-requests.kt -include-runtime -d "$RUNNER_TEMP/plugin-requests.jar"
           # android.jar's org.json is stubs; the JVM runs the reference implementation.
           curl -fsSL -o "$RUNNER_TEMP/json.jar" https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
           java -cp "$RUNNER_TEMP/plugin-requests.jar:$RUNNER_TEMP/json.jar:$android_jar" com.tokamak.runtime.Plugin_requestsKt
@@ -151,12 +151,10 @@ jobs:
           node-version: "22"
 
       - name: Check Swift formatting
-        run: xcrun swift-format lint --strict platforms/apple/source/*.swift platforms/apple/tests/*.swift platforms/apple/describer/Package.swift platforms/apple/describer/Sources/*/*.swift platforms/apple/describer/Tests/*/*.swift plugins/*/apple/*.swift
+        run: xcrun swift-format lint --strict platforms/apple/source/*.swift platforms/apple/tests/*.swift platforms/apple/describer/Package.swift platforms/apple/describer/Sources/*/*.swift platforms/apple/describer/Tests/*/*.swift plugins/core/apple/TokamakPlugin/Package.swift plugins/core/apple/TokamakPlugin/Sources/*/*.swift plugins/*/apple/Package.swift plugins/*/apple/Sources/*/*.swift
 
       - name: Test native plugin requests
-        run: |
-          xcrun swiftc -parse-as-library platforms/apple/source/TokamakPlugins.swift platforms/apple/source/TokamakOrigin.swift platforms/apple/source/TokamakResources.swift platforms/apple/source/TokamakControls.swift platforms/apple/source/TokamakExports.swift platforms/apple/tests/plugin-requests.swift -o "$RUNNER_TEMP/plugin-requests"
-          "$RUNNER_TEMP/plugin-requests"
+        run: bash platforms/apple/tests/plugin-requests.sh
 
       - name: Lint Apple Rust
         run: |
@@ -180,7 +178,7 @@ jobs:
           sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
           xcodebuild -version
 
-      - name: Typecheck plugins
+      - name: Build plugins
         run: bash platforms/apple/tests/plugins.sh
 
       - name: Test the Swift describer and generated plugin files

@@ -167,7 +167,7 @@ mod tests {
             plugin_keys(&workspace, Target::IosSimulatorArm64)?.get("resources"),
             Some(&PluginKeyKind::Paths)
         );
-        assert!(plugin_keys(&workspace, Target::AndroidArm64)?.contains_key("dependencies"));
+        assert!(plugin_keys(&workspace, Target::AndroidArm64)?.contains_key("raw"));
         assert!(plugin_keys(&workspace, Target::WindowsX64)?.is_empty());
         Ok(())
     }

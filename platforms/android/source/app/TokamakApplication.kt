@@ -139,10 +139,10 @@ class TokamakApplication : Application(), TokamakPlugins {
 
             override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = codec(::unregistered).fromJson(json, type)
 
-            /** The plugin's codec, or else the error [missing] gives: a plugin without `android/Exports.kt` has none. */
+            /** The plugin's codec, or else the error [missing] gives: a plugin without `Exports.kt` has none. */
             private fun codec(missing: () -> TokamakPluginError): TokamakCodec = codec ?: throw missing()
 
-            private fun unregistered() = TokamakPluginError.typeError("$id has no android/Exports.kt")
+            private fun unregistered() = TokamakPluginError.typeError("$id has no Exports.kt")
 
             override fun fetch(path: String, timeoutMillis: Long): ByteArray =
                 withRuntime(timeoutMillis) { runtime, remainingMillis -> runtime.fetch(path, remainingMillis) }

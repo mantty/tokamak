@@ -1,4 +1,4 @@
-package tokamak.plugins
+package {{package}}
 
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin

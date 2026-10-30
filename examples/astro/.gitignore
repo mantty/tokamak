@@ -4,3 +4,5 @@
 /dist/
 /node_modules/
 /worker-configuration.d.ts
+# The example builds the repository's plugins as they are, so it keeps no lock.
+/tokamak.lock

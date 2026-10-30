@@ -198,7 +198,7 @@ public final class TokamakHost {
   }
 
   /// Delivers `event` to the Worker's listeners of the plugin's event `name`,
-  /// which `apple/Exports.swift` lists, then calls `completion` on the main
+  /// which `Exports.swift` lists, then calls `completion` on the main
   /// thread. Fails unless they return within `timeout`, which includes runtime
   /// startup. Call it on the main thread.
   public func emit(
@@ -332,7 +332,9 @@ extension TokamakPlugin {
     throw .notSupported("\(id).\(method) does not take a body")
   }
 
-  public func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+  public func subscribeBytes(
+    method: String, payload: Data, reply: @escaping TokamakPluginBytesReply
+  )
     throws(TokamakPluginError) -> (() -> Void)
   {
     throw .notSupported("\(id).\(method) is not supported")

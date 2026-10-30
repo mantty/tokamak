@@ -1,5 +1,8 @@
 import Foundation
+import TokamakPlugin
 import WebKit
+
+@testable import TokamakExample
 
 /// Runs the Worker's requests through the fixture plugin's generated dispatch.
 @main
@@ -216,7 +219,7 @@ enum DispatchTests {
     precondition(chose == Data(#""approximate""#.utf8), String(decoding: chose, as: UTF8.self))
     for (name, event, message) in [
       ("entered", "home" as Any, "event entered takes Region, not String"),
-      ("left", region, "apple/Exports.swift lists no event left"),
+      ("left", region, "Exports.swift lists no event left"),
     ] {
       do {
         _ = try plugin.eventPayload(name, event)
@@ -247,7 +250,7 @@ enum DispatchTests {
     let mismatch = answer(#""precise""#, as: String.self)
     precondition(mismatch == "event asked replies with Precision, not String", mismatch)
     let unlisted = answer(#""precise""#, as: Precision.self, to: "entered")
-    precondition(unlisted == "apple/Exports.swift lists no reply to event entered", unlisted)
+    precondition(unlisted == "Exports.swift lists no reply to event entered", unlisted)
     // An event without a reply ignores what its listeners return.
     var delivered = false
     plugin.host.emit("entered", event: region, timeout: 1) { delivered = (try? $0.get()) != nil }
@@ -296,7 +299,7 @@ final class Replies: @unchecked Sendable {
 }
 
 // The request dispatcher does not use the app's runtime or background-event facilities.
-final class TokamakApp {
+final class TokamakApp: TokamakHostApp {
   weak var webView: WKWebView?
   let resources = TokamakResources()
   var isInForeground = true
@@ -315,10 +318,4 @@ final class TokamakApp {
     _ path: String, timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void
   ) { preconditionFailure("Unexpected fetch") }
-}
-
-enum TokamakBackgroundResult {
-  case newData
-  case noData
-  case failed
 }

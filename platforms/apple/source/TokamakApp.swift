@@ -134,7 +134,9 @@ final class TokamakApp: TokamakHostApp {
     timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
-    emit(name, payload: payload, timeout: timeout, on: .global(qos: .userInitiated), completion: completion)
+    emit(
+      name, payload: payload, timeout: timeout, on: .global(qos: .userInitiated),
+      completion: completion)
   }
 
   /// `emit`, delivering on `queue`.

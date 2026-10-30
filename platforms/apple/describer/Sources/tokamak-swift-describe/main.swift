@@ -19,7 +19,8 @@ do {
   var symbolGraphs: [(platform: String, graphs: [Data])] = []
   for argument in arguments.dropFirst(2) {
     let platform = String(argument.prefix { $0 != "=" })
-    let graph = try Data(contentsOf: URL(fileURLWithPath: String(argument.drop { $0 != "=" }.dropFirst())))
+    let graph = try Data(
+      contentsOf: URL(fileURLWithPath: String(argument.drop { $0 != "=" }.dropFirst())))
     if let index = symbolGraphs.firstIndex(where: { $0.platform == platform }) {
       symbolGraphs[index].graphs.append(graph)
     } else {

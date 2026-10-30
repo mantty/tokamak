@@ -21,3 +21,5 @@ tokamak-cli/npm/dist/
 .swiftpm/
 /plugins/*/android/build/
 /plugins/*/android/.gradle/
+/plugins/*/android/.kotlin/
+/plugins/*/android/local.properties

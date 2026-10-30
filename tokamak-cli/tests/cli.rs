@@ -198,12 +198,15 @@ fn assert_native_package(
     } else {
         (
             vec![
-                "Exports.generated.kt".to_owned(),
-                "Exports.kt".to_owned(),
-                "Plugin.kt".to_owned(),
+                "build.gradle.kts".to_owned(),
+                "gradle.properties".to_owned(),
+                "settings.gradle.kts".to_owned(),
+                "src/main/kotlin/Exports.generated.kt".to_owned(),
+                "src/main/kotlin/Exports.kt".to_owned(),
+                "src/main/kotlin/Plugin.kt".to_owned(),
             ],
             &["android"][..],
-            format!("tokamak.plugins.{module}Plugin"),
+            format!("tokamak.plugins.{}.{module}Plugin", words.to_lowercase()),
         )
     };
     let directory = path.join(family);
@@ -430,8 +433,8 @@ fn reports_why_the_family_pack_cannot_generate() -> TestResult {
         .stderr(contains("apple has no Exports.swift"));
 
     // A registration file's family is one the plugin builds for.
-    std::fs::create_dir_all(plugin.join("android"))?;
-    std::fs::write(plugin.join("android/Exports.kt"), "")?;
+    std::fs::create_dir_all(plugin.join("android/src/main/kotlin"))?;
+    std::fs::write(plugin.join("android/src/main/kotlin/Exports.kt"), "")?;
     tok_plugin(&plugin, packs.path(), &["check"])?
         .assert()
         .failure()

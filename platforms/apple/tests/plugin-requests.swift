@@ -1,4 +1,5 @@
 import Foundation
+import TokamakPlugin
 import WebKit
 
 @main
@@ -290,7 +291,7 @@ private final class TestPlugin: TokamakPlugin {
 }
 
 // The request dispatcher does not use the app's runtime or background-event facilities.
-final class TokamakApp {
+final class TokamakApp: TokamakHostApp {
   weak var webView: WKWebView?
   let resources = TokamakResources()
   var isInForeground = true
@@ -303,12 +304,6 @@ final class TokamakApp {
     _ path: String, timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void
   ) { preconditionFailure("Unexpected fetch") }
-}
-
-enum TokamakBackgroundResult {
-  case newData
-  case noData
-  case failed
 }
 
 private final class BinaryPlugin: TokamakPlugin {
