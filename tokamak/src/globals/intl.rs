@@ -230,25 +230,36 @@ fn plural_categories(ctx: Ctx<'_>, locales: String, kind: String) -> rquickjs::R
     to_json(&ctx, &values)
 }
 
+/// The values and formatter the `list` calls build.
+fn list_inputs(
+    ctx: &Ctx<'_>,
+    values: &str,
+    locales: &str,
+    options: &str,
+) -> rquickjs::Result<(Vec<String>, ListFormatter)> {
+    Ok((
+        from_json(ctx, values)?,
+        list_formatter(ctx, locales, options)?,
+    ))
+}
+
 fn list(
     ctx: Ctx<'_>,
     values: String,
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let values: Vec<String> = from_json(&ctx, &values)?;
-    let formatter = list_formatter(&ctx, &locales, &options)?;
+    let (values, formatter) = list_inputs(&ctx, &values, &locales, &options)?;
     Ok(formatter.format_to_string(values.iter().map(String::as_str)))
 }
 
 fn list_parts(
     ctx: Ctx<'_>,
-    values: String,
+    items: String,
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let values: Vec<String> = from_json(&ctx, &values)?;
-    let formatter = list_formatter(&ctx, &locales, &options)?;
+    let (values, formatter) = list_inputs(&ctx, &items, &locales, &options)?;
     let formatted_list = formatter.format(values.iter().map(String::as_str));
     to_json(&ctx, &collect_parts(&formatted_list))
 }
@@ -338,14 +349,14 @@ fn format_relative(
 
 fn relative_parts(
     ctx: Ctx<'_>,
-    value: f64,
+    amount: f64,
     unit: String,
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let (locale, options) = relative_inputs(&ctx, value, &locales, &options)?;
-    let formatted = format_relative(&ctx, value, &unit, &locale, &options)?;
-    let absolute = parse_decimal(&ctx, value.abs())?;
+    let (locale, options) = relative_inputs(&ctx, amount, &locales, &options)?;
+    let formatted = format_relative(&ctx, amount, &unit, &locale, &options)?;
+    let absolute = parse_decimal(&ctx, amount.abs())?;
     let number = with_decimal_formatter(&ctx, &locale, GroupingStrategy::Auto, |formatter| {
         formatter.format_to_string(&absolute)
     })?;
@@ -357,7 +368,7 @@ fn relative_parts(
     };
     let prefix = &formatted[..index];
     let suffix = &formatted[index + number.len()..];
-    let kind = if value.fract() == 0.0 {
+    let kind = if amount.fract() == 0.0 {
         "integer"
     } else {
         "fraction"
@@ -1276,25 +1287,28 @@ struct Affix<'a> {
 }
 
 impl Affix<'_> {
+    /// `affix` without the parentheses the affix's form puts around it, and
+    /// whether each side was stripped.
+    fn strip_parentheses<'a>(&self, affix: &'a str, prefix: bool) -> (&'a str, bool, bool) {
+        if !self.parenthesised {
+            return (affix, false, false);
+        }
+        if prefix {
+            return match affix.strip_prefix('(') {
+                Some(rest) => (rest, true, false),
+                None => (affix, false, false),
+            };
+        }
+        match affix.strip_suffix(')') {
+            Some(rest) => (rest, false, true),
+            None => (affix, false, false),
+        }
+    }
+
     /// Splits one affix into parentheses, the sign, whitespace literals and the token.
     fn append(&self, parts: &mut Vec<(String, String)>, affix: &str, prefix: bool) {
-        let mut rest = affix;
-        let mut opening = false;
-        let mut closing = false;
-        if prefix
-            && self.parenthesised
-            && let Some(remaining) = rest.strip_prefix('(')
-        {
-            opening = true;
-            rest = remaining;
-        }
-        if !prefix
-            && self.parenthesised
-            && let Some(remaining) = rest.strip_suffix(')')
-        {
-            closing = true;
-            rest = remaining;
-        }
+        let (rest, opening, closing) = self.strip_parentheses(affix, prefix);
+        let mut rest = rest;
         let (outer_lead, inner, outer_trail) = split_edges(rest, is_affix_literal);
         rest = inner;
         let mut leading_sign = None;

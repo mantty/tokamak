@@ -150,6 +150,23 @@ impl<C: BlockCipherEncrypt + KeyInit> CbcEncrypt<C> {
     }
 }
 
+/// Record whether `padding` is on, as `set_padding` does.
+fn set_padding(padding: &mut bool, enabled: bool) {
+    *padding = enabled;
+}
+
+/// Whether the stream is done when padding is off: `true` when it holds no
+/// partial block, and a failure naming `message` when it does.
+fn unpadded(padding: bool, pending: &[u8], message: &'static str) -> Result<bool, Failure> {
+    if padding {
+        return Ok(false);
+    }
+    if pending.is_empty() {
+        return Ok(true);
+    }
+    Err(Failure(message))
+}
+
 impl<C: BlockCipherEncrypt + KeyInit> Stream for CbcEncrypt<C> {
     fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, Failure> {
         self.pending.extend_from_slice(input);
@@ -159,14 +176,15 @@ impl<C: BlockCipherEncrypt + KeyInit> Stream for CbcEncrypt<C> {
     }
 
     fn set_padding(&mut self, enabled: bool) {
-        self.padding = enabled;
+        set_padding(&mut self.padding, enabled);
     }
 
     fn finish(mut self: Box<Self>) -> Result<Finished, Failure> {
-        if !self.padding {
-            if !self.pending.is_empty() {
-                return Err(Failure("data not multiple of block length"));
-            }
+        if unpadded(
+            self.padding,
+            &self.pending,
+            "data not multiple of block length",
+        )? {
             return Ok(Finished::default());
         }
         let fill = BLOCK - self.pending.len();
@@ -216,10 +234,7 @@ impl<C: BlockCipherDecrypt + KeyInit> Stream for CbcDecrypt<C> {
     }
 
     fn finish(mut self: Box<Self>) -> Result<Finished, Failure> {
-        if !self.padding {
-            if !self.pending.is_empty() {
-                return Err(Failure("wrong final block length"));
-            }
+        if unpadded(self.padding, &self.pending, "wrong final block length")? {
             return Ok(Finished::default());
         }
         if self.pending.len() != BLOCK {

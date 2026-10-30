@@ -205,11 +205,18 @@ mod tests {
     use super::resolve_manifest;
     use tokamak_cli::{MANIFEST_FILE, Platform};
 
-    #[test]
-    fn resolves_an_explicit_platform_pack_directory() -> Result<(), Box<dyn std::error::Error>> {
+    /// A platform pack directory holding a manifest.
+    fn pack_directory()
+    -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let manifest = directory.path().join(MANIFEST_FILE);
         fs::write(&manifest, "manifest")?;
+        Ok((directory, manifest))
+    }
+
+    #[test]
+    fn resolves_an_explicit_platform_pack_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, manifest) = pack_directory()?;
 
         assert_eq!(
             resolve_manifest(Platform::Macos, Some(directory.path()))?,
@@ -220,9 +227,7 @@ mod tests {
 
     #[test]
     fn rejects_an_explicit_manifest_file() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let manifest = directory.path().join(MANIFEST_FILE);
-        fs::write(&manifest, "manifest")?;
+        let (_directory, manifest) = pack_directory()?;
 
         let Err(error) = resolve_manifest(Platform::Macos, Some(&manifest)) else {
             return Err("a manifest file was accepted as a platform pack".into());

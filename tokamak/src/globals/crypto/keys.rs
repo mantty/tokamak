@@ -117,15 +117,19 @@ impl KeyMaterial {
     }
 }
 
-impl PrivateKey {
-    pub(super) fn kind(&self) -> Kind {
-        match self {
-            Self::Rsa(_) => Kind::Rsa,
-            Self::Ec(_) => Kind::Ec,
-            Self::Ed25519(_) => Kind::Ed25519,
-            Self::X25519(_) => Kind::X25519,
+/// The `kind` accessor of a key enum, whose variants name the algorithms.
+macro_rules! key_kind {
+    ($($variant:ident),+ $(,)?) => {
+        pub(super) fn kind(&self) -> Kind {
+            match self {
+                $(Self::$variant(_) => Kind::$variant,)+
+            }
         }
-    }
+    };
+}
+
+impl PrivateKey {
+    key_kind!(Rsa, Ec, Ed25519, X25519);
 
     pub(super) fn public(&self) -> PublicKey {
         match self {
@@ -186,14 +190,7 @@ impl PrivateKey {
 }
 
 impl PublicKey {
-    pub(super) fn kind(&self) -> Kind {
-        match self {
-            Self::Rsa(_) => Kind::Rsa,
-            Self::Ec(_) => Kind::Ec,
-            Self::Ed25519(_) => Kind::Ed25519,
-            Self::X25519(_) => Kind::X25519,
-        }
-    }
+    key_kind!(Rsa, Ec, Ed25519, X25519);
 
     pub(super) fn from_spki(der: &[u8]) -> Result<Self> {
         let info = SubjectPublicKeyInfoRef::try_from(der)?;

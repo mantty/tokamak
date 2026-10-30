@@ -1402,9 +1402,7 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.ends_with("\r\n\r\nok"));
         assert!(relay.app_connected());
-        upstream_thread
-            .join()
-            .map_err(|_| "upstream thread panicked")??;
+        join_upstream(upstream_thread)?;
         Ok(())
     }
 
@@ -1437,12 +1435,8 @@ mod tests {
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, reported.relay.port()))?;
         client.set_read_timeout(Some(Duration::from_secs(5)))?;
         client.write_all(b"GET / HTTP/1.1\r\nX-Tokamak-Session: token\r\n\r\n")?;
-        let mut response = String::new();
-        client.read_to_string(&mut response)?;
-        assert!(response.ends_with("\r\n\r\nrestarted"));
-        upstream_thread
-            .join()
-            .map_err(|_| "upstream thread panicked")??;
+        assert_restarted(&mut client)?;
+        join_upstream(upstream_thread)?;
         Ok(())
     }
 
@@ -1460,11 +1454,7 @@ mod tests {
             Ok(request)
         });
         let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let relay = DevRelay::bind(
-            upstream(&format!("http://{}", server.local_addr()?), socket_port)?,
-            "token".to_owned(),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-        )?;
+        let relay = relay_to(&server, socket_port)?;
 
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, relay.port()))?;
         let request = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Tokamak-Session: token\r\nX-Tokamak-Dev-Socket: 1\r\n\r\n";
@@ -1490,11 +1480,7 @@ mod tests {
             read_head(&mut stream)
         });
         let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let relay = DevRelay::bind(
-            upstream(&format!("http://{}", server.local_addr()?), socket_port)?,
-            "token".to_owned(),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-        )?;
+        let relay = relay_to(&server, socket_port)?;
 
         let mut client = relay_client(&relay)?;
         client.write_all(b"GET /_tokamak/capabilities.js HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Tokamak-Session: token\r\nX-Tokamak-Dev-Socket: 1\r\n\r\n")?;
@@ -1558,9 +1544,7 @@ mod tests {
         assert_reads(&mut client, b"hello")?;
         client.write_all(b"ping")?;
         assert_reads(&mut client, b"pong")?;
-        upstream_thread
-            .join()
-            .map_err(|_| "upstream thread panicked")??;
+        join_upstream(upstream_thread)?;
         Ok(())
     }
 
@@ -1651,12 +1635,36 @@ mod tests {
         });
         let mut client = relay_client(&reported.relay)?;
         client.write_all(b"GET / HTTP/1.1\r\nX-Tokamak-Session: token\r\n\r\n")?;
+        assert_restarted(&mut client)?;
+        join_upstream(upstream_thread)?;
+        Ok(())
+    }
+
+    /// A relay whose upstream is `server`, bound on any loopback port.
+    fn relay_to(
+        server: &TcpListener,
+        socket_port: u16,
+    ) -> Result<DevRelay, Box<dyn std::error::Error>> {
+        Ok(DevRelay::bind(
+            upstream(&format!("http://{}", server.local_addr()?), socket_port)?,
+            "token".to_owned(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )?)
+    }
+
+    /// Assert that `client` reads a reply whose body is `restarted`.
+    fn assert_restarted(client: &mut impl std::io::Read) -> std::io::Result<()> {
         let mut response = String::new();
         client.read_to_string(&mut response)?;
         assert!(response.ends_with("\r\n\r\nrestarted"));
-        upstream_thread
-            .join()
-            .map_err(|_| "upstream thread panicked")??;
+        Ok(())
+    }
+
+    /// Join `thread`, failing the test when it panicked.
+    fn join_upstream(
+        thread: thread::JoinHandle<std::io::Result<()>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        thread.join().map_err(|_| "upstream thread panicked")??;
         Ok(())
     }
 

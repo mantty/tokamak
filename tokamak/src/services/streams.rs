@@ -89,7 +89,7 @@ impl Streams {
                 request(&port, Command::Read)
                     .await
                     .map_err(|error| crate::errors::throw_message(&calling, &error))?
-                    .into_js(&calling, &bootstrap, &streams)
+                    .into_object(&calling, &bootstrap, &streams)
             })
         })?;
         let streams = Arc::clone(self);
@@ -104,7 +104,7 @@ impl Streams {
                     request(&port, |reply| Command::Cancel(reason, reply))
                         .await
                         .map_err(|error| crate::errors::throw_message(&calling, &error))?
-                        .into_js(&calling, &bootstrap, &streams)
+                        .into_object(&calling, &bootstrap, &streams)
                 })
             },
         )?;

@@ -934,25 +934,30 @@ impl VirtualFileSystem {
 
     /// Read a symbolic link target.
     pub fn read_link(&self, path: &str) -> Result<String> {
-        match self
-            .resolve(path, false)
-            .map_err(|error| missing_at(error, path))?
-        {
-            Node::Symlink(target) => Ok(target.to_string()),
-            _ => Err(Error::new(ErrorKind::InvalidInput)),
+        match self.symlink_target(path)? {
+            Some(target) => Ok(target),
+            None => Err(Error::new(ErrorKind::InvalidInput)),
         }
+    }
+
+    /// The target of the symbolic link `path` names, when it is one.
+    fn symlink_target(&self, path: &str) -> Result<Option<String>> {
+        let node = self
+            .resolve(path, false)
+            .map_err(|error| missing_at(error, path))?;
+        Ok(match node {
+            Node::Symlink(target) => Some(target.to_string()),
+            _ => None,
+        })
     }
 
     /// The target of the symbolic link `path` names, or else `path`
     /// normalized, as workerd's `realpath` reports it: only a final symbolic
     /// link is read, and only once.
     pub fn realpath(&self, path: &str) -> Result<String> {
-        match self
-            .resolve(path, false)
-            .map_err(|error| missing_at(error, path))?
-        {
-            Node::Symlink(target) => Ok(target.to_string()),
-            _ => normalized_path(path),
+        match self.symlink_target(path)? {
+            Some(target) => Ok(target),
+            None => normalized_path(path),
         }
     }
 

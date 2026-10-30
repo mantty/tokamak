@@ -15,13 +15,13 @@ use tokamak_apple_signing::{
 };
 
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("error: {error:#}");
-            ExitCode::FAILURE
-        }
-    }
+    run().map_or_else(|error| failure(&error), |()| ExitCode::SUCCESS)
+}
+
+/// Reports `error` and returns the exit code that marks the run as failed.
+fn failure(error: &anyhow::Error) -> ExitCode {
+    eprintln!("error: {error:#}");
+    ExitCode::FAILURE
 }
 
 fn run() -> Result<()> {

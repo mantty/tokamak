@@ -294,6 +294,18 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+    /// The handlers the runtime keeps after registering `handler` on `tag`.
+    fn expected_release(tag: &str, handler: i32) -> serde_json::Value {
+        let kept = if tag == "br" {
+            Some(handler)
+        } else if handler > 1 {
+            Some(handler - 1)
+        } else {
+            None
+        };
+        kept.map_or(json!([]), |id| json!([{"kind":"handler","id":id}]))
+    }
+
     fn released(state: &State) -> serde_json::Value {
         serde_json::to_value(state.take_releases()).unwrap_or_default()
     }
@@ -321,17 +333,7 @@ mod tests {
                     .map_err(|_| "operation send failed")?;
                 let accepted = response.recv_timeout(Duration::from_secs(2))?.is_ok();
                 assert_eq!(accepted, tag == "p");
-                let expected = if tag == "br" {
-                    Some(handler)
-                } else if handler > 1 {
-                    Some(handler - 1)
-                } else {
-                    None
-                };
-                assert_eq!(
-                    released(&state),
-                    expected.map_or(json!([]), |id| json!([{"kind":"handler","id":id}]))
-                );
+                assert_eq!(released(&state), expected_release(tag, handler));
             }
             state.stop()?;
             assert_eq!(

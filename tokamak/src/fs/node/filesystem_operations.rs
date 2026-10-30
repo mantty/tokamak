@@ -508,14 +508,25 @@ fn require_times_path(ctx: &Ctx<'_>, path: &str, follow_symlinks: bool) -> rquic
     }
 }
 
+/// `chmod` and `lchmod`, which differ only in whether a symlink is followed.
+fn change_mode<'js>(
+    ctx: Ctx<'js>,
+    input: Value<'js>,
+    mode: Value<'js>,
+    follow: bool,
+    name: &str,
+) -> rquickjs::Result<()> {
+    let path = path(&ctx, input)?;
+    validate_mode(&ctx, mode)?;
+    require_path(&ctx, &path, follow, name, Some(&path))
+}
+
 pub(super) fn chmod_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     mode: Value<'js>,
 ) -> rquickjs::Result<()> {
-    let path = path(&ctx, input)?;
-    validate_mode(&ctx, mode)?;
-    require_path(&ctx, &path, true, "chmod", Some(&path))
+    change_mode(ctx, input, mode, true, "chmod")
 }
 
 pub(super) fn chown_sync<'js>(
@@ -528,6 +539,18 @@ pub(super) fn chown_sync<'js>(
     require_path(&ctx, &path, true, "chown", Some(&path))
 }
 
+/// `chown` and `lchown` as the callback form runs them, naming a missing path
+/// by the `pathname` of `input`, as workerd does.
+fn change_owner<'js>(
+    ctx: Ctx<'js>,
+    input: Value<'js>,
+    follow: bool,
+    name: &str,
+) -> rquickjs::Result<()> {
+    let reported = url_pathname(&input)?;
+    require_path(&ctx, &path(&ctx, input)?, follow, name, reported.as_deref())
+}
+
 /// `chown` as the callback form runs it, naming a missing path by the
 /// `pathname` of `input`, as workerd does.
 pub(super) fn chown_callback<'js>(
@@ -536,14 +559,7 @@ pub(super) fn chown_callback<'js>(
     _uid: u32,
     _gid: u32,
 ) -> rquickjs::Result<()> {
-    let reported = url_pathname(&input)?;
-    require_path(
-        &ctx,
-        &path(&ctx, input)?,
-        true,
-        "chown",
-        reported.as_deref(),
-    )
+    change_owner(ctx, input, true, "chown")
 }
 
 pub(super) fn fchmod_sync<'js>(
@@ -583,9 +599,7 @@ pub(super) fn lchmod_sync<'js>(
     input: Value<'js>,
     mode: Value<'js>,
 ) -> rquickjs::Result<()> {
-    let path = path(&ctx, input)?;
-    validate_mode(&ctx, mode)?;
-    require_path(&ctx, &path, false, "lchmod", Some(&path))
+    change_mode(ctx, input, mode, false, "lchmod")
 }
 
 pub(super) fn lchown_sync<'js>(
@@ -594,14 +608,7 @@ pub(super) fn lchown_sync<'js>(
     _uid: u32,
     _gid: u32,
 ) -> rquickjs::Result<()> {
-    let reported = url_pathname(&input)?;
-    require_path(
-        &ctx,
-        &path(&ctx, input)?,
-        false,
-        "lchown",
-        reported.as_deref(),
-    )
+    change_owner(ctx, input, false, "lchown")
 }
 
 pub(super) fn lutimes_sync<'js>(
@@ -645,13 +652,23 @@ pub(super) fn mkdir_sync<'js>(
     vfs_call(&ctx, "mkdir", |vfs| vfs.mkdir(&path, options.recursive))?.into_js(&ctx)
 }
 
+/// The path `input` names, once `options` passes the encoding check the
+/// `options`-taking calls share.
+fn options_path<'js>(
+    ctx: &Ctx<'js>,
+    input: Value<'js>,
+    options: &Opt<Value<'js>>,
+) -> rquickjs::Result<String> {
+    check_encoding(ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
+    path(ctx, input)
+}
+
 pub(super) fn readdir_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
-    let path = path(&ctx, input)?;
+    let path = options_path(&ctx, input, &options)?;
     let options = parse_options(&ctx, options.0)?;
     let items = dir_items(&ctx, &path, options.recursive)?;
     let encoding = options.encoding.as_deref();
@@ -1068,8 +1085,7 @@ pub(super) fn read_link_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
-    let path = path(&ctx, input)?;
+    let path = options_path(&ctx, input, &options)?;
     let target = vfs_call(&ctx, "readlink", |vfs| vfs.read_link(&path))?;
     target_value(ctx, &target, options.0)
 }
@@ -1079,10 +1095,9 @@ pub(super) fn realpath_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
-    let path = path(&ctx, input)?;
-    let target = vfs_call(&ctx, "readlink", |vfs| vfs.realpath(&path))?;
-    target_value(ctx, &target, options.0)
+    let path = options_path(&ctx, input, &options)?;
+    let resolved = vfs_call(&ctx, "readlink", |vfs| vfs.realpath(&path))?;
+    target_value(ctx, &resolved, options.0)
 }
 
 /// A link target or real path, decoded with the encoding of `options` as

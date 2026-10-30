@@ -398,24 +398,12 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Download CLI artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v8.0.1
         with:
-          pattern: tokamak-cli-*
+          pattern: tokamak-*
           path: artifacts
           merge-multiple: true
-
-      - name: Download plugin artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: tokamak-plugins
-          path: artifacts
-
-      - name: Download CLI packages
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: tokamak-npm-cli
-          path: artifacts
 
       - name: Compute release metadata
         id: meta
@@ -467,17 +455,12 @@ jobs:
           name: tokamak-plugins
           path: artifacts
 
-      - name: Download CLI packages
+      - name: Download npm packages
         uses: actions/download-artifact@v8.0.1
         with:
-          name: tokamak-npm-cli
+          pattern: tokamak-npm-*
           path: artifacts
-
-      - name: Download platform pack packages
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: tokamak-npm-platform-packs
-          path: artifacts
+          merge-multiple: true
 
       - name: Publish plugins
         env:

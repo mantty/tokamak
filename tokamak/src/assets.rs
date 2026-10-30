@@ -195,55 +195,92 @@ fn html_steps(handling: HtmlHandling, path: &str) -> Vec<Step> {
     }
 }
 
-fn auto_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = if let Some(page) = path.strip_suffix("/index") {
-        vec![
-            serve(path),
-            redirect(format!("{path}.html")),
-            redirect(format!("{page}.html")),
-        ]
+/// The shapes of `path` that trailing-slash handling treats specially, each
+/// carrying the path that remains once its suffix is removed.
+#[derive(Clone, Copy)]
+enum PageShape<'a> {
+    /// `…/index`
+    Index(&'a str),
+    /// `…/index.html`
+    IndexHtml(&'a str),
+    /// `…/`
+    TrailingSlash(&'a str),
+    /// `….html`
+    Html(&'a str),
+    /// Any other path.
+    Other,
+}
+
+fn page_shape(path: &str) -> PageShape<'_> {
+    if let Some(page) = path.strip_suffix("/index") {
+        PageShape::Index(page)
     } else if let Some(page) = path.strip_suffix("/index.html") {
-        vec![redirect(path), redirect(format!("{page}.html"))]
+        PageShape::IndexHtml(page)
     } else if let Some(page) = path.strip_suffix('/') {
-        vec![
-            serve(format!("{path}index.html")),
-            redirect(format!("{page}.html")),
-        ]
+        PageShape::TrailingSlash(page)
     } else if let Some(page) = path.strip_suffix(".html") {
-        vec![redirect(path), redirect(format!("{page}/index.html"))]
+        PageShape::Html(page)
     } else {
-        Vec::new()
-    };
-    steps.extend([
+        PageShape::Other
+    }
+}
+
+/// The steps `…/index.html` takes under either trailing-slash policy.
+fn index_html_steps(path: &str, page: &str) -> Vec<Step> {
+    vec![redirect(path), redirect(format!("{page}.html"))]
+}
+
+/// The steps that serve `path` and the variants it resolves to.
+fn served_variants(path: &str) -> [Step; 3] {
+    [
         serve(path),
         serve(format!("{path}.html")),
         redirect(format!("{path}/index.html")),
-    ]);
+    ]
+}
+
+/// The steps `…/index` takes under either trailing-slash policy.
+fn index_steps(path: &str, page: &str) -> Vec<Step> {
+    vec![
+        serve(path),
+        redirect(format!("{path}.html")),
+        redirect(format!("{page}.html")),
+    ]
+}
+
+fn auto_trailing_slash(path: &str) -> Vec<Step> {
+    let mut steps = match page_shape(path) {
+        PageShape::Index(page) => index_steps(path, page),
+        PageShape::IndexHtml(page) => index_html_steps(path, page),
+        PageShape::TrailingSlash(page) => vec![
+            serve(format!("{path}index.html")),
+            redirect(format!("{page}.html")),
+        ],
+        PageShape::Html(page) => vec![redirect(path), redirect(format!("{page}/index.html"))],
+        PageShape::Other => Vec::new(),
+    };
+    steps.extend(served_variants(path));
     steps
 }
 
 fn force_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = if let Some(page) = path.strip_suffix("/index") {
-        vec![
-            serve(path),
-            redirect(format!("{path}.html")),
-            redirect(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix("/index.html") {
-        vec![redirect(path), redirect(format!("{page}.html"))]
-    } else if let Some(page) = path.strip_suffix('/') {
-        vec![
-            serve(format!("{path}index.html")),
-            serve(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix(".html") {
-        vec![
-            redirect(path),
-            serve(path),
-            redirect(format!("{page}/index.html")),
-        ]
-    } else {
-        Vec::new()
+    let mut steps = match page_shape(path) {
+        PageShape::Index(page) => index_steps(path, page),
+        PageShape::IndexHtml(page) => index_html_steps(path, page),
+        PageShape::TrailingSlash(page) => {
+            vec![
+                serve(format!("{path}index.html")),
+                serve(format!("{page}.html")),
+            ]
+        }
+        PageShape::Html(page) => {
+            vec![
+                redirect(path),
+                serve(path),
+                redirect(format!("{page}/index.html")),
+            ]
+        }
+        PageShape::Other => Vec::new(),
     };
     steps.extend([
         serve(path),
@@ -256,27 +293,31 @@ fn force_trailing_slash(path: &str) -> Vec<Step> {
 fn drop_trailing_slash(path: &str) -> Vec<Step> {
     let mut steps = if path == "/" {
         vec![serve("/index.html")]
-    } else if let Some(page) = path.strip_suffix("/index") {
-        vec![
-            serve(path),
-            redirect(format!("{page}.html")),
-            redirect(format!("{path}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix("/index.html") {
-        vec![
-            redirect(path),
-            serve(path),
-            redirect(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix('/') {
-        vec![
-            redirect(format!("{page}.html")),
-            redirect(format!("{page}/index.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix(".html") {
-        vec![redirect(path), redirect(format!("{page}/index.html"))]
     } else {
-        Vec::new()
+        match page_shape(path) {
+            PageShape::Index(page) => {
+                vec![
+                    serve(path),
+                    redirect(format!("{page}.html")),
+                    redirect(format!("{path}.html")),
+                ]
+            }
+            PageShape::IndexHtml(page) => {
+                vec![
+                    redirect(path),
+                    serve(path),
+                    redirect(format!("{page}.html")),
+                ]
+            }
+            PageShape::TrailingSlash(page) => {
+                vec![
+                    redirect(format!("{page}.html")),
+                    redirect(format!("{page}/index.html")),
+                ]
+            }
+            PageShape::Html(page) => vec![redirect(path), redirect(format!("{page}/index.html"))],
+            PageShape::Other => Vec::new(),
+        }
     };
     steps.extend([
         serve(path),

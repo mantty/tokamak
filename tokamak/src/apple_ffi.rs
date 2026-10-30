@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use crate::bridge::{self, Shell};
 use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
+
+/// The Apple shell's entry points, which the C header declares.
 use p256::{SecretKey, pkcs8::DecodePrivateKey};
 
 const DECISION_DEFAULT: c_int = 0;
@@ -416,6 +418,20 @@ pub unsafe extern "C" fn tokamak_runtime_pull(handle: *const c_void, id: u64) {
 /// # Safety
 ///
 /// `handle` must be live, `host` must be a NUL-terminated UTF-8 string, and
+/// The runtime and host name a challenge names, when both are usable.
+///
+/// # Safety
+///
+/// `handle` must be live and `host` must be a NUL-terminated UTF-8 string.
+unsafe fn challenge_inputs<'a>(
+    handle: *const c_void,
+    host: *const c_char,
+) -> Option<(&'a Runtime, &'a str)> {
+    let runtime = unsafe { runtime(handle) }?;
+    let host = unsafe { text(host) }?;
+    Some((runtime, host))
+}
+
 /// `authority` must be writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tokamak_runtime_server_authority(
@@ -427,10 +443,7 @@ pub unsafe extern "C" fn tokamak_runtime_server_authority(
         return DECISION_CANCEL;
     }
     unsafe { authority.write(TokamakBytes::empty()) };
-    let Some(runtime) = (unsafe { runtime(handle) }) else {
-        return DECISION_CANCEL;
-    };
-    let Some(host) = (unsafe { text(host) }) else {
+    let Some((runtime, host)) = (unsafe { challenge_inputs(handle, host) }) else {
         return DECISION_CANCEL;
     };
     match runtime
@@ -463,10 +476,7 @@ pub unsafe extern "C" fn tokamak_runtime_client_identity(
         return DECISION_CANCEL;
     }
     unsafe { identity.write(TokamakIdentity::empty()) };
-    let Some(runtime) = (unsafe { runtime(handle) }) else {
-        return DECISION_CANCEL;
-    };
-    let Some(host) = (unsafe { text(host) }) else {
+    let Some((runtime, host)) = (unsafe { challenge_inputs(handle, host) }) else {
         return DECISION_CANCEL;
     };
     match runtime

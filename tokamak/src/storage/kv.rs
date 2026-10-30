@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::sync::Mutex;
 
 use rusqlite::blob::ZeroBlob;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use super::keys::{cursor, cursor_key, prefix_end};
@@ -110,6 +110,14 @@ impl Open for KvNamespace {
     }
 }
 
+/// Delete the entries that expired at `now`.
+fn delete_expired(transaction: &Transaction<'_>, now: i64) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM entries WHERE expiration <= ?1", [now])
+        .map_err(text)?;
+    Ok(())
+}
+
 impl KvNamespace {
     /// The unexpired entry for `key` at `now`, in seconds since the epoch.
     pub(crate) fn get(
@@ -174,9 +182,7 @@ impl KvNamespace {
         let length = i32::try_from(length).map_err(text)?;
         let mut connection = lock(&self.connection);
         let transaction = connection.transaction().map_err(text)?;
-        transaction
-            .execute("DELETE FROM entries WHERE expiration <= ?1", [now])
-            .map_err(text)?;
+        delete_expired(&transaction, now)?;
         transaction
             .execute(
                 "INSERT OR REPLACE INTO entries (key, expiration, metadata, value) VALUES (?1, ?2, ?3, ?4)",
@@ -197,9 +203,7 @@ impl KvNamespace {
         validate_key(key)?;
         let mut connection = lock(&self.connection);
         let transaction = connection.transaction().map_err(text)?;
-        transaction
-            .execute("DELETE FROM entries WHERE expiration <= ?1", [now])
-            .map_err(text)?;
+        delete_expired(&transaction, now)?;
         transaction
             .execute("DELETE FROM entries WHERE key = ?1", [key])
             .map_err(text)?;

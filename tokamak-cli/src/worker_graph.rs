@@ -331,11 +331,17 @@ mod tests {
             let mut main = main.clone();
             main[field] = value;
             let project = project(&main, Some(&native))?;
-            let error = WorkerGraph::load(project.path())
-                .err()
-                .ok_or_else(|| anyhow::anyhow!("accepted invalid graph"))?;
-            assert!(error.to_string().contains(message), "{error:#}");
+            assert_rejected(project.path(), message)?;
         }
+        Ok(())
+    }
+
+    /// Assert that the graph at `root` is rejected with a message containing `message`.
+    fn assert_rejected(root: &std::path::Path, message: &str) -> Result<()> {
+        let error = WorkerGraph::load(root)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("accepted invalid graph"))?;
+        assert!(error.to_string().contains(message), "{error:#}");
         Ok(())
     }
 
@@ -366,10 +372,7 @@ mod tests {
                 }),
                 native.as_ref(),
             )?;
-            let error = WorkerGraph::load(project.path())
-                .err()
-                .ok_or_else(|| anyhow::anyhow!("accepted invalid graph"))?;
-            assert!(error.to_string().contains(message), "{error:#}");
+            assert_rejected(project.path(), message)?;
         }
         Ok(())
     }

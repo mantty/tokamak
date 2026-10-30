@@ -10,8 +10,8 @@
       "warnings": 0
     },
     "cognitive_complexity": {
-      "status": "failed",
-      "errors": 2,
+      "status": "passed",
+      "errors": 0,
       "warnings": 0
     },
     "function_length": {
@@ -30,8 +30,8 @@
       "warnings": 0
     },
     "duplication": {
-      "status": "failed",
-      "errors": 1,
+      "status": "passed",
+      "errors": 0,
       "warnings": 0
     }
   }

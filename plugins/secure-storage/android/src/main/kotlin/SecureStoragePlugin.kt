@@ -54,6 +54,14 @@ enum class Authentication(val keyTypes: Int, val authenticators: Int, val invali
     CurrentBiometrics(KeyProperties.AUTH_BIOMETRIC_STRONG, Authenticators.BIOMETRIC_STRONG, invalidatedByEnrollment = true),
 }
 
+/**
+ * Options Android carries only to reject them: `keychainGroup` is an Apple
+ * keychain feature.
+ */
+interface AppleOnlyOptions {
+    val keychainGroup: String?
+}
+
 /** How a value is stored. */
 data class StoreOptions(
     val readable: Readable,
@@ -61,21 +69,16 @@ data class StoreOptions(
     val authentication: Authentication?,
     /** Whether backups restore the value only to this device, which Android always does. */
     val thisDeviceOnly: Boolean,
-    /** An Apple keychain feature, which Android rejects. */
-    val keychainGroup: String?,
-)
+    override val keychainGroup: String?,
+) : AppleOnlyOptions
 
 data class ReadOptions(
     /** The title of the system authentication prompt. */
     val prompt: String?,
-    /** An Apple keychain feature, which Android rejects. */
-    val keychainGroup: String?,
-)
+    override val keychainGroup: String?,
+) : AppleOnlyOptions
 
-data class GroupOptions(
-    /** An Apple keychain feature, which Android rejects. */
-    val keychainGroup: String?,
-)
+data class GroupOptions(override val keychainGroup: String?) : AppleOnlyOptions
 
 /**
  * Stores each value sealed with a random AES-GCM key, wrapped by an RSA key pair in the

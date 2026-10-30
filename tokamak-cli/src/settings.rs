@@ -124,11 +124,13 @@ impl<'a> Sources<'a> {
 
 /// The value of the environment variable `name`, which must be UTF-8.
 pub(crate) fn process_environment(name: &str) -> Result<Option<String>> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
-    }
+    let Some(value) = env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("{name} must contain valid UTF-8"))?;
+    Ok(Some(value))
 }
 
 /// Settings for one platform.
@@ -1011,6 +1013,15 @@ mod tests {
     }
 
     impl Fixture {
+        /// Assert that the fixture rejects its options with `expected`.
+        fn assert_rejects_options(&self, expected: &str) -> Result<()> {
+            let Err(error) = self.plugin_settings(Platform::Ios) else {
+                anyhow::bail!("{expected}: accepted");
+            };
+            assert!(error.to_string().starts_with(expected), "{error}");
+            Ok(())
+        }
+
         /// The alerts plugin's settings on `platform`.
         fn plugin_settings(&self, platform: Platform) -> Result<Value> {
             let plugins = alerts()?;
@@ -1334,11 +1345,7 @@ mod tests {
                 fixture.config = configured(config)?;
             }
 
-            let Err(error) = fixture.plugin_settings(Platform::Ios) else {
-                anyhow::bail!("{expected}: accepted");
-            };
-
-            assert!(error.to_string().starts_with(expected), "{error}");
+            fixture.assert_rejects_options(expected)?;
         }
         Ok(())
     }
@@ -1394,11 +1401,7 @@ mod tests {
             let mut fixture = Fixture::new();
             fixture.config = configured(&config)?;
 
-            let Err(error) = fixture.plugin_settings(Platform::Ios) else {
-                anyhow::bail!("{expected}: accepted");
-            };
-
-            assert!(error.to_string().starts_with(expected), "{error}");
+            fixture.assert_rejects_options(expected)?;
         }
         Ok(())
     }

@@ -196,15 +196,15 @@ impl Reply {
         })
     }
 
-    fn into_js<'js>(
+    fn into_object<'js>(
         self,
         ctx: &Ctx<'js>,
         bootstrap: &Object<'js>,
-        channels: &Arc<Streams>,
+        streams: &Arc<Streams>,
     ) -> rquickjs::Result<Object<'js>> {
         let object = Object::new(ctx.clone())?;
         object.set("failed", self.failed)?;
-        object.set("value", self.value.into_js(ctx, bootstrap, channels)?)?;
+        object.set("value", self.value.into_js(ctx, bootstrap, streams)?)?;
         Ok(object)
     }
 }
@@ -245,7 +245,7 @@ pub(crate) fn install<'js>(
                     .invoke(target, method, message, lifetime)
                     .await
                     .map_err(|error| crate::errors::throw_message(&calling, &error.to_string()))?;
-                result.into_js(&calling, &bootstrap, &channels)
+                result.into_object(&calling, &bootstrap, &channels)
             })?;
             let operation = Object::new(ctx.clone())?;
             operation.set("result", result)?;

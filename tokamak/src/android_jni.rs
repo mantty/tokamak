@@ -3,9 +3,11 @@
 //! The shell owns the Activity, `WebView`, and lifecycle. This crate only
 //! moves values across the boundary; every decision belongs to the runtime.
 
-use std::ffi::{CString, c_char, c_int};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    ffi::{CString, c_char, c_int},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::bridge::{self, Shell};
 use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
@@ -17,6 +19,17 @@ const LOG_TAG: &str = "tokamak";
 const LOG_INFO: c_int = 4;
 const LOG_ERROR: c_int = 6;
 const FAILURE: &str = "java/lang/IllegalStateException";
+/// `result`, or a thrown `FAILURE` and a null array when it failed.
+fn reply_or_throw<'local>(
+    env: &mut JNIEnv<'local>,
+    result: Result<JByteArray<'local>, String>,
+) -> JByteArray<'local> {
+    result.unwrap_or_else(|message| {
+        let _ = env.throw_new(FAILURE, message);
+        JByteArray::from(JObject::null())
+    })
+}
+
 /// The signature of `TokamakRuntime.Plugins.call`, `callWithBody` and `subscribe`.
 const REQUEST_SIGNATURE: &str = "(JLjava/lang/String;Ljava/lang/String;[B)V";
 
@@ -306,10 +319,7 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeEmit<'local
         env.byte_array_from_slice(&reply)
             .map_err(|error| error.to_string())
     });
-    result.unwrap_or_else(|message| {
-        let _ = env.throw_new(FAILURE, message);
-        JByteArray::from(JObject::null())
-    })
+    reply_or_throw(&mut env, result)
 }
 
 /// Fetch what the app serves at `path`, blocking for up to
@@ -327,10 +337,7 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeFetch<'loca
         env.byte_array_from_slice(&body)
             .map_err(|error| error.to_string())
     });
-    result.unwrap_or_else(|message| {
-        let _ = env.throw_new(FAILURE, message);
-        JByteArray::from(JObject::null())
-    })
+    reply_or_throw(&mut env, result)
 }
 
 /// Return `[certificate, private key]` in DER for `host`, or null when tokamak

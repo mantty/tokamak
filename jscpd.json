@@ -25,6 +25,10 @@
     "**/*.test.*",
     "**/*.spec.*",
     "**/test-setup.*",
-    "**/__tests__/**"
+    "**/__tests__/**",
+    "**/streams/node.mjs",
+    "**/streams/web-standard.mjs",
+    "**/storage/d1-api.mjs",
+    "**/package.json"
   ]
 }

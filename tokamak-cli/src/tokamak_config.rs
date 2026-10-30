@@ -433,9 +433,15 @@ mod tests {
             ("[]", "options must be an object"),
         ];
         for (content, expected) in cases {
-            let message = invalid_message(temporary.path(), content)?;
-            assert!(message.starts_with(expected), "{content}: {message}");
+            assert_message(temporary.path(), content, expected)?;
         }
+        Ok(())
+    }
+
+    /// Assert that `content` is rejected with a message starting `expected`.
+    fn assert_message(root: &std::path::Path, content: &str, expected: &str) -> TestResult {
+        let message = invalid_message(root, content)?;
+        assert!(message.starts_with(expected), "{content}: {message}");
         Ok(())
     }
 
@@ -533,8 +539,7 @@ mod tests {
             ),
         ];
         for (content, expected) in cases {
-            let message = invalid_message(temporary.path(), content)?;
-            assert!(message.starts_with(expected), "{content}: {message}");
+            assert_message(temporary.path(), content, expected)?;
         }
         Ok(())
     }

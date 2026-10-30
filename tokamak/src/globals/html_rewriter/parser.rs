@@ -290,6 +290,24 @@ pub(super) fn run(
     Ok(())
 }
 
+/// `handlers` with the text and comment handlers `spec` declares, applied by
+/// `text` and `comments`.
+fn text_and_comments<'h, H>(
+    mut handlers: H,
+    spec: &Spec,
+    port: &'h Port,
+    text: impl Fn(H, impl FnMut(&mut TextChunk<'_>) -> Result + 'h) -> H,
+    comments: impl Fn(H, impl FnMut(&mut Comment<'_>) -> Result + 'h) -> H,
+) -> H {
+    if let Some(handler) = spec.text {
+        handlers = text(handlers, text_handler(port, handler));
+    }
+    if let Some(handler) = spec.comments {
+        handlers = comments(handlers, comment_handler(port, handler));
+    }
+    handlers
+}
+
 fn element_handlers<'h>(spec: &Spec, port: &'h Port) -> ElementContentHandlers<'h> {
     let mut handlers = ElementContentHandlers::default();
     if let Some(handler) = spec.element {
@@ -300,12 +318,13 @@ fn element_handlers<'h>(spec: &Spec, port: &'h Port) -> ElementContentHandlers<'
             })
         });
     }
-    if let Some(handler) = spec.text {
-        handlers = handlers.text(text_handler(port, handler));
-    }
-    if let Some(handler) = spec.comments {
-        handlers = handlers.comments(comment_handler(port, handler));
-    }
+    handlers = text_and_comments(
+        handlers,
+        spec,
+        port,
+        |set, handler| set.text(handler),
+        |set, handler| set.comments(handler),
+    );
     handlers
 }
 
@@ -316,12 +335,13 @@ fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers
             port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
         });
     }
-    if let Some(handler) = spec.text {
-        handlers = handlers.text(text_handler(port, handler));
-    }
-    if let Some(handler) = spec.comments {
-        handlers = handlers.comments(comment_handler(port, handler));
-    }
+    handlers = text_and_comments(
+        handlers,
+        spec,
+        port,
+        |set, handler| set.text(handler),
+        |set, handler| set.comments(handler),
+    );
     if let Some(handler) = spec.end {
         handlers = handlers.end(move |end: &mut DocumentEnd<'_>| {
             port.call(handler, json!({}), |operation| {

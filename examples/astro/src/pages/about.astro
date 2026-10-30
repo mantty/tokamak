@@ -3,6 +3,7 @@
 export const prerender = true;
 
 import Base from "../layouts/Base.astro";
+import TimestampCard from "../components/TimestampCard.astro";
 
 const now = new Date();
 const timestamp = now.toISOString();
@@ -19,11 +20,7 @@ const rendered = now.toLocaleString("en-GB", { timeZone: "UTC" });
       does not change on reload. Compare it with the home page's server-side
       timestamp.
     </p>
-    <div class="font-mono text-sm bg-indigo-950/50 rounded-lg p-3">
-      <div class="text-indigo-400">Build time (UTC):</div>
-      <div class="text-white">{rendered}</div>
-      <div class="text-indigo-500 text-xs mt-1">{timestamp}</div>
-    </div>
+    <TimestampCard label="Build time (UTC):" rendered={rendered} timestamp={timestamp} />
   </div>
 
   <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
