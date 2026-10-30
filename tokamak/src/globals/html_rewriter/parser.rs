@@ -290,20 +290,25 @@ pub(super) fn run(
     Ok(())
 }
 
-/// `handlers` with the text and comment handlers `spec` declares, applied by
-/// `text` and `comments`.
-fn text_and_comments<'h, H>(
+/// A content-handler set that accepts text and comment handlers.
+trait TextAndCommentHandlers<'h>: Sized {
+    /// Add the text handler `handler` calls.
+    fn with_text_handler(self, handler: usize, port: &'h Port) -> Self;
+    /// Add the comment handler `handler` calls.
+    fn with_comment_handler(self, handler: usize, port: &'h Port) -> Self;
+}
+
+/// `handlers` with the text and comment handlers `spec` declares.
+fn text_and_comments<'h, H: TextAndCommentHandlers<'h>>(
     mut handlers: H,
     spec: &Spec,
     port: &'h Port,
-    text: impl Fn(H, impl FnMut(&mut TextChunk<'_>) -> Result + 'h) -> H,
-    comments: impl Fn(H, impl FnMut(&mut Comment<'_>) -> Result + 'h) -> H,
 ) -> H {
     if let Some(handler) = spec.text {
-        handlers = text(handlers, text_handler(port, handler));
+        handlers = handlers.with_text_handler(handler, port);
     }
     if let Some(handler) = spec.comments {
-        handlers = comments(handlers, comment_handler(port, handler));
+        handlers = handlers.with_comment_handler(handler, port);
     }
     handlers
 }
@@ -318,13 +323,7 @@ fn element_handlers<'h>(spec: &Spec, port: &'h Port) -> ElementContentHandlers<'
             })
         });
     }
-    handlers = text_and_comments(
-        handlers,
-        spec,
-        port,
-        |set, handler| set.text(handler),
-        |set, handler| set.comments(handler),
-    );
+    handlers = text_and_comments(handlers, spec, port);
     handlers
 }
 
@@ -335,13 +334,7 @@ fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers
             port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
         });
     }
-    handlers = text_and_comments(
-        handlers,
-        spec,
-        port,
-        |set, handler| set.text(handler),
-        |set, handler| set.comments(handler),
-    );
+    handlers = text_and_comments(handlers, spec, port);
     if let Some(handler) = spec.end {
         handlers = handlers.end(move |end: &mut DocumentEnd<'_>| {
             port.call(handler, json!({}), |operation| {
@@ -352,6 +345,24 @@ fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers
     }
     handlers
 }
+
+/// Implement [`TextAndCommentHandlers`] for a content-handler set.
+macro_rules! text_and_comment_handlers {
+    ($set:ident) => {
+        impl<'h> TextAndCommentHandlers<'h> for $set<'h> {
+            fn with_text_handler(self, handler: usize, port: &'h Port) -> Self {
+                self.text(text_handler(port, handler))
+            }
+
+            fn with_comment_handler(self, handler: usize, port: &'h Port) -> Self {
+                self.comments(comment_handler(port, handler))
+            }
+        }
+    };
+}
+
+text_and_comment_handlers!(ElementContentHandlers);
+text_and_comment_handlers!(DocumentContentHandlers);
 
 fn text_handler(port: &Port, handler: usize) -> impl FnMut(&mut TextChunk<'_>) -> Result + '_ {
     move |text| {

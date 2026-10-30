@@ -1951,6 +1951,18 @@ mod tests {
         }
     }
 
+    /// Assert the fields `profile_value` gives a development profile and its identity.
+    fn assert_development_profile(profile: &crate::Profile, identity: &Identity) {
+        assert_eq!(profile.path, Path::new("PROFILE-1.mobileprovision"));
+        assert_eq!(profile.id, "PROFILE-1");
+        assert_eq!(profile.name, "Development");
+        assert_eq!(profile.team_id, "TEAM");
+        assert_ne!(profile.expiration_label, "");
+        assert_eq!(identity.name, "Apple Development: Test");
+        assert_eq!(identity.fingerprint, fingerprint(&[1, 2, 3]));
+        assert_eq!(identity.selector, sha1_fingerprint(&[1, 2, 3]));
+    }
+
     #[test]
     fn parses_and_matches_a_development_profile() -> Result<(), Box<dyn std::error::Error>> {
         let profile = parsed_profile(
@@ -1959,14 +1971,7 @@ mod tests {
             &profile_value("TEAM.com.example.app", "DEVICE"),
         )?;
         let identity = profile_identity("Apple Development: Test");
-
-        assert_eq!(profile.path, Path::new("PROFILE-1.mobileprovision"));
-        assert_eq!(profile.id, "PROFILE-1");
-        assert_eq!(profile.name, "Development");
-        assert_eq!(profile.team_id, "TEAM");
-        assert_ne!(profile.expiration_label, "");
-        assert_eq!(identity.fingerprint, fingerprint(&[1, 2, 3]));
-        assert_eq!(identity.selector, sha1_fingerprint(&[1, 2, 3]));
+        assert_development_profile(&profile, &identity);
         for (bundle_id, device_id, matches) in [
             ("com.example.app", Some("DEVICE"), true),
             ("com.example.other", Some("DEVICE"), false),
