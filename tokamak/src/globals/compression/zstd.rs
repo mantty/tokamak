@@ -23,14 +23,8 @@ impl Zstd {
         if !encode {
             let mut decoder = z::DCtx::create();
             for (&key, &value) in &options.params {
-                if key != 100 {
-                    return Err(CodecError::new(
-                        "ERR_ZSTD_INVALID_PARAM",
-                        "Invalid Zstd decoder parameter",
-                    ));
-                }
                 decoder
-                    .set_parameter(DParameter::WindowLogMax(value.cast_unsigned()))
+                    .set_parameter(decoder_parameter(key, value)?)
                     .map_err(error)?;
             }
             return Ok(Self::Decoder {
@@ -99,6 +93,16 @@ impl Zstd {
             written: output.pos(),
             ended: remaining == 0 && flush == 2 && input.pos() == input.src.len(),
         })
+    }
+}
+
+fn decoder_parameter(key: u32, value: i32) -> Result<DParameter, CodecError> {
+    match key {
+        100 => Ok(DParameter::WindowLogMax(value.cast_unsigned())),
+        _ => Err(CodecError::new(
+            "ERR_ZSTD_INVALID_PARAM",
+            "Invalid Zstd decoder parameter",
+        )),
     }
 }
 

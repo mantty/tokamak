@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::gateway::HandlerError;
 use crate::lock;
 use crate::native_protocol::{self, Header};
-use crate::plugin_calls::{Body, Overflow, PluginCalls, PluginReply, error};
+use crate::plugin_calls::{Body, Overflow, PluginCalls, PluginReply, Subscription, error};
 use crate::transport::{parse_websocket_frame, write_frame};
 
 /// The development app's end of the dev WebSocket, while it is open.
@@ -171,19 +171,10 @@ impl DevSocket {
                     .overflow
                     .as_deref()
                     .map_or(Some(Overflow::Error), Overflow::named);
-                let mut subscription = overflow
+                let subscription = overflow
                     .map(|overflow| self.plugins.subscribe(plugin, method, payload, overflow));
                 tokio::spawn(async move {
-                    let Some(subscription) = &mut subscription else {
-                        let unknown = error("TypeError", "Unknown overflow policy");
-                        send_result(&outgoing, id, unknown).await;
-                        return;
-                    };
-                    while let Some(result) = subscription.next().await {
-                        if !send_result(&outgoing, id, result).await {
-                            return;
-                        }
-                    }
+                    send_subscription(&outgoing, id, subscription).await;
                 })
             }
             "cancel" => {
@@ -265,6 +256,25 @@ async fn send_result(
         ))
         .await
         .is_ok()
+}
+
+/// Sends each result of `subscription` until it ends or the dev WebSocket
+/// closes; `None` sends the error for an unknown overflow policy.
+async fn send_subscription(
+    outgoing: &mpsc::Sender<(Header, Vec<u8>)>,
+    id: u64,
+    subscription: Option<Subscription>,
+) {
+    let Some(mut subscription) = subscription else {
+        let unknown = error("TypeError", "Unknown overflow policy");
+        send_result(outgoing, id, unknown).await;
+        return;
+    };
+    while let Some(result) = subscription.next().await {
+        if !send_result(outgoing, id, result).await {
+            return;
+        }
+    }
 }
 
 impl Connection {

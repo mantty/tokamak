@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
   group: tokamak-checks-${{ github.ref }}
@@ -17,67 +16,72 @@ concurrency:
 jobs:
   checks:
     name: Pre-checks (lint, format, typecheck, test, reports)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+        uses: actions/checkout@v6.0.3
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: '1.96.0'
+          toolchain: 1.96.0
           components: clippy, rustfmt
 
-      - name: Install jscpd
-        run: npm install -g jscpd@5.4.2
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-bin: false
 
-      - name: Run checks and generate reports
-        continue-on-error: true
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "22"
+
+      - name: Install jscpd
+        run: npm install --global jscpd@5.4.2
+
+      - name: Run checks
         run: node scripts/collect-report.mjs all
 
       - name: Validate reports
+        if: ${{ !cancelled() }}
         run: node scripts/validate-reports.mjs tokamak
 
-      - name: Require all checks passed
-        run: |
-          failed=false
-          for f in reports/tokamak-*.json; do
-            if grep -q '"status": *"failed"' "$f"; then failed=true; fi
-          done
-          if [ "$failed" = true ]; then
-            echo "One or more checks failed; see the check results comment on the PR."
-            exit 1
-          fi
-
-      - name: Update check results comment
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
-        uses: actions/github-script@v7
+      # Pull requests compare their reports with those of main's latest push.
+      - name: Upload reports
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        uses: actions/upload-artifact@v7.0.1
         with:
-          script: |
-            const { execSync } = require('child_process');
-            execSync('node scripts/check-comment.mjs tokamak', { stdio: 'inherit' });
-            const body = require('fs').readFileSync('.check-comment.md', 'utf8');
-            const marker = '<!-- check-results -->';
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
-            });
-            const existing = comments.find((c) => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body,
-              });
-            }
+          name: check-reports
+          path: reports/tokamak-*.json
+          if-no-files-found: error
+
+      - name: Update the check results comment
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=check-reports&per_page=1" \
+            --jq '.artifacts[] | select(.expired | not) | .workflow_run.id')
+          if [ -n "$run" ]; then
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name check-reports --dir "$RUNNER_TEMP/main-reports"
+          fi
+          node scripts/check-comment.mjs tokamak "$RUNNER_TEMP/main-reports" > "$RUNNER_TEMP/check-comment.md"
+          comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '.[] | select(.body | startswith("<!-- check-results -->")) | .id')
+          comment=${comments%%$'\n'*}
+          if [ -n "$comment" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment" \
+              -F "body=@$RUNNER_TEMP/check-comment.md" --silent
+          else
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/check-comment.md"
+          fi
 
   general:
     name: Test Linux and Android
@@ -98,7 +102,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.0
-          components: clippy, rustfmt
+          components: clippy
           targets: aarch64-linux-android
 
       - name: Setup Android SDK
@@ -163,9 +167,6 @@ jobs:
           npm run build
           npm test
 
-      - name: Check Rust formatting
-        run: cargo fmt --all --check
-
       - name: Install runtime test dependencies
         run: |
           pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
@@ -177,16 +178,12 @@ jobs:
       - name: Test runtime JavaScript
         run: node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
 
-      - name: Lint Rust
-        run: |
-          cargo clippy --workspace --exclude windows-shell --all-targets -- -D warnings
-          cargo clippy -p tokamak --all-targets --features native -- -D warnings
-          cargo clippy -p tokamak --lib --target aarch64-linux-android --features native -- -D warnings
+      # The pre-checks lint, format and test the host build.
+      - name: Lint Android Rust
+        run: cargo clippy -p tokamak --lib --target aarch64-linux-android --features native -- -D warnings
 
-      - name: Test Rust
-        run: |
-          cargo test -p tokamak --features native
-          cargo test --workspace --exclude windows-shell
+      - name: Test native Rust
+        run: cargo test -p tokamak --features native
 
       - name: Test the Kotlin describer and generated plugin files
         run: bash platforms/android/tests/describe.sh

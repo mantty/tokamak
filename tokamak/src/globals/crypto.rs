@@ -370,9 +370,10 @@ fn host_encrypt<'js>(
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (input, material, hash, label) = oaep_inputs(&ctx, input, &options)?;
+    let plaintext = bytes(&ctx, input)?;
+    let (material, hash, label) = oaep_operands(&ctx, &options)?;
     let output = rsa_public(&ctx, &material.public()).and_then(|key| {
-        rsa::encrypt_oaep(key, hash, &label, &input).map_err(|error| operation(&ctx, &error))
+        rsa::encrypt_oaep(key, hash, &label, &plaintext).map_err(|error| operation(&ctx, &error))
     })?;
     ArrayBuffer::new_copy(ctx, &output)
 }
@@ -382,22 +383,12 @@ fn host_decrypt<'js>(
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (ciphertext, material, hash, label) = oaep_inputs(&ctx, input, &options)?;
+    let ciphertext = bytes(&ctx, input)?;
+    let (material, hash, label) = oaep_operands(&ctx, &options)?;
     let key = rsa_private(&ctx, &material)?;
     let output = rsa::decrypt_oaep(key, hash, &label, &ciphertext)
         .map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
-}
-
-/// The input bytes and OAEP operands the `rsa-oaep` calls share.
-fn oaep_inputs<'js>(
-    ctx: &Ctx<'js>,
-    input: TypedArray<'js, u8>,
-    options: &Object<'js>,
-) -> rquickjs::Result<(Vec<u8>, KeyMaterial, Hash, Vec<u8>)> {
-    let input = bytes(ctx, input)?;
-    let (material, hash, label) = oaep_operands(ctx, options)?;
-    Ok((input, material, hash, label))
 }
 
 fn oaep_operands<'js>(
@@ -519,8 +510,8 @@ fn point_format(ctx: &Ctx<'_>, format: &str) -> rquickjs::Result<bool> {
     }
 }
 
-/// The curve and secret the `ecdh` calls share.
-fn ecdh_inputs<'js>(
+/// The curve and private key that `options` give the ECDH calls.
+fn ecdh_secret<'js>(
     ctx: &Ctx<'js>,
     options: &Object<'js>,
 ) -> rquickjs::Result<(Curve, curves::EcSecret)> {
@@ -535,7 +526,7 @@ fn host_ecdh_public<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (_, key) = ecdh_inputs(&ctx, &options)?;
+    let (_, key) = ecdh_secret(&ctx, &options)?;
     ArrayBuffer::new_copy(ctx, curves::encode_point(&curves::public_of(&key), false))
 }
 
@@ -543,7 +534,7 @@ fn host_ecdh_compute<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (curve, key) = ecdh_inputs(&ctx, &options)?;
+    let (curve, key) = ecdh_secret(&ctx, &options)?;
     let peer = required_bytes(&ctx, &options, "peer")?;
     let peer = curves::decode_point(curve, &peer).map_err(|error| operation(&ctx, &error))?;
     let output = curves::agree(&key, &peer).map_err(|error| operation(&ctx, &error))?;
@@ -597,27 +588,17 @@ fn host_dh_compute<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result
     ArrayBuffer::new_copy(ctx, &secret)
 }
 
-/// The input bytes, key material and padding the legacy RSA calls share.
-fn rsa_legacy_inputs<'js>(
-    ctx: &Ctx<'js>,
-    input: TypedArray<'js, u8>,
-    options: &Object<'js>,
-) -> rquickjs::Result<(Vec<u8>, KeyMaterial, rsa::Padding)> {
-    let input = bytes(ctx, input)?;
-    let material = required_key(ctx, options)?;
-    let padding = rsa_padding(ctx, options)?;
-    Ok((input, material, padding))
-}
-
 fn host_rsa_legacy_private_encrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (input, material, padding) = rsa_legacy_inputs(&ctx, input, &options)?;
+    let plaintext = bytes(&ctx, input)?;
+    let material = required_key(&ctx, &options)?;
     let key = rsa_private(&ctx, &material)?;
+    let padding = rsa_padding(&ctx, &options)?;
     let output =
-        rsa::private_encrypt(key, padding, &input).map_err(|error| operation(&ctx, &error))?;
+        rsa::private_encrypt(key, padding, &plaintext).map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
 }
 
@@ -626,7 +607,9 @@ fn host_rsa_legacy_public_decrypt<'js>(
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (ciphertext, material, padding) = rsa_legacy_inputs(&ctx, input, &options)?;
+    let ciphertext = bytes(&ctx, input)?;
+    let material = required_key(&ctx, &options)?;
+    let padding = rsa_padding(&ctx, &options)?;
     let output = rsa_public(&ctx, &material.public()).and_then(|key| {
         rsa::public_decrypt(key, padding, &ciphertext).map_err(|error| operation(&ctx, &error))
     })?;

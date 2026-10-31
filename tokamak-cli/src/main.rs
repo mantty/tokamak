@@ -137,14 +137,11 @@ enum PluginCommand {
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => failure(&error),
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::FAILURE
+        }
     }
-}
-
-/// Reports `error` and returns the exit code that marks the run as failed.
-fn failure(error: &anyhow::Error) -> ExitCode {
-    eprintln!("error: {error:#}");
-    ExitCode::FAILURE
 }
 
 fn run() -> Result<()> {

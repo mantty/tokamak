@@ -230,40 +230,32 @@ fn plural_categories(ctx: Ctx<'_>, locales: String, kind: String) -> rquickjs::R
     to_json(&ctx, &values)
 }
 
-/// The values and formatter the `list` calls build.
-fn list_inputs(
-    ctx: &Ctx<'_>,
-    values: &str,
-    locales: &str,
-    options: &str,
-) -> rquickjs::Result<(Vec<String>, ListFormatter)> {
-    Ok((
-        from_json(ctx, values)?,
-        list_formatter(ctx, locales, options)?,
-    ))
-}
-
+// jscpd:ignore-start: the string and parts forms read their arguments alike.
 fn list(
     ctx: Ctx<'_>,
     values: String,
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let (values, formatter) = list_inputs(&ctx, &values, &locales, &options)?;
+    let values: Vec<String> = from_json(&ctx, &values)?;
+    let formatter = list_formatter(&ctx, &locales, &options)?;
     Ok(formatter.format_to_string(values.iter().map(String::as_str)))
 }
+// jscpd:ignore-end
 
 fn list_parts(
     ctx: Ctx<'_>,
-    items: String,
+    values: String,
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let (values, formatter) = list_inputs(&ctx, &items, &locales, &options)?;
+    let values: Vec<String> = from_json(&ctx, &values)?;
+    let formatter = list_formatter(&ctx, &locales, &options)?;
     let formatted_list = formatter.format(values.iter().map(String::as_str));
     to_json(&ctx, &collect_parts(&formatted_list))
 }
 
+// jscpd:ignore-start: the string and parts forms read their arguments alike.
 fn relative(
     ctx: Ctx<'_>,
     value: f64,
@@ -274,6 +266,7 @@ fn relative(
     let (locale, options) = relative_inputs(&ctx, value, &locales, &options)?;
     format_relative(&ctx, value, &unit, &locale, &options)
 }
+// jscpd:ignore-end
 
 fn relative_inputs(
     ctx: &Ctx<'_>,
@@ -349,14 +342,14 @@ fn format_relative(
 
 fn relative_parts(
     ctx: Ctx<'_>,
-    amount: f64,
+    value: f64,
     unit: String,
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let (locale, options) = relative_inputs(&ctx, amount, &locales, &options)?;
-    let formatted = format_relative(&ctx, amount, &unit, &locale, &options)?;
-    let absolute = parse_decimal(&ctx, amount.abs())?;
+    let (locale, options) = relative_inputs(&ctx, value, &locales, &options)?;
+    let formatted = format_relative(&ctx, value, &unit, &locale, &options)?;
+    let absolute = parse_decimal(&ctx, value.abs())?;
     let number = with_decimal_formatter(&ctx, &locale, GroupingStrategy::Auto, |formatter| {
         formatter.format_to_string(&absolute)
     })?;
@@ -368,7 +361,7 @@ fn relative_parts(
     };
     let prefix = &formatted[..index];
     let suffix = &formatted[index + number.len()..];
-    let kind = if amount.fract() == 0.0 {
+    let kind = if value.fract() == 0.0 {
         "integer"
     } else {
         "fraction"

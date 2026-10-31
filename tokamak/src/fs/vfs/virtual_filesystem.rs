@@ -1314,22 +1314,25 @@ impl VirtualFileSystem {
                 .transpose()?
                 .flatten()
                 .ok_or_else(|| Error::new(ErrorKind::NotFound))?;
-            if let Node::Symlink(target) = &child {
-                symlinks += 1;
-                if symlinks > 40 {
+            match child {
+                Node::Symlink(_) if symlinks == 40 => {
                     return Err(Error::new(ErrorKind::SymlinkLoop));
                 }
-                let mut next = target_components(&resolved, target)?;
-                next.extend_from_slice(&pending[index + 1..]);
-                pending = next;
-                current = root.clone();
-                resolved.clear();
-                index = 0;
-                continue;
+                Node::Symlink(target) => {
+                    symlinks += 1;
+                    let mut next = target_components(&resolved, &target)?;
+                    next.extend_from_slice(&pending[index + 1..]);
+                    pending = next;
+                    current = root.clone();
+                    resolved.clear();
+                    index = 0;
+                }
+                child => {
+                    current = child;
+                    resolved.push(name);
+                    index += 1;
+                }
             }
-            current = child;
-            resolved.push(name);
-            index += 1;
         }
     }
 }

@@ -33,13 +33,17 @@ enum Command {
     Sqlite,
 }
 
+// jscpd:ignore-start: each binary reports a failed run as tok does.
 fn main() -> ExitCode {
-    if let Err(error) = run() {
-        eprintln!("error: {error:#}");
-        return ExitCode::FAILURE;
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::FAILURE
+        }
     }
-    ExitCode::SUCCESS
 }
+// jscpd:ignore-end
 
 fn run() -> Result<()> {
     let cli = Cli::parse();

@@ -124,13 +124,11 @@ impl<'a> Sources<'a> {
 
 /// The value of the environment variable `name`, which must be UTF-8.
 pub(crate) fn process_environment(name: &str) -> Result<Option<String>> {
-    let Some(value) = env::var_os(name) else {
-        return Ok(None);
-    };
-    let value = value
-        .into_string()
-        .map_err(|_| anyhow::anyhow!("{name} must contain valid UTF-8"))?;
-    Ok(Some(value))
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
+    }
 }
 
 /// Settings for one platform.

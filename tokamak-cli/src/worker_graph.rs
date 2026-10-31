@@ -62,27 +62,12 @@ impl WorkerGraph {
             .collect();
         self.workers()
             .map(|(name, config)| {
-                let services = config
-                    .services
-                    .iter()
-                    .filter_map(|binding| {
-                        names.get(binding.service.as_str()).map(|target| {
-                            (
-                                binding.binding.clone(),
-                                ServiceBinding {
-                                    service: (*target).to_owned(),
-                                    entrypoint: binding.entrypoint().to_owned(),
-                                },
-                            )
-                        })
-                    })
-                    .collect();
                 Ok(CompiledWorker {
                     config,
                     name,
                     compiled: worker::compile(&cache.join(name), config)
                         .with_context(|| format!("compile the {name} worker"))?,
-                    services,
+                    services: service_bindings(config, &names),
                 })
             })
             .collect()
@@ -119,6 +104,28 @@ impl WorkerGraph {
             ),
         }
     }
+}
+
+/// The service bindings of `config` whose targets `names` maps to packaged
+/// service names, keyed by binding name.
+fn service_bindings(
+    config: &WranglerConfig,
+    names: &BTreeMap<&str, &'static str>,
+) -> BTreeMap<String, ServiceBinding> {
+    config
+        .services
+        .iter()
+        .filter_map(|binding| {
+            let target = names.get(binding.service.as_str())?;
+            Some((
+                binding.binding.clone(),
+                ServiceBinding {
+                    service: (*target).to_owned(),
+                    entrypoint: binding.entrypoint().to_owned(),
+                },
+            ))
+        })
+        .collect()
 }
 
 impl CompiledWorker<'_> {

@@ -652,23 +652,13 @@ pub(super) fn mkdir_sync<'js>(
     vfs_call(&ctx, "mkdir", |vfs| vfs.mkdir(&path, options.recursive))?.into_js(&ctx)
 }
 
-/// The path `input` names, once `options` passes the encoding check the
-/// `options`-taking calls share.
-fn options_path<'js>(
-    ctx: &Ctx<'js>,
-    input: Value<'js>,
-    options: &Opt<Value<'js>>,
-) -> rquickjs::Result<String> {
-    check_encoding(ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
-    path(ctx, input)
-}
-
 pub(super) fn readdir_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    let path = options_path(&ctx, input, &options)?;
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
+    let path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
     let items = dir_items(&ctx, &path, options.recursive)?;
     let encoding = options.encoding.as_deref();
@@ -1085,9 +1075,7 @@ pub(super) fn read_link_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    let path = options_path(&ctx, input, &options)?;
-    let target = vfs_call(&ctx, "readlink", |vfs| vfs.read_link(&path))?;
-    target_value(ctx, &target, options.0)
+    link_target(ctx, input, options, VirtualFileSystem::read_link)
 }
 
 pub(super) fn realpath_sync<'js>(
@@ -1095,19 +1083,22 @@ pub(super) fn realpath_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    let path = options_path(&ctx, input, &options)?;
-    let resolved = vfs_call(&ctx, "readlink", |vfs| vfs.realpath(&path))?;
-    target_value(ctx, &resolved, options.0)
+    link_target(ctx, input, options, VirtualFileSystem::realpath)
 }
 
-/// A link target or real path, decoded with the encoding of `options` as
-/// `Buffer.prototype.toString` decodes it.
-fn target_value<'js>(
+/// The path `resolve` gives for `input`, decoded with the encoding of
+/// `options` as `Buffer.prototype.toString` decodes it. A failure is reported
+/// as workerd's `readlink` reports it.
+fn link_target<'js>(
     ctx: Ctx<'js>,
-    target: &str,
-    options: Option<Value<'js>>,
+    input: Value<'js>,
+    options: Opt<Value<'js>>,
+    resolve: fn(&VirtualFileSystem, &str) -> VfsResult<String>,
 ) -> rquickjs::Result<Value<'js>> {
-    let options = parse_options(&ctx, options)?;
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
+    let path = path(&ctx, input)?;
+    let target = vfs_call(&ctx, "readlink", |vfs| resolve(vfs, &path))?;
+    let options = parse_options(&ctx, options.0)?;
     let encoding = options.encoding.as_deref().unwrap_or("utf8");
     output(ctx, target.as_bytes(), Some(encoding))
 }

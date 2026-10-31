@@ -18,61 +18,15 @@ pub(super) struct WriteRequest<'js> {
     pub(super) position: Option<Value<'js>>,
 }
 
-/// Where a string write reads the encoding it uses.
-#[derive(Clone, Copy)]
-pub(super) enum StringWrite {
-    /// `fs.writeSync`, whose second argument follows the position.
-    Sync,
-    /// `fileHandle.write`, whose second argument is the encoding.
-    FileHandle,
-}
-
 /// `fs.writeSync(fd, value, ...args)`.
 pub(super) fn sync_write<'js>(
     ctx: &Ctx<'js>,
     value: Value<'js>,
     args: Vec<Value<'js>>,
 ) -> rquickjs::Result<WriteRequest<'js>> {
-    write(ctx, StringWrite::Sync, value, args)
-}
-
-/// `fileHandle.write(value, ...args)`.
-pub(super) fn file_handle_write<'js>(
-    ctx: &Ctx<'js>,
-    value: Value<'js>,
-    args: Vec<Value<'js>>,
-) -> rquickjs::Result<WriteRequest<'js>> {
-    write(ctx, StringWrite::FileHandle, value, args)
-}
-
-/// A write of `value`, which a string form encodes before writing.
-fn write<'js>(
-    ctx: &Ctx<'js>,
-    form: StringWrite,
-    value: Value<'js>,
-    args: Vec<Value<'js>>,
-) -> rquickjs::Result<WriteRequest<'js>> {
     if !value.is_string() {
         return view_write(ctx, value, args);
     }
-    match form {
-        StringWrite::Sync => sync_string_write(ctx, value, args),
-        StringWrite::FileHandle => {
-            let encoding = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-            view_write(ctx, encoded(ctx, value, encoding)?, args)
-        }
-    }
-}
-
-/// `fs.writeSync`'s string form, which reads the position before the encoding.
-fn sync_string_write<'js>(
-    ctx: &Ctx<'js>,
-    value: Value<'js>,
-    args: Vec<Value<'js>>,
-) -> rquickjs::Result<WriteRequest<'js>> {
     let mut args = args.into_iter();
     let position = optional_position(ctx, args.next())?;
     let encoding = args
@@ -105,6 +59,25 @@ pub(super) fn callback_write<'js>(
     };
     view_write(ctx, encoded(ctx, value, encoding)?, args)
 }
+
+// jscpd:ignore-start: each write form handles a non-string value alike.
+/// `fileHandle.write(value, ...args)`: a string is encoded with the second
+/// argument, which the write still reads as its length.
+pub(super) fn file_handle_write<'js>(
+    ctx: &Ctx<'js>,
+    value: Value<'js>,
+    args: Vec<Value<'js>>,
+) -> rquickjs::Result<WriteRequest<'js>> {
+    if !value.is_string() {
+        return view_write(ctx, value, args);
+    }
+    let encoding = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    view_write(ctx, encoded(ctx, value, encoding)?, args)
+}
+// jscpd:ignore-end
 
 /// `fs.writevSync(fd, buffers, position)`, with `None` for a `null` position.
 pub(super) fn vector_write<'js>(

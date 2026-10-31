@@ -2,7 +2,6 @@
 # Shares its prologue with the other platform packs.
 source "$(dirname "${BASH_SOURCE[0]}")/../../platform-pack-common.sh"
 build=$workspace/platforms/android/build
-build=$workspace/platforms/android/build
 rust_target=aarch64-linux-android
 min_sdk=$(<"$build/min-sdk")
 

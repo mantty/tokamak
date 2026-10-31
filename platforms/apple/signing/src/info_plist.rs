@@ -50,13 +50,15 @@ impl Metadata {
     fn read(input: &Path) -> Result<Self> {
         let metadata = input.join("metadata");
         let version = read_optional(&metadata.join("version"))?;
-        let mut build_number = version.clone().unwrap_or_else(|| "1".into());
-        let version = version.unwrap_or_else(|| "1.0".into());
         let platform = read_required(&metadata.join("platform"))?;
-        if let Some(value) = variable_value(&pack_variable(&platform, "BUILD_NUMBER"))? {
-            build_number = value;
-        }
+        let variable = pack_variable(&platform, "BUILD_NUMBER");
+        let build_number = match env::var(&variable) {
+            Ok(value) => value,
+            Err(env::VarError::NotPresent) => version.clone().unwrap_or_else(|| "1".into()),
+            Err(env::VarError::NotUnicode(_)) => bail!("{variable} must contain valid UTF-8"),
+        };
         validate_build_number(&build_number)?;
+        let version = version.unwrap_or_else(|| "1.0".into());
 
         let development = match read_optional(&metadata.join("dev-endpoint"))? {
             Some(endpoint) => Some((
@@ -466,14 +468,6 @@ fn read_optional(path: &Path) -> Result<Option<String>> {
     path.is_file().then(|| read_required(path)).transpose()
 }
 
-fn variable_value(name: &str) -> Result<Option<String>> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
-    }
-}
-
 fn validate_build_number(value: &str) -> Result<()> {
     let valid = !value.is_empty()
         && value.split('.').count() <= 3
@@ -607,7 +601,6 @@ mod tests {
         Ok(path)
     }
 
-    /// Write `values` to `path` as a dictionary plist.
     /// The iOS input of a new app and the path its `User.plist` takes.
     fn ios_input_and_user_path(
         root: &std::path::Path,
@@ -631,6 +624,7 @@ mod tests {
         Ok(input)
     }
 
+    /// Write `values` to `path` as a dictionary plist.
     fn write_values(path: &std::path::Path, values: &[(&str, Value)]) -> anyhow::Result<()> {
         let dictionary: Dictionary = values
             .iter()

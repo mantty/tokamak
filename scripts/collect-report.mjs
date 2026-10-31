@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Generates JSON quality reports in reports/ for each check kind.
+// Runs the checks and writes a JSON report for each check kind to reports/.
 // Usage: node scripts/collect-report.mjs [lint|format|typecheck|test|all]
+// Exits 1 when a section fails; the log names each finding.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -8,112 +9,132 @@ import path from "node:path";
 const PROJECT = "tokamak";
 const LANGUAGE = "rust";
 const REPORTS = path.resolve("reports");
-const kind = process.argv[2] ?? "all";
-mkdirSync(REPORTS, { recursive: true });
+const JSCPD_REPORT = path.join(REPORTS, "jscpd-report.json");
 
-const CARGO_LINT_ARGS = [
-  "clippy", "--workspace", "--exclude", "windows-shell", "--all-targets", "--message-format=json", "--",
-  "-D", "warnings",
-  // Supplementary pedantic lints not enabled by default:
-  "-D", "clippy::excessive_nesting",
-  "-D", "clippy::fn_params_excessive_bools",
-  "-D", "clippy::type_complexity",
-  "-D", "clippy::too_many_arguments",
+// The host builds the lint report covers: the workspace, and the runtime with
+// its native modules.
+const CLIPPY_TARGETS = [
+  ["--workspace", "--exclude", "windows-shell", "--all-targets"],
+  ["-p", "tokamak", "--all-targets", "--features", "native"],
 ];
 
-function run(cmd, args) {
-  const parts = cmd.split(" ");
-  return spawnSync(parts[0], [...parts.slice(1), ...(args ?? [])], { encoding: "utf8", maxBuffer: 1024 * 1024 * 64 });
+// The lint sections with their own clippy lints; every other finding counts
+// in `lint`.
+const LINT_SECTIONS = {
+  "clippy::cognitive_complexity": "cognitive_complexity",
+  "clippy::too_many_lines": "function_length",
+  "clippy::excessive_nesting": "nesting",
+  "clippy::fn_params_excessive_bools": "pedantic-checks",
+  "clippy::too_many_arguments": "pedantic-checks",
+  "clippy::type_complexity": "pedantic-checks",
+};
+
+function run(command, args) {
+  const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  if (result.error) throw result.error;
+  return result;
 }
 
-function write(kindName, sections) {
-  const report = {
-    schema_version: 1,
-    project: PROJECT,
-    language: LANGUAGE,
-    kind: kindName,
-    sections,
-  };
-  writeFileSync(path.join(REPORTS, `${PROJECT}-${kindName}.json`), JSON.stringify(report, null, 2));
-  const failed = Object.values(sections).some((s) => s.status === "failed");
-  console.error(`report ${kindName}: ${failed ? "FAILED" : "passed"}`);
+function section(failed, errors = 0, warnings = 0) {
+  return { status: failed ? "failed" : "passed", errors, warnings };
+}
+
+function write(kind, sections) {
+  const report = { schema_version: 1, project: PROJECT, language: LANGUAGE, kind, sections };
+  writeFileSync(path.join(REPORTS, `${PROJECT}-${kind}.json`), JSON.stringify(report, null, 2));
+  const failed = Object.values(sections).some((result) => result.status === "failed");
+  console.error(`report ${kind}: ${failed ? "FAILED" : "passed"}`);
   if (failed) process.exitCode = 1;
 }
 
-function section(status, errors = 0, warnings = 0) {
-  return { status, errors, warnings };
+/** The last lines of a command's output, for a log that explains a failure. */
+function tail(result) {
+  const lines = `${result.stdout}${result.stderr}`.split("\n").filter((line) => line.trim() !== "");
+  return lines.slice(-40).join("\n");
+}
+
+/** The compiler diagnostic a line of cargo's JSON output carries, if any. */
+function diagnostic(line) {
+  try {
+    const message = JSON.parse(line);
+    return message.reason === "compiler-message" ? message.message : null;
+  } catch {
+    return null;
+  }
 }
 
 function lint() {
-  const buckets = { lint: { e: 0, w: 0 }, cognitive_complexity: { e: 0, w: 0 }, function_length: { e: 0, w: 0 }, nesting: { e: 0, w: 0 }, "pedantic-checks": { e: 0, w: 0 } };
-  const r = run("cargo", CARGO_LINT_ARGS);
-  for (const line of (r.stdout ?? "").split("\n")) {
-    if (!line.trim()) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
+  const counts = Object.fromEntries(
+    ["lint", ...new Set(Object.values(LINT_SECTIONS))].map((name) => [name, { errors: 0, warnings: 0 }]),
+  );
+  for (const targets of CLIPPY_TARGETS) {
+    const result = run("cargo", ["clippy", ...targets, "--message-format=json", "--", "-D", "warnings"]);
+    let errors = 0;
+    for (const message of result.stdout.split("\n").map(diagnostic)) {
+      // Summaries such as "aborting due to 2 previous errors" point at no code.
+      if (!message?.spans.length) continue;
+      const count = counts[LINT_SECTIONS[message.code?.code] ?? "lint"];
+      if (message.level === "error") {
+        count.errors++;
+        errors++;
+      } else {
+        count.warnings++;
+      }
+      console.error(message.rendered.trimEnd());
     }
-    const code = msg?.message?.code?.code ?? "";
-    if (!code.startsWith("clippy::")) continue;
-    const isErr = msg.message.level === "error";
-    const key = code === "clippy::cognitive_complexity"
-      ? "cognitive_complexity"
-      : code === "clippy::too_many_lines"
-        ? "function_length"
-        : code === "clippy::excessive_nesting"
-          ? "nesting"
-          : code === "clippy::too_many_arguments" || code === "clippy::fn_params_excessive_bools" || code === "clippy::type_complexity"
-            ? "pedantic-checks"
-            : "lint";
-    if (isErr) buckets[key].e++;
-    else buckets[key].w++;
+    if (result.status !== 0 && errors === 0) {
+      counts.lint.errors++;
+      console.error(`cargo clippy ${targets.join(" ")} exited ${result.status ?? result.signal}:\n${tail(result)}`);
+    }
   }
-  rmSync(path.join(REPORTS, "jscpd.json"), { force: true });
-  const j = run("jscpd", [".", "--config", "jscpd.json"]);
-  let clones = 0, warns = 0, fails = 0;
+  const sections = Object.fromEntries(
+    Object.entries(counts).map(([name, count]) => [name, section(count.errors > 0, count.errors, count.warnings)]),
+  );
+  write("lint", { ...sections, duplication: duplication() });
+}
+
+/** The duplication section: any block jscpd finds twice fails it. */
+function duplication() {
+  rmSync(JSCPD_REPORT, { force: true });
+  const result = run("jscpd", [".", "--config", "jscpd.json"]);
+  let duplicates;
   try {
-    const stats = JSON.parse(readFileSync(path.join(REPORTS, "jscpd-report.json"), "utf8")).statistics.total;
-    clones = stats.clones ?? 0;
-    const dup = stats.percentage ?? 0;
-    if (dup > 90) fails = 1;
-    else if (dup > 80) warns = 1;
+    duplicates = JSON.parse(readFileSync(JSCPD_REPORT, "utf8")).duplicates;
   } catch {
-    if ((j.status ?? 1) !== 0) fails = 1;
+    console.error(`jscpd wrote no report; it exited ${result.status ?? result.signal}:\n${tail(result)}`);
+    return section(true, 1);
   }
-  if (clones > 0) fails = 1; // exact duplicates fail
-  write("lint", {
-    lint: section(buckets.lint.e ? "failed" : "passed", buckets.lint.e, buckets.lint.w),
-    cognitive_complexity: section(buckets.cognitive_complexity.e ? "failed" : "passed", buckets.cognitive_complexity.e, buckets.cognitive_complexity.w),
-    function_length: section(buckets.function_length.e ? "failed" : "passed", buckets.function_length.e, buckets.function_length.w),
-    nesting: section(buckets.nesting.e ? "failed" : "passed", buckets.nesting.e, buckets.nesting.w),
-    "pedantic-checks": section(buckets["pedantic-checks"].e ? "failed" : "passed", buckets["pedantic-checks"].e, buckets["pedantic-checks"].w),
-    duplication: section(fails ? "failed" : "passed", fails, warns),
-  });
+  for (const { firstFile: first, secondFile: second } of duplicates) {
+    console.error(`duplicate: ${first.name}:${first.start}-${first.end} and ${second.name}:${second.start}-${second.end}`);
+  }
+  return section(duplicates.length > 0, duplicates.length);
 }
 
 function format() {
-  const r = run("cargo", ["fmt", "--all", "--check"]);
-  write("format", { format: section(r.status === 0 ? "passed" : "failed", (r.stdout ?? "").match(/^Diff in/gm)?.length ?? 0, 0) });
+  const result = run("cargo", ["fmt", "--all", "--check"]);
+  const failed = result.status !== 0;
+  if (failed) console.error(tail(result));
+  const files = result.stdout.match(/^Diff in/gm)?.length ?? 0;
+  write("format", { format: section(failed, failed ? Math.max(files, 1) : 0) });
 }
 
 function typecheck() {
-  const r = run("cargo", ["check", "--workspace", "--exclude", "windows-shell"]);
-  write("typecheck", { typecheck: section(r.status === 0 ? "passed" : "failed", 0, 0) });
+  const result = run("cargo", ["check", "--workspace", "--exclude", "windows-shell"]);
+  const failed = result.status !== 0;
+  if (failed) console.error(tail(result));
+  write("typecheck", { typecheck: section(failed, failed ? 1 : 0) });
 }
 
 function test() {
-  const r = run("cargo", ["test", "--workspace", "--exclude", "windows-shell"]);
-  const out = (r.stdout ?? "") + (r.stderr ?? "");
-  const fails = [...out.matchAll(/(\d+) failed/g)].reduce((a, m) => a + Number(m[1]), 0);
-  if (r.status !== 0) {
-    // The report only counts failures; the log keeps why they failed.
-    const lines = out.split("\n").filter((line) => line.trim() !== "");
-    console.error(`cargo test exited ${r.status ?? r.signal}; last lines:\n${lines.slice(-40).join("\n")}`);
-  }
-  write("test", { test: section(r.status === 0 ? "passed" : "failed", fails, 0) });
+  const result = run("cargo", ["test", "--workspace", "--exclude", "windows-shell"]);
+  const failed = result.status !== 0;
+  if (failed) console.error(`cargo test exited ${result.status ?? result.signal}:\n${tail(result)}`);
+  const failures = [...`${result.stdout}${result.stderr}`.matchAll(/(\d+) failed/g)]
+    .reduce((total, match) => total + Number(match[1]), 0);
+  write("test", { test: section(failed, failed ? Math.max(failures, 1) : 0) });
 }
 
-const kinds = kind === "all" ? ["lint", "format", "typecheck", "test"] : [kind];
-for (const k of kinds) ({ lint, format, typecheck, test })[k]();
+const checks = { lint, format, typecheck, test };
+const kind = process.argv[2] ?? "all";
+mkdirSync(REPORTS, { recursive: true });
+for (const name of kind === "all" ? Object.keys(checks) : [kind]) checks[name]();

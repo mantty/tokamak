@@ -139,19 +139,30 @@ mod tests {
         }
     }
 
+    /// Each transfer method with a smaller, equal and larger length than the
+    /// buffer's 4 bytes.
+    const TRANSFERS: [(&str, u8); 8] = [
+        ("transfer", 0),
+        ("transfer", 2),
+        ("transfer", 4),
+        ("transfer", 8),
+        ("transferToFixedLength", 0),
+        ("transferToFixedLength", 2),
+        ("transferToFixedLength", 4),
+        ("transferToFixedLength", 8),
+    ];
+
+    /// The bytes 1 to 4 after a transfer to `length` bytes.
+    fn transferred(length: u8) -> Vec<u8> {
+        let mut bytes = vec![1, 2, 3, 4];
+        bytes.resize(usize::from(length), 0);
+        bytes
+    }
+
     #[test]
     fn transferred_external_buffers_release_their_owner_once()
     -> Result<(), Box<dyn std::error::Error>> {
-        for (method, length) in [
-            ("transfer", 0),
-            ("transfer", 2),
-            ("transfer", 4),
-            ("transfer", 8),
-            ("transferToFixedLength", 0),
-            ("transferToFixedLength", 2),
-            ("transferToFixedLength", 4),
-            ("transferToFixedLength", 8),
-        ] {
+        for (method, length) in TRANSFERS {
             let drops = Arc::new(AtomicUsize::new(0));
             let runtime = Runtime::new()?;
             let context = Context::full(&runtime)?;
@@ -159,8 +170,7 @@ mod tests {
                 let source = OwnedBytes { bytes: vec![1, 2, 3, 4], drops: Arc::clone(&drops) };
                 ctx.globals().set("original", ArrayBuffer::from_source(ctx.clone(), source)?)?;
                 let data: Vec<u8> = ctx.eval(format!("globalThis.moved = original.{method}({length}); Array.from(new Uint8Array(moved))"))?;
-                let expected: Vec<_> = (0..length).map(|index| if index < 4 { index + 1 } else { 0 }).collect();
-                assert_eq!(data, expected);
+                assert_eq!(data, transferred(length));
                 assert_eq!(ctx.eval::<usize, _>("original.byteLength")?, 0);
                 ctx.globals().remove("original")?;
                 assert_eq!(drops.load(Ordering::Relaxed), usize::from(length != 4));
@@ -178,26 +188,21 @@ mod tests {
     fn rust_vector_buffers_support_transfer_and_resize() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = Runtime::new()?;
         let context = Context::full(&runtime)?;
-        for method in ["transfer", "transferToFixedLength"] {
-            for length in [0_u8, 2, 4, 8] {
-                context.with(|ctx| -> rquickjs::Result<()> {
-                    let mut bytes = Vec::with_capacity(31);
-                    bytes.extend_from_slice(&[1_u8, 2, 3, 4]);
-                    ctx.globals()
-                        .set("bytes", rquickjs::TypedArray::new(ctx.clone(), bytes)?)?;
-                    let transferred: Vec<u8> = ctx.eval(format!(
-                        "Array.from(new Uint8Array(bytes.buffer.{method}({length})))"
-                    ))?;
-                    let expected: Vec<_> = (0..length)
-                        .map(|index| if index < 4 { index + 1 } else { 0 })
-                        .collect();
-                    assert_eq!(transferred, expected);
-                    assert_eq!(ctx.eval::<usize, _>("bytes.byteLength")?, 0);
-                    ctx.globals().remove("bytes")?;
-                    Ok(())
-                })?;
-                runtime.run_gc();
-            }
+        for (method, length) in TRANSFERS {
+            context.with(|ctx| -> rquickjs::Result<()> {
+                let mut bytes = Vec::with_capacity(31);
+                bytes.extend_from_slice(&[1_u8, 2, 3, 4]);
+                ctx.globals()
+                    .set("bytes", rquickjs::TypedArray::new(ctx.clone(), bytes)?)?;
+                let data: Vec<u8> = ctx.eval(format!(
+                    "Array.from(new Uint8Array(bytes.buffer.{method}({length})))"
+                ))?;
+                assert_eq!(data, transferred(length));
+                assert_eq!(ctx.eval::<usize, _>("bytes.byteLength")?, 0);
+                ctx.globals().remove("bytes")?;
+                Ok(())
+            })?;
+            runtime.run_gc();
         }
         Ok(())
     }

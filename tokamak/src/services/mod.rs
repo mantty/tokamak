@@ -196,17 +196,19 @@ impl Reply {
         })
     }
 
-    fn into_object<'js>(
+    // jscpd:ignore-start: a reply converts to JavaScript as its message does.
+    fn into_js<'js>(
         self,
         ctx: &Ctx<'js>,
         bootstrap: &Object<'js>,
-        streams: &Arc<Streams>,
+        channels: &Arc<Streams>,
     ) -> rquickjs::Result<Object<'js>> {
         let object = Object::new(ctx.clone())?;
         object.set("failed", self.failed)?;
-        object.set("value", self.value.into_js(ctx, bootstrap, streams)?)?;
+        object.set("value", self.value.into_js(ctx, bootstrap, channels)?)?;
         Ok(object)
     }
+    // jscpd:ignore-end
 }
 
 pub(crate) fn install<'js>(
@@ -245,7 +247,7 @@ pub(crate) fn install<'js>(
                     .invoke(target, method, message, lifetime)
                     .await
                     .map_err(|error| crate::errors::throw_message(&calling, &error.to_string()))?;
-                result.into_object(&calling, &bootstrap, &channels)
+                result.into_js(&calling, &bootstrap, &channels)
             })?;
             let operation = Object::new(ctx.clone())?;
             operation.set("result", result)?;

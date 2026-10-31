@@ -1,65 +1,53 @@
 #!/usr/bin/env node
-// Builds a single PR comment from reports/: each check section's result,
-// compared against main's committed reports.
-// Usage: node scripts/check-comment.mjs <project>
-// Writes the comment to .check-comment.md and exits 0; comment content states failures.
+// Prints the PR comment that compares each check section in reports/ with
+// main's reports, which may be missing.
+// Usage: node scripts/check-comment.mjs <project> <directory of main's reports>
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
-const project = process.argv[2];
+const [project, mainReports] = process.argv.slice(2);
 const kinds = ["lint", "format", "typecheck", "test"];
-const dash = "\u2014";
+const dash = "—";
 
-function reportFor(kind, fromGit) {
-  const file = `reports/${project}-${kind}.json`;
+function report(directory, kind) {
   try {
-    if (fromGit) {
-      return JSON.parse(execFileSync("git", ["show", `origin/main:${file}`], { maxBuffer: 1024 * 1024 * 8 }).toString());
-    }
-    if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+    return JSON.parse(readFileSync(path.join(directory, `${project}-${kind}.json`), "utf8"));
   } catch {
     return null;
   }
-  return null;
 }
 
 function cell(section) {
   if (!section) return dash;
-  const errors = section.errors ?? 0;
-  const warnings = section.warnings ?? 0;
-  const detail = errors || warnings ? ` (${errors}e/${warnings}w)` : "";
-  return section.status === "failed" ? `\u274c failed${detail}` : `\u2705 passed${detail}`;
+  const detail = section.errors || section.warnings ? ` (${section.errors}e/${section.warnings}w)` : "";
+  return section.status === "failed" ? `❌ failed${detail}` : `✅ passed${detail}`;
 }
 
-let anyFailed = false;
+let failed = false;
 const rows = [];
 for (const kind of kinds) {
-  const current = reportFor(kind, false);
-  if (!current || !Object.keys(current.sections ?? {}).length) {
+  const current = report("reports", kind);
+  if (!current) {
+    failed = true;
     rows.push(`| ${kind} | | ${dash} | missing |`);
     continue;
   }
-  const main = reportFor(kind, true);
+  const main = report(mainReports, kind);
   for (const [name, section] of Object.entries(current.sections)) {
-    if (section.status === "failed") anyFailed = true;
-    rows.push(`| ${kind} | ${name} | ${cell(main?.sections?.[name])} | ${cell(section)} |`);
+    if (section.status === "failed") failed = true;
+    rows.push(`| ${kind} | ${name} | ${cell(main?.sections[name])} | ${cell(section)} |`);
   }
 }
 
-const head = execFileSync("git", ["rev-parse", "--short", "HEAD"]).toString().trim();
-const body = [
+const head = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+console.log([
   "<!-- check-results -->",
-  `## Check results \u2014 ${project}`,
+  `## Check results — ${project}`,
   "",
-  `Checks ${anyFailed ? "**failed**" : "passed"} at \`${head}\`.`,
+  `Checks ${failed ? "**failed**" : "passed"} at \`${head}\`.`,
   "",
   "| report | section | main | this PR |",
   "|---|---|---|---|",
   ...rows,
-  "",
-  "<!-- end-check-results -->",
-  "",
-].join("\n");
-writeFileSync(".check-comment.md", body);
-console.error(body);
-process.exit(0);
+].join("\n"));

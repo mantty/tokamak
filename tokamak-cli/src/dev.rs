@@ -1344,26 +1344,10 @@ mod tests {
         let endpoint = ServerEndpoint::parse(&upstream_endpoint, "")?;
         let upstream_thread = thread::spawn(move || -> std::io::Result<()> {
             let (mut stream, _) = upstream.accept()?;
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                let count = stream.read(&mut buffer)?;
-                if count == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..count]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            if !request.starts_with(b"GET / HTTP/1.1\r\n")
-                || !request.windows(4).any(|window| window == b"\r\n\r\n")
-                || !request
-                    .windows(b"Host: 127.0.0.1:".len())
-                    .any(|window| window == b"Host: 127.0.0.1:")
-                || request
-                    .windows(b"X-Tokamak-Session".len())
-                    .any(|window| window == b"X-Tokamak-Session")
+            let request = read_head(&mut stream)?;
+            if !request.starts_with("GET / HTTP/1.1\r\n")
+                || !request.contains("Host: 127.0.0.1:")
+                || request.contains("X-Tokamak-Session")
             {
                 return Err(std::io::Error::other("relay did not forward the request"));
             }

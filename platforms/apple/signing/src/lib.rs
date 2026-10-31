@@ -1957,7 +1957,7 @@ mod tests {
         assert_eq!(profile.id, "PROFILE-1");
         assert_eq!(profile.name, "Development");
         assert_eq!(profile.team_id, "TEAM");
-        assert_ne!(profile.expiration_label, "");
+        assert!(!profile.expiration_label.is_empty());
         assert_eq!(identity.name, "Apple Development: Test");
         assert_eq!(identity.fingerprint, fingerprint(&[1, 2, 3]));
         assert_eq!(identity.selector, sha1_fingerprint(&[1, 2, 3]));
@@ -2092,14 +2092,7 @@ mod tests {
         assert_eq!(profile.application_identifier, "TEAM.com.example.app");
         assert!(profile.matches("com.example.app", Some("MAC"), &identity));
         assert!(!profile.matches("com.example.app", Some("OTHER-MAC"), &identity));
-        assert!(
-            parse_profile(Platform::Ios, Path::new("PROFILE-1.provisionprofile"), &{
-                let mut bytes = Vec::new();
-                value.to_writer_xml(&mut bytes)?;
-                bytes
-            })
-            .is_err()
-        );
+        assert!(parsed_profile(Platform::Ios, "PROFILE-1.provisionprofile", &value).is_err());
         Ok(())
     }
 

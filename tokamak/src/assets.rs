@@ -187,12 +187,9 @@ fn html_path(handling: HtmlHandling, path: &str) -> String {
 /// The assets that may serve `path` under `handling`, in the order
 /// Cloudflare's asset worker tries them.
 fn html_steps(handling: HtmlHandling, path: &str) -> Vec<Step> {
-    match handling {
-        HtmlHandling::AutoTrailingSlash => auto_trailing_slash(path),
-        HtmlHandling::ForceTrailingSlash => force_trailing_slash(path),
-        HtmlHandling::DropTrailingSlash => drop_trailing_slash(path),
-        HtmlHandling::None => vec![serve(path)],
-    }
+    let mut steps = page_steps(handling, path);
+    steps.extend(form_steps(handling, path));
+    steps
 }
 
 /// The shapes of `path` that trailing-slash handling treats specially, each
@@ -225,106 +222,66 @@ fn page_shape(path: &str) -> PageShape<'_> {
     }
 }
 
-/// The steps `…/index.html` takes under either trailing-slash policy.
-fn index_html_steps(path: &str, page: &str) -> Vec<Step> {
-    vec![redirect(path), redirect(format!("{page}.html"))]
-}
-
-/// The steps that serve `path` and the variants it resolves to.
-fn served_variants(path: &str) -> [Step; 3] {
-    [
-        serve(path),
-        serve(format!("{path}.html")),
-        redirect(format!("{path}/index.html")),
-    ]
-}
-
-/// The steps `…/index` takes under either trailing-slash policy.
-fn index_steps(path: &str, page: &str) -> Vec<Step> {
-    vec![
-        serve(path),
-        redirect(format!("{path}.html")),
-        redirect(format!("{page}.html")),
-    ]
-}
-
-fn auto_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = match page_shape(path) {
-        PageShape::Index(page) => index_steps(path, page),
-        PageShape::IndexHtml(page) => index_html_steps(path, page),
-        PageShape::TrailingSlash(page) => vec![
+/// The assets for the page that `path` names under `handling`, tried before
+/// the forms of `path` itself.
+fn page_steps(handling: HtmlHandling, path: &str) -> Vec<Step> {
+    use HtmlHandling::{AutoTrailingSlash, DropTrailingSlash, ForceTrailingSlash};
+    use PageShape::{Html, Index, IndexHtml, Other, TrailingSlash};
+    match (handling, page_shape(path)) {
+        (DropTrailingSlash, _) if path == "/" => vec![serve("/index.html")],
+        (AutoTrailingSlash | ForceTrailingSlash, Index(page)) => vec![
+            serve(path),
+            redirect(format!("{path}.html")),
+            redirect(format!("{page}.html")),
+        ],
+        (DropTrailingSlash, Index(page)) => vec![
+            serve(path),
+            redirect(format!("{page}.html")),
+            redirect(format!("{path}.html")),
+        ],
+        (AutoTrailingSlash | ForceTrailingSlash, IndexHtml(page)) => {
+            vec![redirect(path), redirect(format!("{page}.html"))]
+        }
+        (DropTrailingSlash, IndexHtml(page)) => vec![
+            redirect(path),
+            serve(path),
+            redirect(format!("{page}.html")),
+        ],
+        (AutoTrailingSlash, TrailingSlash(page)) => vec![
             serve(format!("{path}index.html")),
             redirect(format!("{page}.html")),
         ],
-        PageShape::Html(page) => vec![redirect(path), redirect(format!("{page}/index.html"))],
-        PageShape::Other => Vec::new(),
-    };
-    steps.extend(served_variants(path));
-    steps
+        (ForceTrailingSlash, TrailingSlash(page)) => vec![
+            serve(format!("{path}index.html")),
+            serve(format!("{page}.html")),
+        ],
+        (DropTrailingSlash, TrailingSlash(page)) => vec![
+            redirect(format!("{page}.html")),
+            redirect(format!("{page}/index.html")),
+        ],
+        (AutoTrailingSlash | DropTrailingSlash, Html(page)) => {
+            vec![redirect(path), redirect(format!("{page}/index.html"))]
+        }
+        (ForceTrailingSlash, Html(page)) => vec![
+            redirect(path),
+            serve(path),
+            redirect(format!("{page}/index.html")),
+        ],
+        (HtmlHandling::None, _) | (_, Other) => Vec::new(),
+    }
 }
 
-fn force_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = match page_shape(path) {
-        PageShape::Index(page) => index_steps(path, page),
-        PageShape::IndexHtml(page) => index_html_steps(path, page),
-        PageShape::TrailingSlash(page) => {
-            vec![
-                serve(format!("{path}index.html")),
-                serve(format!("{page}.html")),
-            ]
-        }
-        PageShape::Html(page) => {
-            vec![
-                redirect(path),
-                serve(path),
-                redirect(format!("{page}/index.html")),
-            ]
-        }
-        PageShape::Other => Vec::new(),
-    };
-    steps.extend([
-        serve(path),
-        redirect(format!("{path}.html")),
-        redirect(format!("{path}/index.html")),
-    ]);
-    steps
-}
-
-fn drop_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = if path == "/" {
-        vec![serve("/index.html")]
-    } else {
-        match page_shape(path) {
-            PageShape::Index(page) => {
-                vec![
-                    serve(path),
-                    redirect(format!("{page}.html")),
-                    redirect(format!("{path}.html")),
-                ]
-            }
-            PageShape::IndexHtml(page) => {
-                vec![
-                    redirect(path),
-                    serve(path),
-                    redirect(format!("{page}.html")),
-                ]
-            }
-            PageShape::TrailingSlash(page) => {
-                vec![
-                    redirect(format!("{page}.html")),
-                    redirect(format!("{page}/index.html")),
-                ]
-            }
-            PageShape::Html(page) => vec![redirect(path), redirect(format!("{page}/index.html"))],
-            PageShape::Other => Vec::new(),
-        }
-    };
-    steps.extend([
-        serve(path),
-        serve(format!("{path}.html")),
-        serve(format!("{path}/index.html")),
-    ]);
-    steps
+/// `path` and its `.html` and `/index.html` forms, each served or redirected
+/// to as `handling` does.
+fn form_steps(handling: HtmlHandling, path: &str) -> Vec<Step> {
+    let html = format!("{path}.html");
+    let index = format!("{path}/index.html");
+    match handling {
+        HtmlHandling::AutoTrailingSlash => vec![serve(path), serve(html), redirect(index)],
+        HtmlHandling::ForceTrailingSlash => vec![serve(path), redirect(html), redirect(index)],
+        HtmlHandling::DropTrailingSlash => vec![serve(path), serve(html), serve(index)],
+        HtmlHandling::None => vec![serve(path)],
+    }
 }
 
 impl AssetResponse {
