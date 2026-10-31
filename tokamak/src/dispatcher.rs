@@ -32,7 +32,6 @@ use bootstrap::{
     SocketNotifier, WebSocketData,
 };
 use hyper::header::HeaderMap;
-use rquickjs::convert::List;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
@@ -733,7 +732,7 @@ fn response_from_js<'js>(
         .call((response,))
         .map_err(|error| js_exception(ctx, "response", error))?;
     let mut headers = HeaderMap::new();
-    for List((name, value)) in entries {
+    for (name, value) in entries.0 {
         append_header(&mut headers, &name, &value)?;
     }
     let encoder = if encode_body == "manual" {

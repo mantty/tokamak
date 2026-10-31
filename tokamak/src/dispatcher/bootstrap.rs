@@ -4,7 +4,6 @@
 use std::sync::Arc;
 
 use rquickjs::class::Trace;
-use rquickjs::prelude::List;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, TypedArray, Value,
 };
@@ -16,7 +15,7 @@ use crate::gateway::WebSocketOutbound;
 use crate::globals::plugins::{NativeHost, Platform};
 use crate::services::{JsMessage, JsReply, ServiceHost, StreamCodec};
 use crate::transport::HttpRequest;
-use crate::typed::{JsFunction, JsPromise};
+use crate::typed::{JsFunction, JsPromise, StringPairs};
 
 /// The runtime bootstrap's functions: the dispatcher's routes into the
 /// runtime.
@@ -55,19 +54,15 @@ pub(crate) struct Bootstrap<'js> {
 pub(crate) struct RequestDescriptor {
     method: String,
     url: String,
-    headers: Vec<List<(String, String)>>,
+    headers: StringPairs,
 }
 
 impl RequestDescriptor {
     pub(super) fn new(request: &HttpRequest) -> Self {
-        let headers = request.headers.iter().map(|(name, value)| {
-            let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
-            List((name.as_str().to_owned(), value))
-        });
         Self {
             method: request.method.clone(),
             url: request.url.clone(),
-            headers: headers.collect(),
+            headers: crate::network::headers::pairs(&request.headers),
         }
     }
 }
@@ -79,7 +74,7 @@ impl RequestDescriptor {
 pub(crate) struct ResponseParts<'js> {
     pub(super) status: u16,
     pub(super) status_text: String,
-    pub(super) headers: Vec<List<(String, String)>>,
+    pub(super) headers: StringPairs,
     pub(super) encode_body: String,
     pub(super) body: ResponseBody<'js>,
     pub(super) web_socket: Option<NativeSocket<'js>>,
@@ -281,7 +276,6 @@ impl<'js> AssetReply<'js> {
 #[cfg(test)]
 mod tests {
     use hyper::header::{HeaderMap, HeaderValue};
-    use rquickjs::prelude::List;
 
     use super::RequestDescriptor;
     use crate::transport::HttpRequest;
@@ -301,8 +295,7 @@ mod tests {
             headers,
             body: None,
         };
-        let headers = RequestDescriptor::new(&request).headers;
-        let pairs: Vec<_> = headers.into_iter().map(|List(pair)| pair).collect();
+        let pairs = RequestDescriptor::new(&request).headers.0;
         let expected = [
             ("x-repeated", "one"),
             ("x-repeated", "two"),

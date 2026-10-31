@@ -1,6 +1,6 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::typed::JsFunction;
+use crate::typed::{JsFunction, StringPairs};
 use rquickjs::prelude::List;
 use rquickjs::{Ctx, Exception, FromJs, Function, IntoJs, Persistent, qjs};
 use std::cell::RefCell;
@@ -143,19 +143,20 @@ fn url_set_component(
 
 /// Serializes name and value pairs as application/x-www-form-urlencoded.
 #[host_function]
-fn encode_params(entries: Vec<List<(String, String)>>) -> String {
+fn encode_params(entries: StringPairs) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    serializer.extend_pairs(entries.into_iter().map(|List(pair)| pair));
+    serializer.extend_pairs(entries.0);
     serializer.finish()
 }
 
 /// Parses application/x-www-form-urlencoded input into name and value pairs.
 #[host_function]
-fn decode_params(input: String) -> Vec<List<(String, String)>> {
-    url::form_urlencoded::parse(input.as_bytes())
-        .into_owned()
-        .map(List)
-        .collect()
+fn decode_params(input: String) -> StringPairs {
+    StringPairs(
+        url::form_urlencoded::parse(input.as_bytes())
+            .into_owned()
+            .collect(),
+    )
 }
 
 fn pattern_key(input: &str, base: Option<&str>, ignore_case: bool) -> String {

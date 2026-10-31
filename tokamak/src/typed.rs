@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 
 use rquickjs::class::{Trace, Tracer};
 use rquickjs::function::IntoArgs;
+use rquickjs::prelude::List;
 use rquickjs::{Ctx, FromJs, Function, IntoJs, Object, Promise, Value};
 
 /// A JavaScript function that Rust calls with the tuple `Args` and whose
@@ -137,6 +138,12 @@ impl<T: crate::typescript::JsReturn> crate::typescript::JsType for JsPromise<'_,
 #[derive(Clone)]
 pub(crate) struct JsReadableStream<'js>(Object<'js>);
 
+impl<'js> JsReadableStream<'js> {
+    pub(crate) fn into_inner(self) -> Object<'js> {
+        self.0
+    }
+}
+
 impl<'js> FromJs<'js> for JsReadableStream<'js> {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Self> {
         Object::from_js(ctx, value).map(Self)
@@ -153,5 +160,31 @@ impl<'js> IntoJs<'js> for JsReadableStream<'js> {
 impl crate::typescript::JsType for JsReadableStream<'_> {
     fn typescript(_: &mut crate::typescript::Types) -> String {
         "ReadableStream".to_owned()
+    }
+}
+
+/// Name and value pairs, such as headers, which JavaScript holds as an array
+/// of two-element arrays.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StringPairs(pub(crate) Vec<(String, String)>);
+
+impl<'js> FromJs<'js> for StringPairs {
+    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Self> {
+        let pairs = Vec::<List<(String, String)>>::from_js(ctx, value)?;
+        Ok(Self(pairs.into_iter().map(|List(pair)| pair).collect()))
+    }
+}
+
+impl<'js> IntoJs<'js> for StringPairs {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        let pairs: Vec<_> = self.0.into_iter().map(List).collect();
+        pairs.into_js(ctx)
+    }
+}
+
+#[cfg(test)]
+impl crate::typescript::JsType for StringPairs {
+    fn typescript(types: &mut crate::typescript::Types) -> String {
+        Vec::<List<(String, String)>>::typescript(types)
     }
 }

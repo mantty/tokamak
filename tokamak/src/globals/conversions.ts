@@ -63,7 +63,7 @@ export function bufferSourceBytes(value: unknown): Uint8Array | undefined {
 }
 
 // The bytes of `chunks`, joined.
-export function joinBytes(chunks: readonly Uint8Array[]): Uint8Array {
+export function joinBytes(chunks: readonly Uint8Array[]): Uint8Array<ArrayBuffer> {
   const joined = new Uint8Array(chunks.reduce((length, chunk) => length + chunk.byteLength, 0));
   let offset = 0;
   for (const chunk of chunks) {

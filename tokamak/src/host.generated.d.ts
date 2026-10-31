@@ -14,9 +14,9 @@ declare module "tokamak:host" {
 
   export function cacheDelete(name: string, key: string): boolean;
 
-  export function cacheMatch(name: string, key: string): object | undefined;
+  export function cacheMatch(name: string, key: string): CachedResponse | undefined;
 
-  export function cachePut(name: string, key: string, metadata: object, body: Uint8Array): void;
+  export function cachePut(name: string, key: string, metadata: CacheMetadata, body: Uint8Array): void;
 
   export function cloneArrayBuffer(value: unknown, shared: boolean): ArrayBufferLike;
 
@@ -83,6 +83,8 @@ declare module "tokamak:host" {
   export function htmlRewrite(handlers: string, contentType: string): object;
 
   export function htmlValidateSelector(selector: string): void;
+
+  export function httpFetch(request: FetchRequest): FetchTask;
 
   export function httpStatusText(status: number): string;
 
@@ -187,6 +189,20 @@ declare module "tokamak:host" {
     trackWaitUntil: (arg0: WaitUntilObserver) => void;
   }
 
+  export interface CacheMetadata {
+    status: number;
+    statusText: string;
+    headers: Array<[string, string]>;
+    url: string;
+    redirected: boolean;
+    type: string;
+  }
+
+  export interface CachedResponse {
+    metadata: CacheMetadata;
+    body: Uint8Array;
+  }
+
   export interface Cancellation {
     readonly [classBrand]: "Cancellation";
     cancel(): void;
@@ -224,6 +240,37 @@ declare module "tokamak:host" {
     update(input: Uint8Array): void;
     finish(): ArrayBuffer;
     copy(): DigestState;
+  }
+
+  export interface FetchRequest {
+    url: string;
+    method: string;
+    headers: Array<[string, string]>;
+    body?: Uint8Array | ReadableStream | undefined;
+    redirect: string;
+  }
+
+  export interface FetchTask {
+    fetch: HttpFetch;
+    upload: Promise<void>;
+    response: Promise<FetchedResponse>;
+  }
+
+  export interface FetchedResponse {
+    status: number;
+    statusText: string;
+    headers: Array<[string, string]>;
+    url: string;
+    redirected: boolean;
+    bodyless: boolean;
+    length?: number | undefined;
+  }
+
+  export interface HttpFetch {
+    readonly [classBrand]: "HttpFetch";
+    abort(): void;
+    cancel(): void;
+    read(): Promise<Uint8Array | undefined>;
   }
 
   export interface JsMessage {

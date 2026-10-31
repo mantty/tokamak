@@ -4,8 +4,7 @@ use encoding_rs::{Decoder, DecoderResult, Encoding};
 use rquickjs::class::Trace;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
-    ArrayBuffer, Class, Constructor, Ctx, Exception, Function, IntoJs, JsLifetime, Object,
-    TypedArray, Value,
+    ArrayBuffer, Class, Constructor, Ctx, Exception, IntoJs, JsLifetime, Object, TypedArray, Value,
 };
 use std::io::Write;
 use tokamak_macros::host_function;
@@ -29,6 +28,7 @@ tokamak_macros::host_functions! {
     "createNodeCompression" => super::compression::node::create,
     "htmlRewrite" => super::html_rewriter::rewrite_html,
     "htmlValidateSelector" => super::html_rewriter::validate_selector,
+    "httpFetch" => crate::network::http::http_fetch,
     "httpStatusText" => crate::network::http::status_text,
     "socketConnect" => crate::network::sockets::start,
     "ipVersion" => ip_version,
@@ -83,14 +83,10 @@ pub(super) fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> r
     }
 }
 
-/// Exports that `evaluate` constructs itself.
-const CONSTRUCTED_EXPORTS: [&str; 1] = ["httpFetch"];
-
 impl ModuleDef for HostModule {
     fn declare(exports: &Declarations) -> rquickjs::Result<()> {
-        for name in CONSTRUCTED_EXPORTS
+        for name in HOST_EXPORTS
             .iter()
-            .chain(HOST_EXPORTS)
             .chain(super::crypto::HOST_EXPORTS)
             .chain(super::intl::HOST_EXPORTS)
             .chain(super::url::HOST_EXPORTS)
@@ -106,23 +102,7 @@ impl ModuleDef for HostModule {
         super::crypto::export_host_functions(ctx, exports)?;
         super::intl::export_host_functions(ctx, exports)?;
         super::url::export_host_functions(ctx, exports)?;
-        let client = crate::network::http::client()
-            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
-        exports.export(
-            "httpFetch",
-            Function::new(
-                ctx.clone(),
-                move |ctx: Ctx<'js>,
-                      url: String,
-                      method: String,
-                      headers: String,
-                      body: Value<'js>,
-                      redirect: String| {
-                    crate::network::http::start(ctx, &client, url, method, headers, body, redirect)
-                },
-            )?,
-        )?;
-        Ok(())
+        crate::network::http::attach(ctx)
     }
 }
 
