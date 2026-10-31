@@ -7,7 +7,6 @@ import {
   intlDisplayName,
   intlFractionDigits,
   intlHourCycle,
-  intlList,
   intlListParts,
   intlLocaleInfo,
   intlNumber,
@@ -15,7 +14,6 @@ import {
   intlPlural,
   intlPluralCategories,
   intlPluralRange,
-  intlRelative,
   intlRelativeParts,
   intlSegment,
 } from "tokamak:host";
@@ -116,6 +114,11 @@ function relativeOptions(options) {
 
 function formatParts(host, ...args) {
   return JSON.parse(host(...args)).map(([type, value]) => ({ type, value }));
+}
+
+/** The string a formatter's `format` returns: its parts' values in order. */
+function joinParts(parts) {
+  return parts.map(part => part.value).join("");
 }
 
 function joinRange(first, second) {
@@ -322,8 +325,9 @@ class ListFormat {
     this.#options = listOptions(options);
     this.#optionsJson = optionsJson(this.#options);
   }
-  format(list) { return intlList(listJson(list), this.#locales.json, this.#optionsJson); }
-  formatToParts(list) { return formatParts(intlListParts, listJson(list), this.#locales.json, this.#optionsJson); }
+  format(list) { return joinParts(this.#parts(list)); }
+  formatToParts(list) { return this.#parts(list); }
+  #parts(list) { return formatParts(intlListParts, listJson(list), this.#locales.json, this.#optionsJson); }
   resolvedOptions() { return { locale: this.#locales.locale, ...this.#options }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
@@ -337,8 +341,9 @@ class RelativeTimeFormat {
     this.#options = relativeOptions(options);
     this.#optionsJson = optionsJson(this.#options);
   }
-  format(value, unit) { return intlRelative(Number(value), String(unit), this.#locales.json, this.#optionsJson); }
-  formatToParts(value, unit) { return JSON.parse(intlRelativeParts(Number(value), String(unit), this.#locales.json, this.#optionsJson)); }
+  format(value, unit) { return joinParts(this.#parts(value, unit)); }
+  formatToParts(value, unit) { return this.#parts(value, unit); }
+  #parts(value, unit) { return JSON.parse(intlRelativeParts(Number(value), String(unit), this.#locales.json, this.#optionsJson)); }
   resolvedOptions() { return { locale: this.#locales.locale, ...this.#options, numberingSystem: localeInfo(this.#locales.locale).numberingSystem }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }

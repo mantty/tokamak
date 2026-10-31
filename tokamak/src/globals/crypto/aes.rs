@@ -82,8 +82,10 @@ pub(super) fn stream(
         Mode::Gcm => {
             with_aes!(key, C => Ok(Box::new(Gcm::<C>::new(key, iv, encrypt, tag_length)?)))
         }
-        Mode::Cbc if encrypt => with_aes!(key, C => Ok(Box::new(CbcEncrypt::<C>::new(key, iv)?))),
-        Mode::Cbc => with_aes!(key, C => Ok(Box::new(CbcDecrypt::<C>::new(key, iv)?))),
+        Mode::Cbc if encrypt => {
+            with_aes!(key, C => Ok(Box::new(Cbc::<cbc::Encryptor<C>>::new(key, iv)?)))
+        }
+        Mode::Cbc => with_aes!(key, C => Ok(Box::new(Cbc::<cbc::Decryptor<C>>::new(key, iv)?))),
         Mode::Ctr => with_aes!(key, C => Ok(Box::new(Ctr::<C>::new(key, iv)?))),
     }
 }
@@ -128,107 +130,96 @@ fn blocks<C: BlockSizeUser>(data: &[u8]) -> Vec<Block<C>> {
         .collect()
 }
 
-struct CbcEncrypt<C: BlockCipherEncrypt> {
-    cipher: cbc::Encryptor<C>,
+/// A CBC encryption or decryption. Whole blocks pass through `mode` as they
+/// arrive; the bytes left at the end are padded or unpadded by `finish`.
+struct Cbc<M> {
+    mode: M,
     pending: Vec<u8>,
     padding: bool,
 }
 
-impl<C: BlockCipherEncrypt + KeyInit> CbcEncrypt<C> {
+/// What differs between CBC encryption and decryption.
+trait CbcMode {
+    /// Whether `update` holds back the last whole block while padding is on,
+    /// because only `finish` can strip the padding from it.
+    const HOLDS_LAST_BLOCK: bool;
+    /// The failure for bytes that do not fill a block when padding is off.
+    const PARTIAL_BLOCK: &'static str;
+
+    /// Encrypts or decrypts the whole blocks in `data`.
+    fn apply(&mut self, data: &[u8]) -> Vec<u8>;
+
+    /// Pads and encrypts, or decrypts and unpads, the final bytes `last`.
+    fn finish_padded(&mut self, last: Vec<u8>) -> Result<Vec<u8>, Failure>;
+}
+
+impl<M: CbcMode + KeyIvInit> Cbc<M> {
     fn new(key: &[u8], iv: &[u8]) -> Result<Self, Failure> {
         Ok(Self {
-            cipher: cbc::Encryptor::<C>::new_from_slices(key, iv).map_err(invalid_iv)?,
+            mode: M::new_from_slices(key, iv).map_err(invalid_iv)?,
             pending: Vec::new(),
             padding: true,
         })
     }
-
-    fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
-        let mut blocks = blocks::<C>(data);
-        self.cipher.encrypt_blocks(&mut blocks);
-        blocks.concat()
-    }
 }
 
-impl<C: BlockCipherEncrypt + KeyInit> Stream for CbcEncrypt<C> {
+impl<M: CbcMode> Stream for Cbc<M> {
     fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, Failure> {
         self.pending.extend_from_slice(input);
-        let whole = self.pending.len() / BLOCK * BLOCK;
-        let ready: Vec<u8> = self.pending.drain(..whole).collect();
-        Ok(self.encrypt(&ready))
-    }
-
-    fn set_padding(&mut self, enabled: bool) {
-        self.padding = enabled;
-    }
-
-    fn finish(mut self: Box<Self>) -> Result<Finished, Failure> {
-        if !self.padding {
-            if !self.pending.is_empty() {
-                return Err(Failure("data not multiple of block length"));
-            }
-            return Ok(Finished::default());
-        }
-        let fill = BLOCK - self.pending.len();
-        let mut last = std::mem::take(&mut self.pending);
-        last.resize(BLOCK, u8::try_from(fill).unwrap_or(16));
-        Ok(Finished {
-            output: self.encrypt(&last),
-            tag: None,
-        })
-    }
-}
-
-struct CbcDecrypt<C: BlockCipherDecrypt> {
-    cipher: cbc::Decryptor<C>,
-    pending: Vec<u8>,
-    padding: bool,
-}
-
-impl<C: BlockCipherDecrypt + KeyInit> CbcDecrypt<C> {
-    fn new(key: &[u8], iv: &[u8]) -> Result<Self, Failure> {
-        Ok(Self {
-            cipher: cbc::Decryptor::<C>::new_from_slices(key, iv).map_err(invalid_iv)?,
-            pending: Vec::new(),
-            padding: true,
-        })
-    }
-
-    fn decrypt(&mut self, data: &[u8]) -> Vec<u8> {
-        let mut blocks = blocks::<C>(data);
-        self.cipher.decrypt_blocks(&mut blocks);
-        blocks.concat()
-    }
-}
-
-impl<C: BlockCipherDecrypt + KeyInit> Stream for CbcDecrypt<C> {
-    fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, Failure> {
-        self.pending.extend_from_slice(input);
-        // With padding, the last whole block is held back until finish strips it.
-        let held = usize::from(self.padding && !self.pending.is_empty());
+        let held = usize::from(M::HOLDS_LAST_BLOCK && self.padding && !self.pending.is_empty());
         let whole = (self.pending.len() - held) / BLOCK * BLOCK;
         let ready: Vec<u8> = self.pending.drain(..whole).collect();
-        Ok(self.decrypt(&ready))
+        Ok(self.mode.apply(&ready))
     }
 
-    // jscpd:ignore-start: CBC encryption and decryption switch padding alike.
     fn set_padding(&mut self, enabled: bool) {
         self.padding = enabled;
     }
-    // jscpd:ignore-end
 
     fn finish(mut self: Box<Self>) -> Result<Finished, Failure> {
         if !self.padding {
             if !self.pending.is_empty() {
-                return Err(Failure("wrong final block length"));
+                return Err(Failure(M::PARTIAL_BLOCK));
             }
             return Ok(Finished::default());
         }
-        if self.pending.len() != BLOCK {
-            return Err(Failure("wrong final block length"));
+        let output = self.mode.finish_padded(std::mem::take(&mut self.pending))?;
+        Ok(Finished { output, tag: None })
+    }
+}
+
+impl<C: BlockCipherEncrypt> CbcMode for cbc::Encryptor<C> {
+    const HOLDS_LAST_BLOCK: bool = false;
+    const PARTIAL_BLOCK: &'static str = "data not multiple of block length";
+
+    fn apply(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut blocks = blocks::<C>(data);
+        self.encrypt_blocks(&mut blocks);
+        blocks.concat()
+    }
+
+    fn finish_padded(&mut self, mut last: Vec<u8>) -> Result<Vec<u8>, Failure> {
+        let fill = BLOCK - last.len();
+        last.resize(BLOCK, u8::try_from(fill).unwrap_or(16));
+        Ok(self.apply(&last))
+    }
+}
+
+impl<C: BlockCipherDecrypt> CbcMode for cbc::Decryptor<C> {
+    const HOLDS_LAST_BLOCK: bool = true;
+    const PARTIAL_BLOCK: &'static str = "wrong final block length";
+
+    fn apply(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut blocks = blocks::<C>(data);
+        self.decrypt_blocks(&mut blocks);
+        blocks.concat()
+    }
+
+    fn finish_padded(&mut self, last: Vec<u8>) -> Result<Vec<u8>, Failure> {
+        if last.len() != BLOCK {
+            return Err(Failure(Self::PARTIAL_BLOCK));
         }
-        let last = std::mem::take(&mut self.pending);
-        let mut output = self.decrypt(&last);
+        let mut output = self.apply(&last);
         let fill = usize::from(output.last().copied().unwrap_or(0));
         if fill == 0
             || fill > BLOCK
@@ -239,7 +230,7 @@ impl<C: BlockCipherDecrypt + KeyInit> Stream for CbcDecrypt<C> {
             return Err(Failure("bad decrypt"));
         }
         output.truncate(BLOCK - fill);
-        Ok(Finished { output, tag: None })
+        Ok(output)
     }
 }
 

@@ -23,6 +23,29 @@ function result(callback) {
   catch (error) { return errorResult(error); }
 }
 
+/** The shape of an RPC result class, which no Worker can construct. */
+function rpcResultContract(RpcResult) {
+  const { prototype } = RpcResult;
+  return {
+    name: RpcResult.name,
+    extendsNothing: Object.getPrototypeOf(RpcResult) === Function.prototype
+      && Object.getPrototypeOf(prototype) === Object.prototype,
+    own: Object.getOwnPropertyNames(prototype).sort(),
+    tag: Object.prototype.toString.call(prototype),
+    methods: ["then", "catch", "finally"].map(name => ({
+      enumerable: Object.getOwnPropertyDescriptor(prototype, name).enumerable,
+      length: prototype[name].length,
+      call: detailedResult(() => prototype[name].call(Promise.resolve())),
+    })),
+    dispose: Object.hasOwn(prototype, Symbol.dispose) && {
+      enumerable: Object.getOwnPropertyDescriptor(prototype, Symbol.dispose).enumerable,
+      call: detailedResult(() => prototype[Symbol.dispose].call({})),
+    },
+    construct: detailedResult(() => new RpcResult()),
+    call: detailedResult(() => RpcResult()),
+  };
+}
+
 async function asyncResult(callback) {
   try { return await callback(); }
   catch (error) { return errorResult(error); }
@@ -1670,6 +1693,7 @@ export async function run(handlerEnv, ctx, constructors) {
       envAfter: workers.env.FLAG,
       rpcTarget: typeof workers.RpcTarget,
       rpcStub: typeof workers.RpcStub,
+      rpcResults: [workers.RpcPromise, workers.RpcProperty].map(rpcResultContract),
       waitUntil: typeof workers.waitUntil,
       restore: typeof workers.restore,
       tracing: {

@@ -8,8 +8,9 @@ use lol_html::html_content::{
     StreamingHandlerSink, TextChunk,
 };
 use lol_html::{
-    AsciiCompatibleEncoding, DocumentContentHandlers, ElementContentHandlers, HtmlRewriter,
-    MemorySettings, Selector, Settings,
+    AsciiCompatibleEncoding, CommentHandler, DoctypeHandler, DocumentContentHandlers,
+    ElementContentHandlers, ElementHandler, EndHandler, HtmlRewriter, MemorySettings, Selector,
+    Settings, TextHandler,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -300,66 +301,67 @@ pub(super) fn run(
 }
 
 fn element_handlers<'h>(spec: &Spec, port: &'h Port) -> ElementContentHandlers<'h> {
-    let mut handlers = ElementContentHandlers::default();
-    if let Some(handler) = spec.element {
-        handlers = handlers.element(move |element: &mut Element<'_, '_>| {
-            port.call(handler, element_properties(element), |operation| {
-                apply_element(element, operation, port)?;
-                Ok(element_properties(element))
-            })
-        });
+    ElementContentHandlers {
+        element: element_handler(spec, port),
+        comments: comment_handler(spec, port),
+        text: text_handler(spec, port),
     }
-    if let Some(handler) = spec.text {
-        handlers = handlers.text(text_handler(port, handler));
-    }
-    if let Some(handler) = spec.comments {
-        handlers = handlers.comments(comment_handler(port, handler));
-    }
-    handlers
 }
 
 fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers<'h> {
-    let mut handlers = DocumentContentHandlers::default();
-    if let Some(handler) = spec.doctype {
-        handlers = handlers.doctype(move |doctype: &mut Doctype<'_>| {
-            port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
-        });
+    DocumentContentHandlers {
+        doctype: doctype_handler(spec, port),
+        comments: comment_handler(spec, port),
+        text: text_handler(spec, port),
+        end: end_handler(spec, port),
     }
-    // jscpd:ignore-start: element and document handlers add text and comment handlers alike.
-    if let Some(handler) = spec.text {
-        handlers = handlers.text(text_handler(port, handler));
-    }
-    if let Some(handler) = spec.comments {
-        handlers = handlers.comments(comment_handler(port, handler));
-    }
-    // jscpd:ignore-end
-    if let Some(handler) = spec.end {
-        handlers = handlers.end(move |end: &mut DocumentEnd<'_>| {
-            port.call(handler, json!({}), |operation| {
-                apply_end(end, &operation)?;
-                Ok(json!({}))
-            })
-        });
-    }
-    handlers
 }
 
-fn text_handler(port: &Port, handler: usize) -> impl FnMut(&mut TextChunk<'_>) -> Result + '_ {
-    move |text| {
+fn element_handler<'h>(spec: &Spec, port: &'h Port) -> Option<ElementHandler<'h>> {
+    let handler = spec.element?;
+    Some(Box::new(move |element: &mut Element<'_, '_>| {
+        port.call(handler, element_properties(element), |operation| {
+            apply_element(element, operation, port)?;
+            Ok(element_properties(element))
+        })
+    }))
+}
+
+fn doctype_handler<'h>(spec: &Spec, port: &'h Port) -> Option<DoctypeHandler<'h>> {
+    let handler = spec.doctype?;
+    Some(Box::new(move |doctype: &mut Doctype<'_>| {
+        port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
+    }))
+}
+
+fn end_handler<'h>(spec: &Spec, port: &'h Port) -> Option<EndHandler<'h>> {
+    let handler = spec.end?;
+    Some(Box::new(move |end: &mut DocumentEnd<'_>| {
+        port.call(handler, json!({}), |operation| {
+            apply_end(end, &operation)?;
+            Ok(json!({}))
+        })
+    }))
+}
+
+fn text_handler<'h>(spec: &Spec, port: &'h Port) -> Option<TextHandler<'h>> {
+    let handler = spec.text?;
+    Some(Box::new(move |text: &mut TextChunk<'_>| {
         port.call(handler, text_properties(text), |operation| {
             apply_text(text, operation, port)?;
             Ok(text_properties(text))
         })
-    }
+    }))
 }
 
-fn comment_handler(port: &Port, handler: usize) -> impl FnMut(&mut Comment<'_>) -> Result + '_ {
-    move |comment| {
+fn comment_handler<'h>(spec: &Spec, port: &'h Port) -> Option<CommentHandler<'h>> {
+    let handler = spec.comments?;
+    Some(Box::new(move |comment: &mut Comment<'_>| {
         port.call(handler, comment_properties(comment), |operation| {
             apply_comment(comment, &operation)?;
             Ok(comment_properties(comment))
         })
-    }
+    }))
 }
 
 fn text_properties(text: &TextChunk<'_>) -> Value {

@@ -33,17 +33,9 @@ enum Command {
     Sqlite,
 }
 
-// jscpd:ignore-start: each binary reports a failed run as tok does.
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("error: {error:#}");
-            ExitCode::FAILURE
-        }
-    }
+    tokamak_cli::exit_code(run())
 }
-// jscpd:ignore-end
 
 fn run() -> Result<()> {
     let cli = Cli::parse();

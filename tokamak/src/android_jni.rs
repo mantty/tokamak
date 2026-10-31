@@ -3,14 +3,11 @@
 //! The shell owns the Activity, `WebView`, and lifecycle. This crate only
 //! moves values across the boundary; every decision belongs to the runtime.
 
-// jscpd:ignore-start: the Android and Apple boundaries import the same runtime types.
 use std::ffi::{CString, c_char, c_int};
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bridge::{self, Shell};
 use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
-// jscpd:ignore-end
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{JNI_TRUE, jboolean, jint, jlong};
 use jni::{JNIEnv, JavaVM};
@@ -356,7 +353,7 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeClientIdent
 fn start(
     env: &mut JNIEnv,
     [packaged_dir, state_dir, storage_dir, host]: [&JString; 4],
-    shell: Shell,
+    shell: Shell<KotlinPlugins>,
 ) -> Result<Runtime, String> {
     bridge::start(
         &text(env, packaged_dir)?,
@@ -370,7 +367,7 @@ fn start(
 fn start_development(
     env: &mut JNIEnv,
     [state_dir, host, endpoint, session_token]: [&JString; 4],
-    shell: Shell,
+    shell: Shell<KotlinPlugins>,
 ) -> Result<Runtime, String> {
     bridge::start_development(
         &text(env, state_dir)?,
@@ -381,10 +378,14 @@ fn start_development(
     )
 }
 
-fn shell(env: &mut JNIEnv, foreground: bool, plugins: &JObject) -> Result<Shell, String> {
+fn shell(
+    env: &mut JNIEnv,
+    foreground: bool,
+    plugins: &JObject,
+) -> Result<Shell<KotlinPlugins>, String> {
     Ok(Shell {
         foreground,
-        plugins: Arc::new(KotlinPlugins::new(env, plugins)?),
+        plugins: KotlinPlugins::new(env, plugins)?,
         report,
     })
 }

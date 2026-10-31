@@ -135,13 +135,7 @@ enum PluginCommand {
 }
 
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("error: {error:#}");
-            ExitCode::FAILURE
-        }
-    }
+    tokamak_cli::exit_code(run())
 }
 
 fn run() -> Result<()> {

@@ -37,38 +37,52 @@ impl Streams {
     pub(crate) fn cancel(&self) {
         self.closed.cancel();
     }
+}
 
-    pub(super) fn take<'js>(
-        self: &Arc<Self>,
-        stream: Object<'js>,
-        bootstrap: &Object<'js>,
-    ) -> rquickjs::Result<Port> {
-        let source: Object = bootstrap
+/// Converts service messages to and from one JavaScript context. The
+/// context's bootstrap object opens the streams a message sends and receives
+/// the streams it carries.
+#[derive(Clone)]
+pub(crate) struct Codec<'js> {
+    bootstrap: Object<'js>,
+    streams: Arc<Streams>,
+}
+
+impl<'js> Codec<'js> {
+    pub(crate) fn new(bootstrap: Object<'js>, streams: &Arc<Streams>) -> Self {
+        Self {
+            bootstrap,
+            streams: Arc::clone(streams),
+        }
+    }
+
+    pub(super) fn ctx(&self) -> &Ctx<'js> {
+        self.bootstrap.ctx()
+    }
+
+    pub(super) fn take(&self, stream: Object<'js>) -> rquickjs::Result<Port> {
+        let source: Object = self
+            .bootstrap
             .get::<_, Function>("openServiceStream")?
             .call((stream,))?;
         let (sender, receiver) = flume::bounded(1);
-        let streams = Arc::clone(self);
-        let bootstrap = bootstrap.clone();
-        let token = self.tasks.token();
+        let codec = self.clone();
+        let token = self.streams.tasks.token();
         source.ctx().clone().spawn(async move {
             let _token = token;
-            serve(source, receiver, &bootstrap, &streams).await;
+            serve(source, receiver, &codec).await;
         });
         Ok(Port {
             commands: sender,
-            closed: self.closed.clone(),
+            closed: self.streams.closed.clone(),
         })
     }
 
-    pub(super) fn receive<'js>(
-        self: &Arc<Self>,
-        ctx: &Ctx<'js>,
-        port: Port,
-        bootstrap: &Object<'js>,
-    ) -> rquickjs::Result<Object<'js>> {
+    pub(super) fn receive(&self, port: Port) -> rquickjs::Result<Object<'js>> {
+        let ctx = self.ctx();
         let port = Arc::new(port);
         let abandoned = Arc::downgrade(&port);
-        let closed = self.closed.clone();
+        let closed = self.streams.closed.clone();
         ctx.spawn(async move {
             closed.cancelled().await;
             if let Some(port) = abandoned.upgrade() {
@@ -80,35 +94,35 @@ impl Streams {
             }
         });
         let reading = Arc::clone(&port);
-        let streams = Arc::clone(self);
+        let streams = Arc::clone(&self.streams);
         let read = Function::new(ctx.clone(), move |ctx: Ctx<'js>, bootstrap: Object<'js>| {
             let port = Arc::clone(&reading);
-            let streams = Arc::clone(&streams);
+            let codec = Codec::new(bootstrap, &streams);
             let calling = ctx.clone();
             Promise::wrap_future(&ctx, async move {
                 request(&port, Command::Read)
                     .await
                     .map_err(|error| crate::errors::throw_message(&calling, &error))?
-                    .into_js(&calling, &bootstrap, &streams)
+                    .into_js(&codec)
             })
         })?;
-        let streams = Arc::clone(self);
+        let streams = Arc::clone(&self.streams);
         let cancel = Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, reason: Object<'js>, bootstrap: Object<'js>| {
-                let reason = Message::from_js(&reason, &bootstrap, &streams)?;
+                let codec = Codec::new(bootstrap, &streams);
+                let reason = Message::from_js(&reason, &codec)?;
                 let port = Arc::clone(&port);
-                let streams = Arc::clone(&streams);
                 let calling = ctx.clone();
                 Promise::wrap_future(&ctx, async move {
                     request(&port, |reply| Command::Cancel(reason, reply))
                         .await
                         .map_err(|error| crate::errors::throw_message(&calling, &error))?
-                        .into_js(&calling, &bootstrap, &streams)
+                        .into_js(&codec)
                 })
             },
         )?;
-        bootstrap
+        self.bootstrap
             .get::<_, Function>("receiveServiceStream")?
             .call((read, cancel))
     }
@@ -133,18 +147,13 @@ async fn request(port: &Port, command: impl FnOnce(Response) -> Command) -> Resu
     }
 }
 
-async fn serve<'js>(
-    source: Object<'js>,
-    requests: flume::Receiver<Command>,
-    bootstrap: &Object<'js>,
-    streams: &Arc<Streams>,
-) {
+async fn serve<'js>(source: Object<'js>, requests: flume::Receiver<Command>, codec: &Codec<'js>) {
     loop {
-        let command = next_command(&requests, streams).await;
+        let command = next_command(&requests, &codec.streams).await;
         let Some(Command::Read(reply)) = command else {
-            return end_stream(&source, command, bootstrap, streams).await;
+            return end_stream(&source, command, codec).await;
         };
-        if !read(&source, &requests, reply, bootstrap, streams).await {
+        if !read(&source, &requests, reply, codec).await {
             return;
         }
     }
@@ -163,8 +172,7 @@ async fn read<'js>(
     source: &Object<'js>,
     requests: &flume::Receiver<Command>,
     reply: Response,
-    bootstrap: &Object<'js>,
-    streams: &Arc<Streams>,
+    codec: &Codec<'js>,
 ) -> bool {
     let result = async {
         let promise: Promise = source.get::<_, Function>("read")?.call(())?;
@@ -173,12 +181,12 @@ async fn read<'js>(
     let result = tokio::select! {
         result = result => result,
         command = requests.recv_async() => {
-            end_stream(source, command.ok(), bootstrap, streams).await;
+            end_stream(source, command.ok(), codec).await;
             let _ = reply.send(Err("Stream was cancelled".into()));
             return false;
         }
-        () = streams.closed.cancelled() => {
-            end_stream(source, None, bootstrap, streams).await;
+        () = codec.streams.closed.cancelled() => {
+            end_stream(source, None, codec).await;
             let _ = reply.send(Err("Stream invocation ended".into()));
             return false;
         }
@@ -186,7 +194,7 @@ async fn read<'js>(
     let done = result
         .as_ref()
         .map_or(true, |result| result.get("done").unwrap_or(true));
-    let result = result.and_then(|result| Reply::from_js(&result, bootstrap, streams));
+    let result = result.and_then(|result| Reply::from_js(&result, codec));
     let _ = reply.send(result.map_err(|error| error.to_string()));
     !done
 }
@@ -194,21 +202,16 @@ async fn read<'js>(
 /// Answers the command that ends the stream: a cancel with the source's
 /// cancel result and a read with an error. With no command, as once the port
 /// is gone or the streams close, the source is cancelled.
-async fn end_stream<'js>(
-    source: &Object<'js>,
-    command: Option<Command>,
-    bootstrap: &Object<'js>,
-    streams: &Arc<Streams>,
-) {
+async fn end_stream<'js>(source: &Object<'js>, command: Option<Command>, codec: &Codec<'js>) {
     match command {
         Some(Command::Cancel(reason, reply)) => {
-            let _ = reply.send(cancel(source, reason, bootstrap, streams).await);
+            let _ = reply.send(cancel(source, reason, codec).await);
         }
         Some(Command::Read(reply)) => {
             let _ = reply.send(Err("Concurrent stream reads are not supported".into()));
         }
         None => {
-            let _ = cancel(source, Message::undefined(), bootstrap, streams).await;
+            let _ = cancel(source, Message::undefined(), codec).await;
         }
     }
 }
@@ -216,14 +219,13 @@ async fn end_stream<'js>(
 async fn cancel<'js>(
     source: &Object<'js>,
     reason: Message,
-    bootstrap: &Object<'js>,
-    streams: &Arc<Streams>,
+    codec: &Codec<'js>,
 ) -> Result<Reply, String> {
     let cancel = async {
-        let reason = reason.into_js(source.ctx(), bootstrap, streams)?;
+        let reason = reason.into_js(codec)?;
         let promise: Promise = source.get::<_, Function>("cancel")?.call((reason,))?;
         let result = promise.into_future::<Object>().await?;
-        Reply::from_js(&result, bootstrap, streams)
+        Reply::from_js(&result, codec)
     };
     cancel
         .await
