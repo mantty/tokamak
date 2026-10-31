@@ -66,13 +66,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          # The checkout is GitHub's merge of the PR into main, not the PR's head.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=check-reports&per_page=1" \
             --jq '.artifacts[] | select(.expired | not) | .workflow_run.id')
           if [ -n "$run" ]; then
             gh run download "$run" --repo "$GITHUB_REPOSITORY" --name check-reports --dir "$RUNNER_TEMP/main-reports"
           fi
-          node scripts/check-comment.mjs tokamak "$RUNNER_TEMP/main-reports" > "$RUNNER_TEMP/check-comment.md"
+          node scripts/check-comment.mjs tokamak "$RUNNER_TEMP/main-reports" "$HEAD_SHA" > "$RUNNER_TEMP/check-comment.md"
           comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
             --jq '.[] | select(.body | startswith("<!-- check-results -->")) | .id')
           comment=${comments%%$'\n'*}

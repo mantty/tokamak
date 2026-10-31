@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 // Prints the PR comment that compares each check section in reports/ with
-// main's reports, which may be missing.
-// Usage: node scripts/check-comment.mjs <project> <directory of main's reports>
-import { execFileSync } from "node:child_process";
+// main's reports, which may be missing, for the commit the reports checked.
+// Usage: node scripts/check-comment.mjs <project> <directory of main's reports> <commit>
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-const [project, mainReports] = process.argv.slice(2);
+const [project, mainReports, commit] = process.argv.slice(2);
 const kinds = ["lint", "format", "typecheck", "test"];
 const dash = "—";
 
@@ -40,12 +39,11 @@ for (const kind of kinds) {
   }
 }
 
-const head = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
 console.log([
   "<!-- check-results -->",
   `## Check results — ${project}`,
   "",
-  `Checks ${failed ? "**failed**" : "passed"} at \`${head}\`.`,
+  `Checks ${failed ? "**failed**" : "passed"} at ${commit}.`,
   "",
   "| report | section | main | this PR |",
   "|---|---|---|---|",
