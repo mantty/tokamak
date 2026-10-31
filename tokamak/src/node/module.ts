@@ -4,19 +4,39 @@ import { codedError } from "./errors.ts";
 
 const builtinModules = nodeBuiltinNames();
 
-export function isBuiltin(value) {
+interface Module {
+  id: string;
+  filename: string;
+  path: string;
+  paths: string[];
+  parent: unknown;
+  children: Module[];
+  loaded: boolean;
+  exports: unknown;
+  load(): never;
+  require(name: unknown): unknown;
+  isPreloading: boolean;
+}
+
+interface ModuleConstructor {
+  new (id?: unknown, parent?: unknown): Module;
+  (id?: unknown, parent?: unknown): Module;
+  readonly prototype: Module;
+}
+
+export function isBuiltin(value: unknown): boolean {
   return typeof value === "string" && isNodeBuiltin(value.toWellFormed());
 }
 
-export function createRequire() {
-  return function require(name) {
+export function createRequire(): (name: unknown) => unknown {
+  return function require(name: unknown) {
     const value = process.getBuiltinModule(name);
     if (value === undefined) throw new Error(`No such module "${name}".`);
     return value;
   };
 }
 
-function notImplemented(name) {
+function notImplemented(name: string): never {
   throw codedError(Error, `The module.${name} method is not implemented`, "ERR_METHOD_NOT_IMPLEMENTED");
 }
 
@@ -33,9 +53,12 @@ export class SourceMap {}
 export function findPackageJSON() { return notImplemented("findPackageJSON"); }
 export function getCompileCacheDir() { return undefined; }
 export function syncBuiltinESMExports() {}
-export function wrap(source) { return ["(function (exports, require, module, __filename, __dirname) {", String(source), "\n});"]; }
+export function wrap(source: unknown): string[] { return ["(function (exports, require, module, __filename, __dirname) {", String(source), "\n});"]; }
 
-export function Module(id, parent) {
+// A function rather than a class, as in Node, so that it constructs a module
+// when called without `new`. TypeScript gives a function expression no
+// construct signature, so its type is stated.
+export const Module = function (this: Module | undefined, id?: unknown, parent?: unknown) {
   if (!(this instanceof Module)) return new Module(id, parent);
   this.id = id === undefined ? "." : String(id);
   this.filename = this.id;
@@ -45,20 +68,20 @@ export function Module(id, parent) {
   this.children = [];
   this.loaded = false;
   this.exports = {};
-}
+} as ModuleConstructor;
 
 Module.prototype.load = function () { return notImplemented("load"); };
 Module.prototype.require = createRequire();
 Module.prototype.isPreloading = false;
-Object.assign(Module, { builtinModules, isBuiltin, createRequire, Module, _cache: {}, _debug: false });
-Module._findPath = () => notImplemented("_findPath");
-Module._initPaths = () => notImplemented("_initPaths");
-Module._load = () => notImplemented("_load");
-Module._nodeModulePaths = () => [];
-Module._preloadModules = [];
-Module._resolveFilename = () => notImplemented("_resolveFilename");
-Module._resolveLookupPaths = () => notImplemented("_resolveLookupPaths");
 Object.assign(Module, {
+  builtinModules, isBuiltin, createRequire, Module, _cache: {}, _debug: false,
+  _findPath: () => notImplemented("_findPath"),
+  _initPaths: () => notImplemented("_initPaths"),
+  _load: () => notImplemented("_load"),
+  _nodeModulePaths: () => [],
+  _preloadModules: [],
+  _resolveFilename: () => notImplemented("_resolveFilename"),
+  _resolveLookupPaths: () => notImplemented("_resolveLookupPaths"),
   _pathCache: {},
   _extensions: {},
   globalPaths: [],

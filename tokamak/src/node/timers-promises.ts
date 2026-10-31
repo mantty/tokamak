@@ -1,52 +1,57 @@
 import * as timers from "../globals/timers.ts";
+import { objectOf } from "../globals/objects.ts";
 import { abortError } from "./errors.ts";
+import { validateAbortSignal, type AbortSignalLike } from "./validators.ts";
 
-function validateOptions(options) {
+// The abort signal in a timer's `options`, validated as Node validates it.
+function timerSignal(options: unknown): AbortSignalLike | undefined {
   if (options === null || (options !== undefined && typeof options !== "object")) throw new TypeError("The options argument must be an object");
-  return options ?? {};
+  const signal = options === undefined ? undefined : objectOf(options).signal;
+  validateAbortSignal(signal, "options.signal");
+  return signal;
 }
 
-function timerPromise(delay = 0, value, options) {
+function timerPromise<T>(delay: unknown = 0, value: T, options: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
-    let settings;
-    try { settings = validateOptions(options); }
-    catch (error) { reject(error); return; }
-    if (settings.signal?.aborted) { reject(abortError()); return; }
+    const signal = timerSignal(options);
+    if (signal?.aborted) { reject(abortError()); return; }
     const id = timers.setTimeout(() => resolve(value), delay);
-    settings.signal?.addEventListener("abort", () => { timers.clearTimeout(id); reject(abortError()); }, { once: true });
+    signal?.addEventListener("abort", () => { timers.clearTimeout(id); reject(abortError()); }, { once: true });
   });
 }
 
-export function setTimeout(delay, value, options) { return timerPromise(delay, value, options); }
-export function setImmediate(value, options) { return timerPromise(0, value, options); }
+export function setTimeout<T>(delay?: unknown, value?: T, options?: unknown): Promise<T | undefined> { return timerPromise(delay, value, options); }
+export function setImmediate<T>(value?: T, options?: unknown): Promise<T | undefined> { return timerPromise(0, value, options); }
 
-export async function* setInterval(delay = 0, value, options) {
-  const settings = validateOptions(options);
+export async function* setInterval<T>(delay: unknown = 0, value?: T, options?: unknown): AsyncGenerator<T | undefined> {
+  const signal = timerSignal(options);
   let stopped = false;
-  let resolveNext;
-  const queue = [];
+  // Ticks that fired while no iteration was waiting.
+  let missed = 0;
+  let next: PromiseWithResolvers<T | undefined> | undefined;
   const id = timers.setInterval(() => {
-    if (resolveNext) { const resolve = resolveNext; resolveNext = undefined; resolve(value); }
-    else queue.push(value);
+    if (next) { next.resolve(value); next = undefined; }
+    else missed += 1;
   }, delay);
   const abort = () => {
     stopped = true;
     timers.clearInterval(id);
-    resolveNext?.(Promise.reject(abortError()));
-    resolveNext = undefined;
+    next?.reject(abortError());
+    next = undefined;
   };
-  settings.signal?.addEventListener("abort", abort, { once: true });
+  signal?.addEventListener("abort", abort, { once: true });
   try {
     while (!stopped) {
-      if (queue.length) { yield queue.shift(); continue; }
-      yield await new Promise((resolve, reject) => { resolveNext = result => result instanceof Promise ? result.then(resolve, reject) : resolve(result); });
+      if (missed > 0) { missed -= 1; yield value; continue; }
+      next = Promise.withResolvers();
+      yield await next.promise;
     }
   } finally {
     timers.clearInterval(id);
-    settings.signal?.removeEventListener("abort", abort);
+    signal?.removeEventListener("abort", abort);
   }
 }
 
-export const scheduler = { wait: (delay, options) => timerPromise(delay, undefined, options) };
+export const scheduler = { wait: (delay?: unknown, options?: unknown) => timerPromise(delay, undefined, options) };
 
 export default { scheduler, setImmediate, setInterval, setTimeout };

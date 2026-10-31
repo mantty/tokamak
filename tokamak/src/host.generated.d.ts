@@ -4,11 +4,13 @@
 declare module "tokamak:host" {
   const classBrand: unique symbol;
 
-  export function asyncContextGet(): unknown;
+  export function arrayBufferView(value: unknown): ViewParts;
 
-  export function asyncContextSet(value: unknown): void;
+  export function asyncContextGet(): AsyncContextFrame | undefined;
 
-  export function builtinNamespace(name: string): object | undefined;
+  export function asyncContextSet(frame: AsyncContextFrame | undefined): void;
+
+  export function builtinNamespace(name: string): Record<string, unknown> | undefined;
 
   export function cacheDelete(name: string, key: string): boolean;
 
@@ -16,9 +18,11 @@ declare module "tokamak:host" {
 
   export function cachePut(name: string, key: string, metadata: object, body: Uint8Array): void;
 
-  export function createCompression(format: string, decode: boolean): (...args: never[]) => unknown;
+  export function cloneArrayBuffer(value: unknown, shared: boolean): ArrayBufferLike;
 
-  export function createDecoder(label: string, fatal: boolean, ignoreBom: boolean): object;
+  export function createCompression(format: string, decode: boolean): CompressionCodec;
+
+  export function createDecoder(label: string, fatal: boolean, ignoreBom: boolean): TextDecoderState;
 
   export function createNodeCompression(mode: number, options: string, dictionary: Uint8Array): object;
 
@@ -118,7 +122,7 @@ declare module "tokamak:host" {
 
   export function nodeBuiltinNames(): string[];
 
-  export function objectClass(value: unknown): unknown;
+  export function objectClass(value: unknown): string | undefined;
 
   export function processChdir(directory: unknown): void;
 
@@ -128,7 +132,9 @@ declare module "tokamak:host" {
 
   export function registerDomException(constructor: abstract new (...args: never[]) => unknown): void;
 
-  export function socketConnect(host: string, port: number, secure: boolean): object;
+  export function scheduleTimer(callback: () => void, milliseconds: number): TimerHandle;
+
+  export function socketConnect(host: string, port: number, secure: boolean): SocketConnection;
 
   export function urlDecodeParams(input: string): string;
 
@@ -156,11 +162,44 @@ declare module "tokamak:host" {
     getAuthTag(): ArrayBuffer;
   }
 
+  export interface CompressionCodec {
+    readonly [classBrand]: "CompressionCodec";
+    write(input: Uint8Array, finish: boolean, emit: (arg0: Uint8Array) => void): void;
+  }
+
   export interface DigestState {
     readonly [classBrand]: "DigestState";
     update(input: Uint8Array): void;
     finish(): ArrayBuffer;
     copy(): DigestState;
+  }
+
+  export interface SocketConnection {
+    readonly [classBrand]: "SocketConnection";
+    opened(): Promise<void>;
+    close(): void;
+    read(): Promise<Uint8Array | undefined>;
+    write(bytes: Uint8Array): Promise<void>;
+    shutdown(): Promise<void>;
+    startTls(host: string): SocketConnection;
+  }
+
+  export interface TextDecoderState {
+    readonly [classBrand]: "TextDecoderState";
+    readonly encoding: string;
+    decode(input: Uint8Array, stream: boolean): string;
+  }
+
+  export interface TimerHandle {
+    readonly [classBrand]: "TimerHandle";
+    cancel(): void;
+  }
+
+  export interface ViewParts {
+    buffer: ArrayBufferLike;
+    offset: number;
+    length: number;
+    tracking: boolean;
   }
 }
 

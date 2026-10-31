@@ -80,6 +80,28 @@ impl<T: JsReturn> JsReturn for rquickjs::Result<T> {
     }
 }
 
+/// A function's parameters, given as a tuple of their types.
+pub(crate) trait JsArguments {
+    fn parameters(types: &mut Types) -> Vec<String>;
+}
+
+macro_rules! arguments {
+    ($($argument:ident $index:literal),*) => {
+        impl<$($argument: JsType),*> JsArguments for ($($argument,)*) {
+            #[allow(unused_variables)]
+            fn parameters(types: &mut Types) -> Vec<String> {
+                vec![$(format!("arg{}: {}", $index, $argument::typescript(types))),*]
+            }
+        }
+    };
+}
+
+arguments!();
+arguments!(A 0);
+arguments!(A 0, B 1);
+arguments!(A 0, B 1, C 2);
+arguments!(A 0, B 1, C 2, D 3);
+
 /// Types whose TypeScript form is fixed.
 macro_rules! fixed_types {
     ($($rust:ty => $typescript:literal),+ $(,)?) => {
@@ -144,7 +166,7 @@ impl<T: JsType> JsType for Option<T> {
     const OPTIONAL: bool = true;
 
     fn typescript(types: &mut Types) -> String {
-        format!("{} | undefined", T::typescript(types))
+        format!("{} | undefined", union_member(&T::typescript(types)))
     }
 }
 
@@ -169,6 +191,16 @@ impl<V: JsType> JsType for BTreeMap<String, V> {
 impl<V: JsType, S> JsType for HashMap<String, V, S> {
     fn typescript(types: &mut Types) -> String {
         format!("Record<string, {}>", V::typescript(types))
+    }
+}
+
+/// `typescript` as one member of a union: a function type is parenthesised,
+/// since its result type would otherwise take in the union.
+fn union_member(typescript: &str) -> String {
+    if typescript.contains("=>") {
+        format!("({typescript})")
+    } else {
+        typescript.to_owned()
     }
 }
 
@@ -258,21 +290,21 @@ impl Types {
     }
 
     /// `name`, after declaring it if it is new as the interface of an rquickjs
-    /// class with `methods`, each one's name and signature. A property keyed
-    /// by a symbol only the declarations name keeps TypeScript code from
-    /// building one or passing one class for another.
+    /// class with `members`, its methods and getters. A property keyed by a
+    /// symbol only the declarations name keeps TypeScript code from building
+    /// one or passing one class for another.
     pub(crate) fn class(
         &mut self,
         name: &str,
         rust: &'static str,
-        methods: impl FnOnce(&mut Self) -> Vec<(&'static str, Signature)>,
+        members: impl FnOnce(&mut Self) -> Vec<String>,
     ) -> String {
         self.branded = true;
         self.named(name, rust, |types| {
             let mut declaration =
                 format!("export interface {name} {{\n  readonly [classBrand]: {name:?};\n");
-            for (method, signature) in methods(types) {
-                declaration.push_str(&format!("  {method}{};\n", signature.declaration()));
+            for member in members(types) {
+                declaration.push_str(&format!("  {member};\n"));
             }
             declaration.push('}');
             declaration
@@ -298,6 +330,16 @@ impl Signature {
     fn declaration(&self) -> String {
         format!("({}): {}", self.parameters.join(", "), self.returns)
     }
+
+    /// An interface member for a method named `name` with this signature.
+    pub(crate) fn method(&self, name: &str) -> String {
+        format!("{name}{}", self.declaration())
+    }
+}
+
+/// An interface member for a getter named `name` returning `returns`.
+pub(crate) fn getter(name: &str, returns: &str) -> String {
+    format!("readonly {name}: {returns}")
 }
 
 /// One declared module: its exported functions and the types they use.

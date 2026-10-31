@@ -1,4 +1,5 @@
-import { markHostObject } from "../globals/objects.ts";
+import { callMethod, markHostObject, objectOf } from "../globals/objects.ts";
+import { fieldTypeError } from "../globals/conversions.ts";
 import { DOMException } from "../globals/dom-exception.ts";
 import { atob, btoa } from "../globals/base64.ts";
 import { console } from "../globals/console.ts";
@@ -19,6 +20,12 @@ import { Buffer } from "../node/buffer.ts";
 import { installIntlGlobals } from "../intl.ts";
 
 class Navigator {
+  declare userAgent: string;
+  declare platform: string;
+  declare language: string;
+  declare languages: readonly string[];
+  declare hardwareConcurrency: number;
+
   constructor() {
     markHostObject(this);
     this.userAgent = "Cloudflare-Workers";
@@ -32,7 +39,7 @@ class Navigator {
 
 class WorkerGlobalScope extends EventTarget {}
 class ServiceWorkerGlobalScope extends WorkerGlobalScope {}
-ServiceWorkerGlobalScope.prototype[Symbol.toStringTag] = "ServiceWorkerGlobalScope";
+Object.assign(ServiceWorkerGlobalScope.prototype, { [Symbol.toStringTag]: "ServiceWorkerGlobalScope" });
 Object.defineProperty(WorkerGlobalScope.prototype, "EventTarget", {
   configurable: true,
   enumerable: true,
@@ -57,33 +64,36 @@ Object.assign(globalThis, {
 Object.setPrototypeOf(globalThis, ServiceWorkerGlobalScope.prototype);
 initEventTarget(globalThis);
 installIntlGlobals();
-delete globalThis.WebAssembly;
-delete globalThis.InternalError;
-globalThis.performance = performance;
-globalThis.scheduler = {
-  wait: (delay, options = {}) => {
-    if (options.signal?.aborted) return Promise.reject(options.signal.reason);
-    return new Promise((resolve, reject) => {
-      const id = setTimeout(() => {
-        if (options.signal?.aborted) reject(options.signal.reason);
-        else resolve();
-      }, delay);
-      options.signal?.addEventListener("abort", () => {
-        clearTimeout(id);
-        reject(options.signal.reason);
-      }, { once: true });
-    });
-  },
+Reflect.deleteProperty(globalThis, "WebAssembly");
+Reflect.deleteProperty(globalThis, "InternalError");
+
+// Resolves after `delay` milliseconds, or rejects when `options.signal` aborts first.
+const wait = (delay: unknown, options: unknown = {}): Promise<void> => {
+  const { signal } = objectOf(options ?? {});
+  if (signal !== undefined && !(signal instanceof AbortSignal)) throw fieldTypeError("signal", "WaitOptions", "AbortSignal");
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(() => {
+      if (signal?.aborted) reject(signal.reason);
+      else resolve();
+    }, delay);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(id);
+      reject(signal.reason);
+    }, { once: true });
+  });
 };
+
+Object.assign(globalThis, { performance, scheduler: { wait } });
 
 // Array/TypedArray toLocaleString forward locales and options to each element,
 // which the engine's own implementation does not.
-function localeElements(locales, options) {
+function localeElements(this: ArrayLike<unknown>, locales?: unknown, options?: unknown): string {
   let result = "";
   for (let index = 0; index < this.length; index += 1) {
     if (index > 0) result += ",";
     const element = this[index];
-    if (element !== undefined && element !== null) result += element.toLocaleString(locales, options);
+    if (element !== undefined && element !== null) result += callMethod(element, "toLocaleString", locales, options);
   }
   return result;
 }

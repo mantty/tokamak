@@ -8,7 +8,7 @@ use futures_util::{
     FutureExt,
     future::{LocalBoxFuture, Shared},
 };
-use rquickjs::{Ctx, Function, Object, Promise, TypedArray, function::Async};
+use rquickjs::{Class, Ctx, JsLifetime, TypedArray, class::Trace};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
@@ -184,115 +184,100 @@ pub(crate) fn start(
     host: String,
     port: u16,
     secure: bool,
-) -> rquickjs::Result<Object<'_>> {
+) -> rquickjs::Result<Class<'_, SocketConnection>> {
     let cancelled = CancellationToken::new();
     let pending = opening(
         async move { connect(&host, port, secure).await },
         cancelled.clone(),
     );
-    socket_object(ctx, pending, cancelled)
+    Class::instance(ctx, SocketConnection { pending, cancelled })
 }
 
-fn socket_object<'js>(
-    ctx: Ctx<'js>,
+/// A socket's connection, usable once `opened` resolves.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct SocketConnection {
+    #[qjs(skip_trace)]
     pending: Opening,
+    #[qjs(skip_trace)]
     cancelled: CancellationToken,
-) -> rquickjs::Result<Object<'js>> {
-    let result = Object::new(ctx.clone())?;
-    let ready = pending.clone();
-    let future_ctx = ctx.clone();
-    result.set(
-        "opened",
-        Promise::wrap_future(&ctx, async move {
-            ready
-                .await
-                .map(|_| ())
-                .map_err(|error| failure(&future_ctx, error))
-        })?,
-    )?;
-    let closing = pending.clone();
-    result.set(
-        "close",
-        Function::new(ctx.clone(), move || {
-            cancelled.cancel();
-            if let Some(Ok(socket)) = closing.peek() {
-                socket.close();
-            }
-        })?,
-    )?;
-    result.set("read", read_function(ctx.clone(), pending.clone())?)?;
-    result.set("write", write_function(ctx.clone(), pending.clone())?)?;
-    let shutdown = pending.clone();
-    result.set(
-        "shutdown",
-        Function::new(
-            ctx.clone(),
-            Async(move |ctx: Ctx<'js>| {
-                let pending = shutdown.clone();
-                async move {
-                    let socket = pending.await.map_err(|error| failure(&ctx, error))?;
-                    socket
-                        .shutdown()
-                        .await
-                        .map_err(|error| failure(&ctx, error))
-                }
-            }),
-        )?,
-    )?;
-    result.set(
-        "startTls",
-        Function::new(ctx, move |ctx: Ctx<'js>, host: String| {
-            let previous = pending.clone();
-            let cancelled = CancellationToken::new();
-            let upgraded = opening(
-                async move {
-                    let socket = previous.await.map_err(io::Error::other)?;
-                    socket.start_tls(&host).await
-                },
-                cancelled.clone(),
-            );
-            socket_object(ctx, upgraded, cancelled)
-        })?,
-    )?;
-    Ok(result)
 }
 
-fn read_function<'js>(ctx: Ctx<'js>, pending: Opening) -> rquickjs::Result<Function<'js>> {
-    Function::new(
-        ctx,
-        Async(move |ctx: Ctx<'js>| {
-            let pending = pending.clone();
+#[tokamak_macros::js_methods]
+#[rquickjs::methods(rename_all = "camelCase")]
+impl SocketConnection {
+    pub async fn opened(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        self.socket(&ctx).await.map(|_| ())
+    }
+
+    pub fn close(&self) {
+        self.cancelled.cancel();
+        if let Some(Ok(socket)) = self.pending.peek() {
+            socket.close();
+        }
+    }
+
+    /// The next bytes read, or `undefined` once the peer ends the stream.
+    pub async fn read<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Option<TypedArray<'js, u8>>> {
+        let socket = self.socket(&ctx).await?;
+        socket
+            .read()
+            .await
+            .map_err(|error| failure(&ctx, error))?
+            .map(|bytes| TypedArray::new(ctx, bytes))
+            .transpose()
+    }
+
+    pub async fn write<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        bytes: TypedArray<'js, u8>,
+    ) -> rquickjs::Result<()> {
+        let bytes = bytes
+            .as_bytes()
+            .ok_or_else(|| failure(&ctx, "Detached socket data"))?
+            .to_vec();
+        let socket = self.socket(&ctx).await?;
+        socket
+            .write(&bytes)
+            .await
+            .map_err(|error| failure(&ctx, error))
+    }
+
+    pub async fn shutdown(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        let socket = self.socket(&ctx).await?;
+        socket
+            .shutdown()
+            .await
+            .map_err(|error| failure(&ctx, error))
+    }
+
+    /// A connection over this one, secured by TLS for `host`.
+    pub fn start_tls<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        host: String,
+    ) -> rquickjs::Result<Class<'js, Self>> {
+        let previous = self.pending.clone();
+        let cancelled = CancellationToken::new();
+        let pending = opening(
             async move {
-                let socket = pending.await.map_err(|error| failure(&ctx, error))?;
-                socket
-                    .read()
-                    .await
-                    .map_err(|error| failure(&ctx, error))?
-                    .map(|bytes| TypedArray::new(ctx, bytes))
-                    .transpose()
-            }
-        }),
-    )
+                let socket = previous.await.map_err(io::Error::other)?;
+                socket.start_tls(&host).await
+            },
+            cancelled.clone(),
+        );
+        Class::instance(ctx, Self { pending, cancelled })
+    }
 }
 
-fn write_function<'js>(ctx: Ctx<'js>, pending: Opening) -> rquickjs::Result<Function<'js>> {
-    Function::new(
-        ctx,
-        Async(move |ctx: Ctx<'js>, bytes: TypedArray<'js, u8>| {
-            let pending = pending.clone();
-            async move {
-                let bytes = bytes
-                    .as_bytes()
-                    .ok_or_else(|| failure(&ctx, "Detached socket data"))?
-                    .to_vec();
-                let socket = pending.await.map_err(|error| failure(&ctx, error))?;
-                socket
-                    .write(&bytes)
-                    .await
-                    .map_err(|error| failure(&ctx, error))
-            }
-        }),
-    )
+impl SocketConnection {
+    async fn socket(&self, ctx: &Ctx<'_>) -> rquickjs::Result<Rc<Socket>> {
+        self.pending
+            .clone()
+            .await
+            .map_err(|error| failure(ctx, error))
+    }
 }
 
 fn closed_error() -> io::Error {

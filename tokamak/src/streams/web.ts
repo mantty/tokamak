@@ -1,5 +1,5 @@
-import { markHostObject } from "../globals/objects.ts";
-import { createCompression } from "tokamak:host";
+import { isObject, markHostObject } from "../globals/objects.ts";
+import { createCompression, type CompressionCodec } from "tokamak:host";
 import { structuredClone } from "../globals/structured-clone.ts";
 import { bufferSourceBytes, sharedBufferSourceBytes, string } from "../globals/conversions.ts";
 import { TextDecoder, TextEncoder } from "./text.ts";
@@ -17,32 +17,31 @@ export {
   TransformStreamDefaultController, CountQueuingStrategy, ByteLengthQueuingStrategy,
 };
 
-delete WritableStreamDefaultController.prototype.abortReason;
-const nativePair = Symbol("native-transform-pair");
-const streamLengths = new WeakMap();
+Reflect.deleteProperty(WritableStreamDefaultController.prototype, "abortReason");
+const streamLengths = new WeakMap<ReadableStream, number>();
 
 // Record that `stream` delivers exactly `length` bytes.
-export function setStreamLength(stream, length) {
+export function setStreamLength<S extends ReadableStream>(stream: S, length: number): S {
   streamLengths.set(stream, length);
   return stream;
 }
 
 // The number of bytes `stream` delivers, when known.
-export function streamLength(stream) {
+export function streamLength(stream: ReadableStream): number | undefined {
   return streamLengths.get(stream);
 }
 
 const encoder = new TextEncoder();
 
 // The bytes of a chunk a byte stream's writable side takes: a string or an [AllowShared] BufferSource.
-export function writtenChunkBytes(chunk) {
+export function writtenChunkBytes(chunk: unknown): Uint8Array {
   const bytes = typeof chunk === "string" ? encoder.encode(chunk) : sharedBufferSourceBytes(chunk);
   if (bytes) return bytes;
   throw new TypeError("This TransformStream is being used as a byte stream, but received an object of non-ArrayBuffer/ArrayBufferView type on its writable side.");
 }
 
 // The bytes of a chunk read from a stream to drain it: a string or a BufferSource.
-export function drainedChunkBytes(chunk) {
+export function drainedChunkBytes(chunk: unknown): Uint8Array {
   const bytes = typeof chunk === "string" ? encoder.encode(chunk) : bufferSourceBytes(chunk);
   if (bytes) return bytes;
   throw new TypeError("Draining read encountered a value that cannot be converted to bytes");
@@ -53,7 +52,7 @@ const teeBranches = ReadableStream.prototype.tee;
 Object.defineProperty(ReadableStream.prototype, "tee", {
   ...Object.getOwnPropertyDescriptor(ReadableStream.prototype, "tee"),
   value: {
-    tee() {
+    tee(this: ReadableStream) {
       const branches = teeBranches.call(this);
       const length = streamLengths.get(this);
       if (length !== undefined) for (const branch of branches) streamLengths.set(branch, length);
@@ -62,7 +61,7 @@ Object.defineProperty(ReadableStream.prototype, "tee", {
   }.tee,
 });
 
-export function nativeStreamError(reason) {
+export function nativeStreamError(reason: unknown): unknown {
   if (reason !== null && typeof reason === "object") {
     try { return structuredClone(reason); }
     catch { return new Error("#<Object>"); }
@@ -70,17 +69,27 @@ export function nativeStreamError(reason) {
   return new Error(reason === undefined ? "Stream was cancelled." : String(reason));
 }
 
-export function nativeReadableStream(source) {
+export function nativeReadableStream(source: UnderlyingByteSource): ReadableStream<Uint8Array> {
   const stream = new ReadableStream(source);
   setNativeCancelError(stream, nativeStreamError);
   return stream;
 }
 
+// The readable and writable sides of a transform stream tokamak implements.
+class NativePair {
+  declare readonly readable: ReadableStream;
+  declare readonly writable: WritableStream;
+  constructor(readable: ReadableStream, writable: WritableStream) {
+    this.readable = readable;
+    this.writable = writable;
+  }
+}
+
 export class TransformStream {
-  #pair;
-  constructor(transformer, writableStrategy, readableStrategy) {
+  #pair: { readonly readable: ReadableStream; readonly writable: WritableStream };
+  constructor(transformer?: Transformer | NativePair, writableStrategy?: QueuingStrategy, readableStrategy?: QueuingStrategy) {
     markHostObject(this);
-    this.#pair = transformer === nativePair ? writableStrategy : new StandardTransformStream(transformer, writableStrategy, readableStrategy);
+    this.#pair = transformer instanceof NativePair ? transformer : new StandardTransformStream(transformer, writableStrategy, readableStrategy);
   }
   get readable() { return this.#pair.readable; }
   get writable() { return this.#pair.writable; }
@@ -89,21 +98,22 @@ for (const name of ["readable", "writable"]) {
   Object.defineProperty(TransformStream.prototype, name, { ...Object.getOwnPropertyDescriptor(TransformStream.prototype, name), enumerable: true });
 }
 
-export function isDisturbed(stream) { return Boolean(stream?._disturbed); }
+export function isDisturbed(stream: ReadableStream | null | undefined): boolean { return Boolean(stream?._disturbed); }
 
 Object.defineProperty(ReadableStreamBYOBReader.prototype, "readAtLeast", {
   configurable: true, enumerable: true, writable: true,
-  value(minimum, view) {
-    minimum = Math.trunc(Number(minimum));
+  value(this: ReadableStreamBYOBReader, minimumBytes: unknown, view: unknown) {
+    const minimum = Math.trunc(Number(minimumBytes));
     if (!Number.isFinite(minimum) || minimum < 1) return Promise.reject(new TypeError("Minimum byte count must be positive"));
     if (!ArrayBuffer.isView(view) || minimum > view.byteLength) return Promise.reject(new TypeError("BYOB read requires a view large enough for the minimum"));
-    return this.read(view, { min: Math.ceil(minimum / (view.BYTES_PER_ELEMENT ?? 1)) });
+    const elementSize = "BYTES_PER_ELEMENT" in view && typeof view.BYTES_PER_ELEMENT === "number" ? view.BYTES_PER_ELEMENT : 1;
+    return this.read(view, { min: Math.ceil(minimum / elementSize) });
   },
 });
 
 Object.defineProperty(ReadableStreamBYOBRequest.prototype, "atLeast", {
   configurable: true, enumerable: true,
-  get() {
+  get(this: ReadableStreamBYOBRequest) {
     const pending = this._associatedReadableByteStreamController?._pendingPullIntos.peek();
     return pending ? Math.max(1, pending.minimumFill - pending.bytesFilled) : null;
   },
@@ -130,8 +140,8 @@ export class TextEncoderStream extends TransformStream {
 }
 
 export class TextDecoderStream extends TransformStream {
-  #decoder;
-  constructor(label = "utf-8", options = {}) {
+  #decoder: TextDecoder;
+  constructor(label: unknown = "utf-8", options: unknown = {}) {
     const decoder = new TextDecoder(label, options);
     super({
       transform(chunk, controller) {
@@ -152,20 +162,21 @@ export class TextDecoderStream extends TransformStream {
   get ignoreBOM() { return this.#decoder.ignoreBOM; }
 }
 
-function compressionPair(format, decode) {
-  let codec = createCompression(String(format), decode);
-  let readableController;
-  let writableController;
+function compressionPair(format: unknown, decode: boolean): NativePair {
+  let codec: CompressionCodec | null = createCompression(String(format), decode);
+  let readableController: ReadableByteStreamController;
+  let writableController: WritableStreamDefaultController;
   const readable = nativeReadableStream({
     type: "bytes",
     start(controller) { readableController = controller; },
     cancel(reason) { codec = null; writableController.error(reason); },
   });
-  const process = (chunk, finish) => {
+  const process = (chunk: unknown, finish: boolean) => {
     try {
-      chunk = typeof chunk === "string" ? encoder.encode(chunk) : sharedBufferSourceBytes(chunk);
-      if (!chunk) throw new TypeError("This WritableStream only supports writing byte types.");
-      codec(chunk, finish, output => readableController.enqueue(output));
+      const bytes = typeof chunk === "string" ? encoder.encode(chunk) : sharedBufferSourceBytes(chunk);
+      if (!bytes) throw new TypeError("This WritableStream only supports writing byte types.");
+      if (codec === null) throw new TypeError("The compression stream has ended.");
+      codec.write(bytes, finish, output => readableController.enqueue(output));
       if (finish) codec = null;
     } catch (error) {
       codec = null;
@@ -183,26 +194,35 @@ function compressionPair(format, decode) {
     },
     abort(reason) { codec = null; readableController.error(reason); },
   });
-  return { readable, writable };
+  return new NativePair(readable, writable);
 }
 
 export class CompressionStream extends TransformStream {
-  constructor(format) { super(nativePair, compressionPair(format, false)); }
+  constructor(format: unknown) { super(compressionPair(format, false)); }
 }
 
 export class DecompressionStream extends TransformStream {
-  constructor(format) { super(nativePair, compressionPair(format, true)); }
+  constructor(format: unknown) { super(compressionPair(format, true)); }
 }
 
-function identityPair(remaining, strategy = {}) {
+// A write the readable side has not yet delivered in full.
+interface PendingWrite {
+  bytes: Uint8Array;
+  offset: number;
+  length: number;
+  completion: PromiseWithResolvers<void>;
+}
+
+function identityPair(remainingBytes: bigint | undefined, strategy: unknown = {}): NativePair {
+  let remaining = remainingBytes;
   if (strategy === null) strategy = {};
-  if (typeof strategy !== "object") throw new TypeError("Expected a queuing strategy");
-  let readableController;
-  let writableController;
-  let available = Promise.withResolvers();
-  let pending;
+  if (!isObject(strategy) || typeof strategy === "function") throw new TypeError("Expected a queuing strategy");
+  let readableController: ReadableByteStreamController;
+  let writableController: WritableStreamDefaultController;
+  let available = Promise.withResolvers<void>();
+  let pending: PendingWrite | undefined;
   let ended = false;
-  const fail = reason => {
+  const fail = (reason: unknown) => {
     ended = true;
     pending?.completion.reject(reason);
     pending = undefined;
@@ -215,12 +235,14 @@ function identityPair(remaining, strategy = {}) {
     start(controller) { readableController = controller; },
     async pull() {
       await available.promise;
-      if (ended) return;
+      if (ended || pending === undefined) return;
       const { bytes, completion } = pending;
       const request = readableController.byobRequest;
       if (request) {
-        const count = Math.min(request.view.byteLength, bytes.byteLength - pending.offset);
-        request.view.set(bytes.subarray(pending.offset, pending.offset + count));
+        const view = request.view;
+        if (view === null) return;
+        const count = Math.min(view.byteLength, bytes.byteLength - pending.offset);
+        view.set(bytes.subarray(pending.offset, pending.offset + count));
         pending.offset += count;
         request.respond(count);
       } else {
@@ -249,7 +271,7 @@ function identityPair(remaining, strategy = {}) {
           remaining -= BigInt(bytes.byteLength);
           if (remaining < 0n) throw new TypeError("Attempt to write too many bytes through a FixedLengthStream.");
         }
-        const completion = Promise.withResolvers();
+        const completion = Promise.withResolvers<void>();
         pending = { bytes, offset: 0, length: bytes.byteLength, completion };
         available.resolve();
         return completion.promise;
@@ -268,25 +290,25 @@ function identityPair(remaining, strategy = {}) {
     },
     abort: fail,
   }, strategy.highWaterMark === undefined ? {} : {
-    highWaterMark: strategy.highWaterMark,
-    size: chunk => typeof chunk === "string" ? chunk.length * 3 : chunk.byteLength ?? 1,
+    highWaterMark: Number(strategy.highWaterMark),
+    size: (chunk: unknown) => typeof chunk === "string" ? chunk.length * 3 : isObject(chunk) && chunk.byteLength !== undefined ? Number(chunk.byteLength) : 1,
   });
-  return { readable, writable };
+  return new NativePair(readable, writable);
 }
 
 export class IdentityTransformStream extends TransformStream {
-  constructor(strategy, length) {
-    super(nativePair, strategy === nativePair ? identityPair(length.remaining, length.strategy) : identityPair(undefined, strategy));
+  constructor(strategy?: unknown, pair?: NativePair) {
+    super(pair instanceof NativePair ? pair : identityPair(undefined, strategy));
   }
 }
 
 export class FixedLengthStream extends IdentityTransformStream {
-  constructor(length, strategy) {
-    let remaining;
+  constructor(length: unknown, strategy?: unknown) {
+    let remaining: bigint;
     try { remaining = typeof length === "bigint" ? length : BigInt(Math.trunc(Number(length))); }
     catch { throw new TypeError("Expected a non-negative length fitting in uint64"); }
     if (remaining < 0n || remaining > 0xffffffffffffffffn) throw new TypeError("Expected a non-negative length fitting in uint64");
-    super(nativePair, { remaining, strategy });
+    super(undefined, identityPair(remaining, strategy));
     setStreamLength(this.readable, Number(remaining));
   }
 }

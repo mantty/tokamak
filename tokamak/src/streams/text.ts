@@ -1,8 +1,8 @@
-import { markHostObject } from "../globals/objects.ts";
-import { createDecoder } from "tokamak:host";
+import { isObject, markHostObject } from "../globals/objects.ts";
+import { createDecoder, type TextDecoderState } from "tokamak:host";
 import { sharedBufferSourceBytes, string } from "../globals/conversions.ts";
 
-function utf8(code) {
+function utf8(code: number): number[] {
   if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
   if (code < 0x80) return [code];
   if (code < 0x800) return [0xc0 | (code >> 6), 0x80 | (code & 0x3f)];
@@ -10,16 +10,21 @@ function utf8(code) {
   return [0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)];
 }
 
+// The code point of a one-character string from iterating a string.
+function codePoint(character: string): number {
+  return character.codePointAt(0) ?? 0;
+}
+
 export class TextEncoder {
   constructor() { markHostObject(this); }
   get encoding() { return "utf-8"; }
-  encode(value = "") { return new Uint8Array([...string(value)].flatMap(character => utf8(character.codePointAt(0)))); }
-  encodeInto(source, destination) {
-    source = string(source);
+  encode(value: unknown = ""): Uint8Array { return new Uint8Array([...string(value)].flatMap(character => utf8(codePoint(character)))); }
+  encodeInto(source: unknown, destination: unknown): { read: number; written: number } {
+    const text = string(source);
     if (!(destination instanceof Uint8Array)) throw new TypeError("Destination must be a Uint8Array");
     let read = 0, written = 0;
-    for (const character of source) {
-      const bytes = utf8(character.codePointAt(0));
+    for (const character of text) {
+      const bytes = utf8(codePoint(character));
       if (written + bytes.length > destination.byteLength) break;
       destination.set(bytes, written);
       written += bytes.length;
@@ -30,24 +35,24 @@ export class TextEncoder {
 }
 
 export class TextDecoder {
-  #decoder;
-  #fatal;
-  #ignoreBOM;
-  constructor(label = "utf-8", options = {}) {
+  #decoder: TextDecoderState;
+  #fatal: boolean;
+  #ignoreBOM: boolean;
+  constructor(label: unknown = "utf-8", options: unknown = {}) {
     markHostObject(this);
-    label = string(label);
-    if (options === null || (typeof options !== "object" && typeof options !== "function")) throw new TypeError("Options must be an object");
+    const encoding = string(label);
+    if (!isObject(options)) throw new TypeError("Options must be an object");
     this.#fatal = Boolean(options.fatal);
     this.#ignoreBOM = Boolean(options.ignoreBOM);
-    this.#decoder = createDecoder(label, this.#fatal, this.#ignoreBOM);
+    this.#decoder = createDecoder(encoding, this.#fatal, this.#ignoreBOM);
   }
   get encoding() { return this.#decoder.encoding; }
   get fatal() { return this.#fatal; }
   get ignoreBOM() { return this.#ignoreBOM; }
-  decode(input = new Uint8Array(), options = {}) {
+  decode(input: unknown = new Uint8Array(), options: unknown = {}): string {
     const bytes = sharedBufferSourceBytes(input);
     if (!bytes) throw new TypeError("Failed to execute 'decode' on 'TextDecoder': parameter 1 is not of type 'Array'.");
-    if (options === null || (typeof options !== "object" && typeof options !== "function")) throw new TypeError("Options must be an object");
+    if (!isObject(options)) throw new TypeError("Options must be an object");
     return this.#decoder.decode(bytes, Boolean(options.stream));
   }
 }

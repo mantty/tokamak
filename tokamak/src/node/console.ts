@@ -1,6 +1,24 @@
 import { writeStderr, writeStdout } from "tokamak:host";
-import { console as consoleObject } from "../globals/console.ts";
+import { console as globalConsole } from "../globals/console.ts";
 import { codedError } from "./errors.ts";
+
+interface OutputStream {
+  write(text: unknown): boolean;
+}
+
+// Members Node's console has beyond the global console's.
+interface NodeConsoleMembers {
+  createTask?: () => void;
+  _ignoreErrors?: boolean;
+  _stderr?: OutputStream;
+  _stdout?: OutputStream;
+  _stderrErrorHandler?: () => void;
+  _stdoutErrorHandler?: () => void;
+  _times?: Map<unknown, unknown>;
+  Console?: typeof Console;
+}
+
+const consoleObject: typeof globalConsole & NodeConsoleMembers = globalConsole;
 
 function noop() {}
 

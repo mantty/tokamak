@@ -1,29 +1,45 @@
-import { bufferBytes } from "../globals/conversions.ts";
+import { viewBytes } from "../globals/conversions.ts";
 import { Buffer } from "./buffer.ts";
 import { codedError } from "./errors.ts";
 
-const states = new WeakMap();
+type Encoding = "utf8" | "utf16le" | "latin1" | "ascii" | "base64" | "base64url" | "hex";
 
-function normalizeEncoding(value) {
+interface DecoderState {
+  encoding: Encoding;
+  // Bytes of an incomplete character, kept for the next write.
+  pending: Uint8Array;
+  lastNeed: number;
+  lastTotal: number;
+  lastChar: Buffer;
+}
+
+// A character's first byte's position and length in UTF-8 when the input ends
+// before the character does; the input's end and 0 otherwise.
+interface PendingCharacter {
+  start: number;
+  total: number;
+}
+
+function normalizeEncoding(value: unknown): Encoding {
   const encoding = String(value).toLowerCase();
   if (["utf8", "utf-8"].includes(encoding)) return "utf8";
   if (["utf16le", "utf-16le", "ucs2", "ucs-2"].includes(encoding)) return "utf16le";
   if (["latin1", "binary"].includes(encoding)) return "latin1";
   if (["ascii"].includes(encoding)) return "ascii";
-  if (["base64", "base64url", "hex"].includes(encoding)) return encoding;
+  if (encoding === "base64" || encoding === "base64url" || encoding === "hex") return encoding;
   throw codedError(TypeError, `Unknown encoding: ${encoding}`, "ERR_UNKNOWN_ENCODING");
 }
 
-function bytes(value) {
-  if (ArrayBuffer.isView(value)) return bufferBytes(value);
+function bytes(value: unknown): Uint8Array {
+  if (ArrayBuffer.isView(value)) return viewBytes(value);
   throw new TypeError("The \"buffer\" argument must be of type string or an instance of Buffer, TypedArray, or DataView");
 }
 
-function utf8Length(value) {
+function utf8Length(value: number): number {
   return value < 0x80 ? 1 : value >= 0xc2 && value <= 0xdf ? 2 : value >= 0xe0 && value <= 0xef ? 3 : value >= 0xf0 && value <= 0xf4 ? 4 : 1;
 }
 
-function utf8Pending(input) {
+function utf8Pending(input: Uint8Array): PendingCharacter {
   let continuation = 0;
   while (continuation < input.length && input[input.length - continuation - 1] >= 0x80 && input[input.length - continuation - 1] <= 0xbf) continuation += 1;
   const start = input.length - continuation - 1;
@@ -32,12 +48,12 @@ function utf8Pending(input) {
   return total > continuation + 1 && total > 1 ? { start, total } : { start: input.length, total: 0 };
 }
 
-function remember(state, input) {
+function remember(state: DecoderState, input: Uint8Array): void {
   state.lastChar.fill(0);
   if (input.length) state.lastChar.set(input.slice(Math.max(0, input.length - 4)));
 }
 
-function rememberUtf8(state, input, pending) {
+function rememberUtf8(state: DecoderState, input: Uint8Array, pending: PendingCharacter): void {
   if (pending.total) {
     state.lastChar.fill(0);
     state.lastChar.set(input.slice(pending.start));
@@ -49,24 +65,26 @@ function rememberUtf8(state, input, pending) {
   remember(state, total > 1 && total === input.length - start ? input.slice(start) : input.slice(-1));
 }
 
-function decodeBytes(state, input) {
+function decodeBytes(state: DecoderState, input: Uint8Array): string {
   return Buffer.from(input.buffer, input.byteOffset, input.byteLength).toString(state.encoding);
 }
 
 export class StringDecoder {
-  constructor(encoding = "utf8") {
-    const state = { encoding: normalizeEncoding(encoding), pending: new Uint8Array(), lastNeed: 0, lastTotal: 0, lastChar: Buffer.alloc(4) };
-    states.set(this, state);
-    this.encoding = state.encoding;
+  #state: DecoderState;
+  declare encoding: Encoding;
+
+  constructor(encoding: unknown = "utf8") {
+    this.#state = { encoding: normalizeEncoding(encoding), pending: new Uint8Array(), lastNeed: 0, lastTotal: 0, lastChar: Buffer.alloc(4) };
+    this.encoding = this.#state.encoding;
   }
 
-  get lastNeed() { return states.get(this).lastNeed; }
-  get lastTotal() { return states.get(this).lastTotal; }
-  get lastChar() { return states.get(this).lastChar; }
+  get lastNeed() { return this.#state.lastNeed; }
+  get lastTotal() { return this.#state.lastTotal; }
+  get lastChar() { return this.#state.lastChar; }
 
-  write(value) {
+  write(value: unknown): string {
     if (typeof value === "string") return value;
-    const state = states.get(this);
+    const state = this.#state;
     const input = new Uint8Array([...state.pending, ...bytes(value)]);
     let complete = input.length;
     if (state.encoding === "base64" || state.encoding === "base64url") {
@@ -104,8 +122,8 @@ export class StringDecoder {
     return decodeBytes(state, input.slice(0, complete));
   }
 
-  end(value) {
-    const state = states.get(this);
+  end(value?: unknown): string {
+    const state = this.#state;
     const output = value === undefined ? "" : this.write(value);
     const tail = state.pending;
     state.pending = new Uint8Array();
@@ -116,7 +134,7 @@ export class StringDecoder {
     return output + decodeBytes(state, tail);
   }
 
-  text(value) { return this.write(value); }
+  text(value: unknown): string { return this.write(value); }
 }
 
 export default { StringDecoder };

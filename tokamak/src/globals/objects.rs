@@ -5,12 +5,15 @@ use tokamak_macros::host_function;
 // The class name comes from the engine, not a user-controlled toStringTag.
 #[allow(clippy::needless_pass_by_value)]
 #[host_function]
-pub(super) fn class_name<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Value<'js>> {
+pub(super) fn class_name<'js>(
+    ctx: Ctx<'js>,
+    value: Value<'js>,
+) -> rquickjs::Result<Option<rquickjs::String<'js>>> {
     if value.is_proxy() {
-        return Ok(rquickjs::String::from_str(ctx, "Proxy")?.into_value());
+        return rquickjs::String::from_str(ctx, "Proxy").map(Some);
     }
     if !value.is_object() {
-        return Ok(Value::new_undefined(ctx));
+        return Ok(None);
     }
     // SAFETY: The value belongs to this context. GetClassName returns an owned
     // atom, released after converting it to a separately owned string value.
@@ -22,7 +25,7 @@ pub(super) fn class_name<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Res
         qjs::JS_FreeAtom(raw_ctx, atom);
         Value::from_raw(ctx, name)
     };
-    checked(name)
+    Ok(checked(name)?.into_string())
 }
 
 #[cfg(test)]

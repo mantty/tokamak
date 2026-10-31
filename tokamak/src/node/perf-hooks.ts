@@ -4,7 +4,7 @@ import {
 } from "../globals/performance.ts";
 import { codedError } from "./errors.ts";
 
-export function timerify(callback) {
+export function timerify<F extends (...args: never[]) => unknown>(callback: F): F {
   return performance.timerify(callback);
 }
 
@@ -12,7 +12,7 @@ export function eventLoopUtilization() {
   return performance.eventLoopUtilization();
 }
 
-function unsupported(name) {
+function unsupported(name: string): never {
   throw codedError(Error, `node:perf_hooks ${name} is not implemented`, "ERR_METHOD_NOT_IMPLEMENTED");
 }
 

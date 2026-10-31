@@ -1,0 +1,16 @@
+{
+  "name": "tokamak-runtime",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.9.0",
+  "scripts": {
+    "reference": "node tests/quickjs_runtime/workerd-reference.mjs",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261023.1",
+    "@types/node": "22.19.15",
+    "miniflare": "5.20261023.0-beta",
+    "typescript": "5.9.3"
+  }
+}

@@ -479,7 +479,7 @@ fn read_buffer<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
 /// workerd's native reads ignore properties a Worker defines on the view.
 fn view_target<'js>(ctx: &Ctx<'js>, view: &Value<'js>) -> rquickjs::Result<ReadTarget<'js>> {
     let parts = crate::globals::view_parts(ctx, view)?;
-    buffer_target(ctx, parts.buffer, parts.offset, parts.length)
+    buffer_target(ctx, parts.buffer.0, parts.offset, parts.length)
 }
 
 /// The bytes `offset..offset + length` of the `ArrayBuffer` `buffer`.

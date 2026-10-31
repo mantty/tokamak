@@ -1,13 +1,14 @@
-import { scheduleTimer } from "tokamak:host";
+import { scheduleTimer, type TimerHandle } from "tokamak:host";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.ts";
 import { logUncaught, reportError } from "../events/web.ts";
+import { isFunction } from "./objects.ts";
 
 const queueEngineMicrotask = globalThis.queueMicrotask;
-const timers = new Map();
+const timers = new Map<number, TimerHandle>();
 let nextTimer = 1;
 
-function timer(callback, timeout, repeat, args) {
-  if (typeof callback !== "function") throw new TypeError("Timer callback must be a function");
+function timer(callback: unknown, timeout: unknown, repeat: boolean, args: unknown[]): number {
+  if (!isFunction(callback)) throw new TypeError("Timer callback must be a function");
   const id = nextTimer++;
   const milliseconds = Math.max(0, Math.min(2 ** 32 - 1, Number(timeout) || 0));
   const context = captureAsyncContext();
@@ -21,19 +22,20 @@ function timer(callback, timeout, repeat, args) {
   return id;
 }
 
-function clearTimer(id) {
-  timers.get(id)?.();
+function clearTimer(id: unknown): void {
+  if (typeof id !== "number") return;
+  timers.get(id)?.cancel();
   timers.delete(id);
 }
 
-export function setTimeout(callback, timeout, ...args) { return timer(callback, timeout, false, args); }
-export function setInterval(callback, timeout, ...args) { return timer(callback, timeout, true, args); }
-export function setImmediate(callback, ...args) { return timer(callback, 0, false, args); }
-export function clearTimeout(id) { clearTimer(id); }
-export function clearInterval(id) { clearTimer(id); }
-export function clearImmediate(id) { clearTimer(id); }
+export function setTimeout(callback: unknown, timeout?: unknown, ...args: unknown[]): number { return timer(callback, timeout, false, args); }
+export function setInterval(callback: unknown, timeout?: unknown, ...args: unknown[]): number { return timer(callback, timeout, true, args); }
+export function setImmediate(callback: unknown, ...args: unknown[]): number { return timer(callback, 0, false, args); }
+export function clearTimeout(id: unknown): void { clearTimer(id); }
+export function clearInterval(id: unknown): void { clearTimer(id); }
+export function clearImmediate(id: unknown): void { clearTimer(id); }
 
-export function queueMicrotask(callback) {
+export function queueMicrotask(callback: unknown): void {
   if (typeof callback !== "function") {
     throw new TypeError("Failed to execute 'queueMicrotask' on 'ServiceWorkerGlobalScope': parameter 1 is not of type 'function'.");
   }

@@ -47,7 +47,7 @@ export class WebSocket extends EventTarget {
     if (new TextEncoder().encode(text).byteLength > 123) throw new DOMException("WebSocket close reason must not be longer than 123 bytes when UTF-8 encoded.", "SyntaxError");
     if (this.#readyState === 3 || this.#readyState === 2) return;
     this.#readyState = 2;
-    this.#peer?.#post({ type: "close", code: status, reason: text });
+    if (this.#peer) this.#peer.#post({ type: "close", code: status, reason: text });
   }
 
   serializeAttachment(value) {

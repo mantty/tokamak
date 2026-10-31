@@ -2636,6 +2636,12 @@ export async function run(handlerEnv, ctx, constructors) {
         decoded: [[0x00, 0xd8], [0x41, 0x00, 0x00, 0xd8, 0x42], [0xef, 0xbb, 0xbf, 0x41]].map(bytes => ["utf16le", "utf8"].map(encoding => [...nodeBuffer.Buffer.from(bytes).toString(encoding)].map(text => text.codePointAt(0)))),
         btoa: ["hello", "\x00\xff", "€"].map(value => detailedResult(() => nodeBuffer.btoa(value))),
         base64Missing: [detailedResult(() => nodeBuffer.atob()), detailedResult(() => nodeBuffer.btoa())],
+        bigWrites: [[5n, "writeBigInt64LE"], [5, "writeBigInt64LE"], ["5", "writeBigInt64LE"], [2n ** 63n, "writeBigInt64LE"], [-1n, "writeBigUInt64LE"], [2n ** 64n - 1n, "writeBigUInt64BE"]].map(([value, method]) => result(() => {
+          const bytes = nodeBuffer.Buffer.alloc(8);
+          bytes[method](value);
+          return [...bytes];
+        })),
+        bigElements: [new BigInt64Array([1n]), [1n]].map(value => result(() => [...nodeBuffer.Buffer.from(value)])),
       };
     })(),
     path: {
@@ -2740,7 +2746,8 @@ export async function run(handlerEnv, ctx, constructors) {
       const controller = new AbortController();
       controller.abort();
       const aborted = await asyncResult(async () => nodeTimersPromises.setTimeout(0, "never", { signal: controller.signal }));
-      return { identity: nodeTimers.promises === nodeTimersPromises, stable: nodeTimers.promises === nodeTimers.promises, types: [typeof nodeTimers.setTimeout, typeof nodeTimers.setImmediate, typeof nodeTimersPromises.setInterval], values: [value, immediate, wait], aborted };
+      const invalidSignals = await Promise.all([5, {}, { aborted: false }].map(signal => asyncResult(async () => nodeTimersPromises.setTimeout(0, "never", { signal }))));
+      return { identity: nodeTimers.promises === nodeTimersPromises, stable: nodeTimers.promises === nodeTimers.promises, types: [typeof nodeTimers.setTimeout, typeof nodeTimers.setImmediate, typeof nodeTimersPromises.setInterval], values: [value, immediate, wait], aborted, invalidSignals };
     }),
     os: {
       values: { EOL: nodeOs.EOL, devNull: nodeOs.devNull, arch: nodeOs.arch(), platform: nodeOs.platform(), type: nodeOs.type(), release: nodeOs.release(), version: nodeOs.version(), machine: nodeOs.machine(), endianness: nodeOs.endianness(), tmpdir: nodeOs.tmpdir(), homedir: nodeOs.homedir(), hostname: nodeOs.hostname(), availableParallelism: nodeOs.availableParallelism(), cpus: nodeOs.cpus(), loadavg: nodeOs.loadavg(), freemem: nodeOs.freemem(), totalmem: nodeOs.totalmem(), uptime: nodeOs.uptime(), networkInterfaces: nodeOs.networkInterfaces(), userInfo: nodeOs.userInfo() },

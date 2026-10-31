@@ -67,6 +67,8 @@ mod storage;
 #[cfg(all(test, feature = "native"))]
 mod tests;
 #[cfg(feature = "native")]
+mod typed;
+#[cfg(feature = "native")]
 pub use server::{Config, DevProxyConfig, DevelopmentConfig, Runtime};
 #[cfg(feature = "native")]
 mod compat;

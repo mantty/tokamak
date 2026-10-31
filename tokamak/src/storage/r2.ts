@@ -2,7 +2,7 @@ import {
   r2AbortUpload, r2CloseBody, r2CompleteUpload, r2CreateUpload, r2Delete, r2Get, r2Head, r2List,
   r2ObjectWriter, r2PartWriter, r2Put, r2Read, r2UploadPart, r2Write,
 } from "tokamak:storage";
-import { bufferSourceBytes, sharedBufferSourceBytes } from "../globals/conversions.ts";
+import { bufferSourceBytes, fieldTypeError, parameterTypeError, sharedBufferSourceBytes } from "../globals/conversions.ts";
 import { Blob, Headers, bytes, consumeStream, exactBlob } from "../network/fetch.ts";
 import { TextDecoder } from "../streams/text.ts";
 import { ReadableStream, isDisturbed, nativeReadableStream, setStreamLength, streamLength } from "../streams/web.ts";
@@ -36,24 +36,16 @@ async function native(action, work) {
   }
 }
 
-function parameterError(method, owner, index, type) {
-  return new TypeError(`Failed to execute '${method}' on '${owner}': parameter ${index} is not of type '${type}'.`);
-}
-
-function fieldError(field, struct, type) {
-  return new TypeError(`Incorrect type for the '${field}' field on '${struct}': the provided value is not of type '${type}'.`);
-}
-
 // A string parameter, converted as the runtime converts one.
 function stringParameter(value, method, owner, index) {
-  if (value === undefined) throw parameterError(method, owner, index, "string");
+  if (value === undefined) throw parameterTypeError(method, owner, index, "string");
   return String(value);
 }
 
 // Options of `method`, or none when absent.
 function options(value, method, index, type) {
   if (value == null) return {};
-  if (typeof value !== "object") throw parameterError(method, "R2Bucket", index, type);
+  if (typeof value !== "object") throw parameterTypeError(method, "R2Bucket", index, type);
   return value;
 }
 
@@ -61,7 +53,7 @@ function options(value, method, index, type) {
 function objectField(settings, field, struct, type) {
   const value = settings[field];
   if (value == null) return undefined;
-  if (typeof value !== "object") throw fieldError(field, struct, type);
+  if (typeof value !== "object") throw fieldTypeError(field, struct, type);
   return value;
 }
 
@@ -69,7 +61,7 @@ function objectField(settings, field, struct, type) {
 function stringField(settings, field, struct) {
   const value = settings[field];
   if (value === undefined) return undefined;
-  if (typeof value !== "string") throw fieldError(field, struct, "string");
+  if (typeof value !== "string") throw fieldTypeError(field, struct, "string");
   return value;
 }
 
@@ -79,7 +71,7 @@ function dateField(settings, field, struct) {
   if (value === undefined) return undefined;
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number") return value;
-  throw fieldError(field, struct, "date");
+  throw fieldTypeError(field, struct, "date");
 }
 
 // A number converted to a 32-bit integer, as the runtime converts one.
@@ -232,7 +224,7 @@ function httpFields(settings, struct) {
 function customFields(settings, struct) {
   const value = settings.customMetadata;
   if (value === undefined) return {};
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw fieldError("customMetadata", struct, "object");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw fieldTypeError("customMetadata", struct, "object");
   return Object.fromEntries(Object.entries(value).map(([name, field]) => [name, String(field)]));
 }
 
@@ -263,7 +255,7 @@ function checksumValue(value, field, length, name) {
     return value.toLowerCase();
   }
   const digest = bufferSourceBytes(value);
-  if (!digest) throw fieldError(field, "PutOptions", "BufferSource or string");
+  if (!digest) throw fieldTypeError(field, "PutOptions", "BufferSource or string");
   if (digest.byteLength !== length) throw new TypeError(`${name} is ${length} bytes, not ${digest.byteLength}`);
   return hex(digest);
 }
@@ -275,7 +267,7 @@ function body(value, method, owner, optional) {
   const buffer = sharedBufferSourceBytes(value);
   if (buffer) return { bytes: buffer.slice() };
   if (typeof value === "string" || value instanceof Blob) return { bytes: bytes(value) };
-  throw parameterError(method, owner, 2, VALUE_TYPES);
+  throw parameterTypeError(method, owner, 2, VALUE_TYPES);
 }
 
 // The length of a value to write, which a stream must know.
@@ -393,7 +385,7 @@ class HeadResult {
   }
 
   writeHttpMetadata(headers) {
-    if (!(headers instanceof Headers)) throw parameterError("writeHttpMetadata", "HeadResult", 1, "Headers");
+    if (!(headers instanceof Headers)) throw parameterTypeError("writeHttpMetadata", "HeadResult", 1, "Headers");
     const metadata = this.httpMetadata;
     if (metadata === undefined) {
       throw new TypeError(`HTTP metadata unknown for key \`${this.key}\`. Did you forget to add 'httpMetadata' to \`include\` when listing?`);
@@ -459,7 +451,7 @@ export class R2MultipartUpload {
   }
 
   async complete(uploadedParts) {
-    if (!Array.isArray(uploadedParts)) throw parameterError("complete", "R2MultipartUpload", 1, "Array");
+    if (!Array.isArray(uploadedParts)) throw parameterTypeError("complete", "R2MultipartUpload", 1, "Array");
     const parts = uploadedParts.map(part => ({ partNumber: int32(part?.partNumber), etag: String(part?.etag) }));
     for (const part of parts) validatePartNumber(part.partNumber);
     const object = await native("completeMultipartUpload", () => r2CompleteUpload(this.#binding, this.key, this.uploadId, JSON.stringify(parts)));
@@ -511,7 +503,7 @@ export class R2Bucket {
   }
 
   async delete(keys) {
-    if (keys === undefined) throw parameterError("delete", "R2Bucket", 1, "string or Array");
+    if (keys === undefined) throw parameterTypeError("delete", "R2Bucket", 1, "string or Array");
     const list = Array.isArray(keys) ? keys.map(String) : [String(keys)];
     await native("delete", () => r2Delete(this.#binding, list));
   }
@@ -528,7 +520,7 @@ export class R2Bucket {
       if (value !== undefined) request[field] = value;
     }
     if (settings.include !== undefined) {
-      if (!Array.isArray(settings.include)) throw fieldError("include", "ListOptions", "Array");
+      if (!Array.isArray(settings.include)) throw fieldTypeError("include", "ListOptions", "Array");
       request.include = settings.include.map((value, index) => {
         if (typeof value !== "string") throw new TypeError(`Incorrect type for array element ${index}: the provided value is not of type 'string'.`);
         if (value !== "httpMetadata" && value !== "customMetadata") throw new RangeError(`Unsupported include value ${value}`);

@@ -1,38 +1,53 @@
 // Conversions of JavaScript values to strings and bytes.
 
+// workerd's TypeError for an argument of the wrong type.
+export function parameterTypeError(method: string, owner: string, index: number, type: string): TypeError {
+  return new TypeError(`Failed to execute '${method}' on '${owner}': parameter ${index} is not of type '${type}'.`);
+}
+
+// workerd's TypeError for a dictionary member of the wrong type.
+export function fieldTypeError(field: string, struct: string, type: string): TypeError {
+  return new TypeError(`Incorrect type for the '${field}' field on '${struct}': the provided value is not of type '${type}'.`);
+}
+
 // ToString, refusing a Symbol as WebIDL does.
-export function string(value) {
+export function string(value: unknown): string {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
   return String(value);
 }
 
 // ToString with lone surrogates replaced, as WebIDL's USVString does.
-export function usvString(value) {
+export function usvString(value: unknown): string {
   return string(value).toWellFormed();
+}
+
+// The bytes a view covers, without a copy.
+export function viewBytes(view: ArrayBufferView): Uint8Array {
+  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 }
 
 // The bytes of an ArrayBuffer, SharedArrayBuffer or view, without a copy;
 // undefined for any other value.
-export function bufferBytes(value) {
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+export function bufferBytes(value: unknown): Uint8Array | undefined {
+  if (ArrayBuffer.isView(value)) return viewBytes(value);
   if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) return new Uint8Array(value);
 }
 
 // The bytes of an [AllowShared] BufferSource, none once detached; undefined
 // for any other value.
-export function sharedBufferSourceBytes(value) {
+export function sharedBufferSourceBytes(value: unknown): Uint8Array | undefined {
   const buffer = ArrayBuffer.isView(value) ? value.buffer : value;
   if (buffer instanceof ArrayBuffer && buffer.detached) return new Uint8Array();
   return bufferBytes(value);
 }
 
 // The bytes of a BufferSource, which a SharedArrayBuffer itself is not.
-export function bufferSourceBytes(value) {
+export function bufferSourceBytes(value: unknown): Uint8Array | undefined {
   if (!(value instanceof SharedArrayBuffer)) return sharedBufferSourceBytes(value);
 }
 
 // The bytes of `chunks`, joined.
-export function joinBytes(chunks) {
+export function joinBytes(chunks: readonly Uint8Array[]): Uint8Array {
   const joined = new Uint8Array(chunks.reduce((length, chunk) => length + chunk.byteLength, 0));
   let offset = 0;
   for (const chunk of chunks) {

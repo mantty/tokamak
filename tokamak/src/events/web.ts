@@ -1,48 +1,79 @@
-import { markHostObject } from "../globals/objects.ts";
+import { callMethod, isObject, markHostObject, objectOf } from "../globals/objects.ts";
 import { DOMException } from "../globals/dom-exception.ts";
 import { structuredClone } from "../globals/structured-clone.ts";
 import { string } from "../globals/conversions.ts";
 
-function normalizeOptions(options, method) {
+// An event listener: a function, or an object with a `handleEvent` method.
+type Listener = ((this: unknown, event: Event) => unknown) | { handleEvent(event: Event): unknown };
+
+// The AbortSignal a listener's `signal` option names: an object with the
+// methods this module calls.
+interface ListenerSignal {
+  readonly aborted?: unknown;
+  addEventListener(type: "abort", listener: () => void, options: { once: boolean }): unknown;
+  removeEventListener(type: "abort", listener: () => void): unknown;
+}
+
+interface ListenerEntry {
+  callback: Listener;
+  once: boolean;
+  passive: boolean;
+  signal: ListenerSignal | null;
+  abort: (() => void) | null;
+}
+
+// The listener entries of an EventTarget, by event type.
+type Listeners = Map<string, ListenerEntry[]>;
+
+function normalizeOptions(options: unknown, method: string) {
   if (typeof options === "boolean") {
     if (options) throw new TypeError(`${method}(): useCapture must be false.`);
     options = {};
   }
-  options ??= {};
-  if (options.capture) throw new TypeError(`${method}(): options.capture must be false.`);
+  const init = objectOf(options ?? {});
+  if (init.capture) throw new TypeError(`${method}(): options.capture must be false.`);
   return {
-    once: Boolean(options.once),
-    passive: Boolean(options.passive),
-    signal: options.signal ?? null,
+    once: Boolean(init.once),
+    passive: Boolean(init.passive),
+    signal: init.signal ?? null,
   };
 }
 
+// An object with `addEventListener`, which is all that is checked of a signal.
+function isListenerSignal(value: unknown): value is ListenerSignal {
+  return isObject(value) && typeof value.addEventListener === "function";
+}
+
 // Runs `target`'s `listeners` for `event`; false when a listener called preventDefault().
-let dispatch;
+let dispatch: (event: Event, target: object, listeners: Listeners) => boolean;
 
 export class Event {
-  #type;
-  #bubbles;
-  #cancelable;
-  #composed;
+  #type: string;
+  #bubbles: boolean;
+  #cancelable: boolean;
+  #composed: boolean;
   // Set even when the event is not cancelable.
   #preventDefaultCalled = false;
   #eventPhase = 0;
   #timeStamp = Date.now();
-  #target;
-  #currentTarget;
+  #target: object | undefined;
+  #currentTarget: object | undefined;
   #dispatching = false;
   #stopped = false;
   #immediateStopped = false;
   #inPassive = false;
+  declare static readonly NONE: 0;
+  declare static readonly CAPTURING_PHASE: 1;
+  declare static readonly AT_TARGET: 2;
+  declare static readonly BUBBLING_PHASE: 3;
 
-  constructor(type, options = {}) {
+  constructor(type: unknown, options: unknown = {}) {
     markHostObject(this);
-    options ??= {};
+    const init = objectOf(options ?? {});
     this.#type = string(type);
-    this.#bubbles = Boolean(options.bubbles);
-    this.#cancelable = Boolean(options.cancelable);
-    this.#composed = Boolean(options.composed);
+    this.#bubbles = Boolean(init.bubbles);
+    this.#cancelable = Boolean(init.cancelable);
+    this.#composed = Boolean(init.composed);
   }
 
   get type() { return this.#type; }
@@ -57,7 +88,7 @@ export class Event {
   get isTrusted() { return false; }
   get timeStamp() { return this.#timeStamp; }
   get cancelBubble() { return this.#stopped; }
-  set cancelBubble(value) { if (value) this.stopPropagation(); }
+  set cancelBubble(value: unknown) { if (value) this.stopPropagation(); }
   get returnValue() { return !this.defaultPrevented; }
 
   preventDefault() {
@@ -66,9 +97,9 @@ export class Event {
   }
   stopPropagation() { this.#stopped = true; }
   stopImmediatePropagation() { this.#stopped = true; this.#immediateStopped = true; }
-  composedPath() { return this.#target === undefined ? [] : [this.#target]; }
+  composedPath(): object[] { return this.#target === undefined ? [] : [this.#target]; }
 
-  #dispatch(target, listeners) {
+  #dispatch(target: object, listeners: Listeners): boolean {
     if (this.#dispatching) throw new DOMException("The event is already being dispatched", "InvalidStateError");
     this.#dispatching = true;
     this.#target = target;
@@ -91,7 +122,7 @@ export class Event {
     return !this.#preventDefaultCalled;
   }
 
-  #invoke(target, entry) {
+  #invoke(target: object, entry: ListenerEntry): void {
     this.#inPassive = entry.passive;
     try {
       if (typeof entry.callback === "function") entry.callback.call(target, this);
@@ -106,47 +137,55 @@ export class Event {
   }
 }
 
-for (const [name, value] of Object.entries({ NONE: 0, CAPTURING_PHASE: 1, AT_TARGET: 2, BUBBLING_PHASE: 3 })) {
+const phases = { NONE: 0, CAPTURING_PHASE: 1, AT_TARGET: 2, BUBBLING_PHASE: 3 } as const;
+for (const [name, value] of Object.entries(phases)) {
   Object.defineProperty(Event, name, { configurable: true, enumerable: true, value, writable: false });
   Object.defineProperty(Event.prototype, name, { configurable: true, enumerable: true, value, writable: false });
 }
+// The phase constants defined above.
+export interface Event extends Readonly<typeof phases> {}
 
 export class CustomEvent extends Event {
-  #detail;
-  constructor(type, options = {}) {
-    options ??= {};
-    super(type, options);
-    this.#detail = options.detail ?? null;
+  #detail: unknown;
+  constructor(type: unknown, options: unknown = {}) {
+    const init = objectOf(options ?? {});
+    super(type, init);
+    this.#detail = init.detail ?? null;
   }
   get detail() { return this.#detail; }
 }
 
 export class MessageEvent extends Event {
-  constructor(type, options = {}) {
-    options ??= {};
-    super(type, options);
-    this.data = options.data ?? null;
-    this.origin = options.origin ?? "";
-    this.lastEventId = options.lastEventId ?? "";
-    this.source = options.source ?? null;
-    this.ports = options.ports ?? [];
+  declare data: unknown;
+  declare origin: unknown;
+  declare lastEventId: unknown;
+  declare source: unknown;
+  declare ports: unknown;
+  constructor(type: unknown, options: unknown = {}) {
+    const init = objectOf(options ?? {});
+    super(type, init);
+    this.data = init.data ?? null;
+    this.origin = init.origin ?? "";
+    this.lastEventId = init.lastEventId ?? "";
+    this.source = init.source ?? null;
+    this.ports = init.ports ?? [];
   }
 }
 
 export class ErrorEvent extends Event {
-  #message;
-  #filename;
-  #lineno;
-  #colno;
-  #error;
-  constructor(type, options = {}) {
-    options ??= {};
-    super(type, options);
-    this.#message = options.message ?? "";
-    this.#filename = options.filename ?? "";
-    this.#lineno = options.lineno ?? 0;
-    this.#colno = options.colno ?? 0;
-    this.#error = options.error ?? null;
+  #message: unknown;
+  #filename: unknown;
+  #lineno: unknown;
+  #colno: unknown;
+  #error: unknown;
+  constructor(type: unknown, options: unknown = {}) {
+    const init = objectOf(options ?? {});
+    super(type, init);
+    this.#message = init.message ?? "";
+    this.#filename = init.filename ?? "";
+    this.#lineno = init.lineno ?? 0;
+    this.#colno = init.colno ?? 0;
+    this.#error = init.error ?? null;
   }
   get message() { return this.#message; }
   get filename() { return this.#filename; }
@@ -156,16 +195,19 @@ export class ErrorEvent extends Event {
 }
 
 export class CloseEvent extends Event {
-  constructor(type, options = {}) {
-    options ??= {};
-    super(type, options);
-    this.wasClean = Boolean(options.wasClean);
-    this.code = options.code ?? 0;
-    this.reason = options.reason ?? "";
+  declare wasClean: boolean;
+  declare code: unknown;
+  declare reason: unknown;
+  constructor(type: unknown, options: unknown = {}) {
+    const init = objectOf(options ?? {});
+    super(type, init);
+    this.wasClean = Boolean(init.wasClean);
+    this.code = init.code ?? 0;
+    this.reason = init.reason ?? "";
   }
 }
 
-function exposeProperties(prototype, names) {
+function exposeProperties(prototype: object, names: string[]): void {
   for (const name of names) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
     if (descriptor) Object.defineProperty(prototype, name, { ...descriptor, enumerable: true });
@@ -181,13 +223,13 @@ exposeProperties(CustomEvent.prototype, ["detail"]);
 exposeProperties(ErrorEvent.prototype, ["message", "filename", "lineno", "colno", "error"]);
 
 // The listener entries of each EventTarget, by event type.
-const eventListeners = new WeakMap();
+const eventListeners = new WeakMap<object, Listeners>();
 
 // Gives `target` the listener state of a new EventTarget.
-export function initEventTarget(target) { eventListeners.set(target, new Map()); }
+export function initEventTarget(target: object): void { eventListeners.set(target, new Map()); }
 
 // The listener entries of `target`; an undefined or null receiver is the global scope, as in Web IDL.
-function listenersOf(target) {
+function listenersOf(target: object | null | undefined): Listeners {
   const listeners = eventListeners.get(target ?? globalThis);
   if (listeners === undefined) {
     throw new TypeError("Illegal invocation: function called with incorrect `this` reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.");
@@ -195,7 +237,7 @@ function listenersOf(target) {
   return listeners;
 }
 
-function removeListener(listeners, type, callback) {
+function removeListener(listeners: Listeners, type: string, callback: unknown): void {
   const list = listeners.get(type);
   if (!list) return;
   const remaining = list.filter(entry => {
@@ -210,21 +252,17 @@ function removeListener(listeners, type, callback) {
 export class EventTarget {
   constructor() { markHostObject(this); initEventTarget(this); }
 
-  addEventListener(type, callback, options = {}) {
+  addEventListener(type: unknown, callback: unknown, options: unknown = {}): void {
     const listeners = listenersOf(this);
     if (callback == null) return;
-    if (typeof callback !== "function" && typeof callback.handleEvent !== "function") {
-      throw new TypeError("Event listener must be callable");
-    }
+    if (!isListener(callback)) throw new TypeError("Event listener must be callable");
     const name = string(type);
-    const normalized = normalizeOptions(options, "addEventListener");
+    const { once, passive, signal } = normalizeOptions(options, "addEventListener");
     const list = listeners.get(name) ?? [];
     if (list.some(entry => entry.callback === callback)) return;
-    if (normalized.signal !== null && typeof normalized.signal.addEventListener !== "function") {
-      throw new TypeError("Event listener signal must be an AbortSignal");
-    }
-    if (normalized.signal?.aborted) return;
-    const entry = { callback, ...normalized, abort: null };
+    if (signal !== null && !isListenerSignal(signal)) throw new TypeError("Event listener signal must be an AbortSignal");
+    if (signal?.aborted) return;
+    const entry: ListenerEntry = { callback, once, passive, signal, abort: null };
     list.push(entry);
     listeners.set(name, list);
     if (entry.signal) {
@@ -233,14 +271,14 @@ export class EventTarget {
     }
   }
 
-  removeEventListener(type, callback, options = {}) {
+  removeEventListener(type: unknown, callback: unknown, options: unknown = {}): void {
     const listeners = listenersOf(this);
     const name = string(type);
     normalizeOptions(options, "removeEventListener");
     removeListener(listeners, name, callback);
   }
 
-  dispatchEvent(event) {
+  dispatchEvent(event: unknown): boolean {
     const listeners = listenersOf(this);
     if (!(event instanceof Event)) throw new TypeError("The event must be an Event");
     return dispatch(event, this ?? globalThis, listeners);
@@ -249,30 +287,40 @@ export class EventTarget {
 
 exposeProperties(EventTarget.prototype, ["addEventListener", "removeEventListener", "dispatchEvent"]);
 
-export function logUncaught(error) { console.error("Uncaught", error); }
+// Whether `value` can be called as an event listener.
+function isListener(value: unknown): value is Listener {
+  return typeof value === "function" || (isObject(value) && typeof value.handleEvent === "function");
+}
+
+export function logUncaught(error: unknown): void { console.error("Uncaught", error); }
 
 // Dispatches an ErrorEvent for `error` on the global scope and logs `error` unless a listener calls preventDefault().
-export function reportError(error) {
+export function reportError(error: unknown): void {
   const event = new ErrorEvent("error", { error, message: `Uncaught ${String(error)}` });
   if (dispatch(event, globalThis, listenersOf(globalThis))) logUncaught(error);
 }
 
 export class ExtendableEvent extends Event {
-  waitUntil(promise) { globalThis.__tokamak_context?.waitUntil(promise); }
+  waitUntil(promise: unknown): void { globalThis.__tokamak_context?.waitUntil(promise); }
 }
 
 export class FetchEvent extends ExtendableEvent {
-  #response = null;
-  constructor(type, options = {}) {
-    options ??= {};
-    super(type, options);
-    this.request = options.request;
-    this.clientId = options.clientId ?? "";
-    this.resultingClientId = options.resultingClientId ?? "";
-    this.preloadResponse = options.preloadResponse ?? Promise.resolve(undefined);
-    this.handled = options.handled ?? Promise.resolve();
+  #response: Promise<unknown> | null = null;
+  declare request: unknown;
+  declare clientId: unknown;
+  declare resultingClientId: unknown;
+  declare preloadResponse: unknown;
+  declare handled: unknown;
+  constructor(type: unknown, options: unknown = {}) {
+    const init = objectOf(options ?? {});
+    super(type, init);
+    this.request = init.request;
+    this.clientId = init.clientId ?? "";
+    this.resultingClientId = init.resultingClientId ?? "";
+    this.preloadResponse = init.preloadResponse ?? Promise.resolve(undefined);
+    this.handled = init.handled ?? Promise.resolve();
   }
-  respondWith(response) {
+  respondWith(response: unknown): void {
     if (this.#response !== null) throw new DOMException("The fetch event has already been responded to.", "InvalidStateError");
     this.#response = Promise.resolve(response);
   }
@@ -280,42 +328,46 @@ export class FetchEvent extends ExtendableEvent {
 }
 
 export class PromiseRejectionEvent extends Event {
-  constructor(type, options = {}) {
-    options ??= {};
-    super(type, options);
-    this.promise = options.promise;
-    this.reason = options.reason;
+  declare promise: unknown;
+  declare reason: unknown;
+  constructor(type: unknown, options: unknown = {}) {
+    const init = objectOf(options ?? {});
+    super(type, init);
+    this.promise = init.promise;
+    this.reason = init.reason;
   }
 }
 
 export class ScheduledEvent extends ExtendableEvent {
-  constructor(type, options = {}) {
-    options ??= {};
-    super(type, options);
-    this.cron = options.cron ?? "";
-    this.scheduledTime = options.scheduledTime ?? Date.now();
+  declare cron: unknown;
+  declare scheduledTime: unknown;
+  constructor(type: unknown, options: unknown = {}) {
+    const init = objectOf(options ?? {});
+    super(type, init);
+    this.cron = init.cron ?? "";
+    this.scheduledTime = init.scheduledTime ?? Date.now();
   }
   noRetry() {}
 }
 
 export class TailEvent extends Event {
-  constructor(type, options = {}) {
+  constructor(type: unknown, options: unknown = {}) {
     super(type, options);
     Object.assign(this, options);
   }
 }
 
 export class TraceEvent extends Event {
-  constructor(type, options = {}) {
+  constructor(type: unknown, options: unknown = {}) {
     super(type, options);
     Object.assign(this, options);
   }
 }
 
 export class WebSocketRequestResponsePair {
-  #request;
-  #response;
-  constructor(request, response) {
+  #request: unknown;
+  #response: unknown;
+  constructor(request: unknown, response: unknown) {
     markHostObject(this);
     this.#request = request;
     this.#response = response;
@@ -325,17 +377,17 @@ export class WebSocketRequestResponsePair {
 }
 
 // Connects two new ports to each other.
-let entangle;
+let entangle: (first: MessagePort, second: MessagePort) => void;
 
 export class MessagePort extends EventTarget {
-  #peer = null;
+  #peer: MessagePort | null = null;
   #closed = false;
-  #onmessage = null;
+  #onmessage: unknown = null;
 
   get onmessage() { return this.#onmessage; }
-  set onmessage(value) { this.#onmessage = value; }
+  set onmessage(value: unknown) { this.#onmessage = value; }
 
-  postMessage(value) {
+  postMessage(value: unknown): void {
     const peer = this.#peer;
     if (this.#closed || peer === null || peer.#closed) {
       throw new DOMException("The port is closed.", "InvalidStateError");
@@ -345,7 +397,8 @@ export class MessagePort extends EventTarget {
       if (peer.#closed) return;
       const event = new MessageEvent("message", { data: copy });
       peer.dispatchEvent(event);
-      peer.onmessage?.call(peer, event);
+      const handler = peer.onmessage;
+      if (handler != null) callMethod(handler, "call", peer, event);
     });
   }
 
@@ -365,6 +418,8 @@ export class MessagePort extends EventTarget {
 }
 
 export class MessageChannel {
+  declare port1: MessagePort;
+  declare port2: MessagePort;
   constructor() {
     markHostObject(this);
     this.port1 = new MessagePort();

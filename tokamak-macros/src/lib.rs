@@ -94,21 +94,23 @@ fn rename_all(attributes: &[Attribute]) -> syn::Result<Option<Case<'static>>> {
     let Some(case) = qjs_value(attributes, "rename_all")? else {
         return Ok(None);
     };
-    let case = match case.as_str() {
-        "lowercase" => Case::Lower,
-        "UPPERCASE" => Case::Upper,
-        "camelCase" => Case::Camel,
-        "PascalCase" => Case::Pascal,
-        "snake_case" => Case::Snake,
-        "SCREAMING_SNAKE" => Case::Constant,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &attributes[0],
-                "unknown rename_all case",
-            ));
-        }
-    };
-    Ok(Some(case))
+    named_case(&case, &attributes[0]).map(Some)
+}
+
+/// The case an rquickjs `rename_all` option names.
+fn named_case(case: &str, attribute: &Attribute) -> syn::Result<Case<'static>> {
+    match case {
+        "lowercase" => Ok(Case::Lower),
+        "UPPERCASE" => Ok(Case::Upper),
+        "camelCase" => Ok(Case::Camel),
+        "PascalCase" => Ok(Case::Pascal),
+        "snake_case" => Ok(Case::Snake),
+        "SCREAMING_SNAKE" => Ok(Case::Constant),
+        _ => Err(syn::Error::new_spanned(
+            attribute,
+            "unknown rename_all case",
+        )),
+    }
 }
 
 /// The string value of the `#[qjs(...)]` option `option`, if given.
@@ -308,7 +310,8 @@ fn class_declaration(implementation: &syn::ItemImpl) -> syn::Result<Tokens> {
         .map(|segment| segment.ident.to_string());
     let label = label.ok_or_else(|| syn::Error::new_spanned(class, "unnamed class"))?;
     let class_type = erased(&implementation.self_ty);
-    let mut methods = Vec::new();
+    let case = methods_rename_all(&implementation.attrs)?;
+    let mut members = Vec::new();
     for item in &implementation.items {
         let syn::ImplItem::Fn(method) = item else {
             continue;
@@ -316,27 +319,62 @@ fn class_declaration(implementation: &syn::ItemImpl) -> syn::Result<Tokens> {
         if qjs_flag(&method.attrs, "skip")? {
             continue;
         }
-        for unsupported in ["get", "set", "prop", "static", "constructor"] {
+        for unsupported in ["set", "prop", "static", "constructor"] {
             if qjs_flag(&method.attrs, unsupported)? {
                 let message = format!("js_methods does not describe #[qjs({unsupported})] yet");
                 return Err(syn::Error::new_spanned(&method.sig, message));
             }
         }
-        let name =
-            qjs_value(&method.attrs, "rename")?.unwrap_or_else(|| method.sig.ident.to_string());
+        let name = match qjs_value(&method.attrs, "rename")? {
+            Some(name) => name,
+            None => {
+                let ident = method.sig.ident.to_string();
+                case.map_or_else(|| ident.clone(), |case| ident.to_case(case))
+            }
+        };
         let mut signature = method.sig.clone();
         ReplaceSelf(&implementation.self_ty).visit_signature_mut(&mut signature);
-        let declaration = signature_declaration(&signature);
-        methods.push(quote!((#name, #declaration)));
+        members.push(if qjs_flag(&method.attrs, "get")? {
+            let returns = returns(&signature);
+            quote!(crate::typescript::getter(#name, &#returns))
+        } else {
+            let declaration = signature_declaration(&signature);
+            quote!(#declaration.method(#name))
+        });
     }
     Ok(quote! {
         #[cfg(test)]
         impl crate::typescript::JsType for rquickjs::Class<'_, #class_type> {
             fn typescript(types: &mut crate::typescript::Types) -> String {
-                types.class(#label, ::std::any::type_name::<Self>(), |types| vec![#(#methods),*])
+                types.class(#label, ::std::any::type_name::<Self>(), |types| vec![#(#members),*])
             }
         }
     })
+}
+
+/// The case `#[rquickjs::methods(rename_all = ...)]` names methods in.
+fn methods_rename_all(attributes: &[Attribute]) -> syn::Result<Option<Case<'static>>> {
+    let methods = attributes.iter().find(|attribute| {
+        attribute
+            .path()
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "methods")
+    });
+    let Some(methods) = methods else {
+        return Ok(None);
+    };
+    let mut case = None;
+    if matches!(methods.meta, syn::Meta::List(_)) {
+        methods.parse_nested_meta(|meta| {
+            let given: LitStr = meta.value()?.parse()?;
+            if meta.path.is_ident("rename_all") {
+                case = Some(given.value());
+            }
+            Ok(())
+        })?;
+    }
+    case.map(|case| named_case(&case, methods)).transpose()
 }
 
 /// Replaces `Self` with the type it names, for naming types outside the impl.

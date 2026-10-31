@@ -388,7 +388,7 @@ export class Request extends Body {
     const inheritedSignal = init.signal === undefined ? source?.signal : init.signal;
     if (inheritedSignal != null && !(inheritedSignal instanceof AbortSignal)) throw new TypeError("Invalid signal");
     this.#signal = inheritedSignal ?? new AbortController().signal;
-    this.#signalProvided = init.signal === undefined ? source?.#signalProvided ?? false : init.signal != null;
+    this.#signalProvided = init.signal === undefined ? (source !== undefined && source !== null && source.#signalProvided) : init.signal != null;
   }
 
   get cache() { return this.#cache; }

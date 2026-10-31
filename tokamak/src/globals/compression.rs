@@ -5,8 +5,11 @@ mod zlib;
 mod zstd;
 
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
-use rquickjs::{Ctx, Exception, Function, TypedArray, function::MutFn};
+use rquickjs::class::Trace;
+use rquickjs::{Class, Ctx, Exception, JsLifetime, TypedArray};
 use tokamak_macros::host_function;
+
+use crate::typed::JsFunction;
 
 enum Codec {
     Compress(Compress),
@@ -55,12 +58,12 @@ impl Codec {
 // rquickjs converts JavaScript string arguments to owned Rust strings.
 #[allow(clippy::needless_pass_by_value)]
 #[host_function]
-pub(super) fn create<'js>(
-    ctx: Ctx<'js>,
+pub(super) fn create(
+    ctx: Ctx<'_>,
     format: String,
     decode: bool,
-) -> rquickjs::Result<Function<'js>> {
-    let mut codec = match (format.as_str(), decode) {
+) -> rquickjs::Result<Class<'_, CompressionCodec>> {
+    let codec = match (format.as_str(), decode) {
         ("gzip", false) => Codec::Compress(Compress::new_gzip(Compression::default(), 15)),
         ("gzip", true) => Codec::Decompress(Decompress::new_gzip(15)),
         ("deflate", false) => Codec::Compress(Compress::new(Compression::default(), true)),
@@ -74,46 +77,67 @@ pub(super) fn create<'js>(
             ));
         }
     };
-    let mut ended = false;
-    Function::new(
+    Class::instance(
         ctx,
-        MutFn::new(
-            move |ctx: Ctx<'js>, input: TypedArray<'js, u8>, finish: bool, emit: Function<'js>| {
-                let input = input
-                    .as_bytes()
-                    .ok_or_else(|| Exception::throw_type(&ctx, "Detached compression input"))?
-                    .to_vec();
-                let mut remaining = input.as_slice();
-                let mut output = [0; 16384];
-                let mut stalled = false;
-                while !ended && !stalled {
-                    let (consumed, written, status) = codec
-                        .step(remaining, &mut output, finish)
-                        .map_err(|error| Exception::throw_type(&ctx, &error))?;
-                    remaining = &remaining[consumed..];
-                    if written > 0 {
-                        emit.call::<_, ()>((TypedArray::new(
-                            ctx.clone(),
-                            output[..written].to_vec(),
-                        )?,))?;
-                    }
-                    ended = status == Status::StreamEnd;
-                    stalled = !ended && consumed == 0 && written == 0;
-                }
-                if stalled && finish {
-                    return Err(Exception::throw_type(
-                        &ctx,
-                        "Called close() on a decompression stream with incomplete data",
-                    ));
-                }
-                if ended && !remaining.is_empty() {
-                    return Err(Exception::throw_type(
-                        &ctx,
-                        "Trailing bytes after end of compressed data",
-                    ));
-                }
-                Ok(())
-            },
-        ),
+        CompressionCodec {
+            codec,
+            ended: false,
+        },
     )
+}
+
+/// A `CompressionStream`'s or `DecompressionStream`'s codec.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct CompressionCodec {
+    #[qjs(skip_trace)]
+    codec: Codec,
+    ended: bool,
+}
+
+#[tokamak_macros::js_methods]
+#[rquickjs::methods]
+impl CompressionCodec {
+    /// Passes `input` through the codec, finishing the stream when `finish`
+    /// is set, and calls `emit` with each block of output.
+    pub fn write<'js>(
+        &mut self,
+        ctx: Ctx<'js>,
+        input: TypedArray<'js, u8>,
+        finish: bool,
+        emit: JsFunction<'js, (TypedArray<'js, u8>,)>,
+    ) -> rquickjs::Result<()> {
+        let input = input
+            .as_bytes()
+            .ok_or_else(|| Exception::throw_type(&ctx, "Detached compression input"))?
+            .to_vec();
+        let mut remaining = input.as_slice();
+        let mut output = [0; 16384];
+        let mut stalled = false;
+        while !self.ended && !stalled {
+            let (consumed, written, status) = self
+                .codec
+                .step(remaining, &mut output, finish)
+                .map_err(|error| Exception::throw_type(&ctx, &error))?;
+            remaining = &remaining[consumed..];
+            if written > 0 {
+                emit.call((TypedArray::new(ctx.clone(), output[..written].to_vec())?,))?;
+            }
+            self.ended = status == Status::StreamEnd;
+            stalled = !self.ended && consumed == 0 && written == 0;
+        }
+        if stalled && finish {
+            return Err(Exception::throw_type(
+                &ctx,
+                "Called close() on a decompression stream with incomplete data",
+            ));
+        }
+        if self.ended && !remaining.is_empty() {
+            return Err(Exception::throw_type(
+                &ctx,
+                "Trailing bytes after end of compressed data",
+            ));
+        }
+        Ok(())
+    }
 }

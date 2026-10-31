@@ -13,7 +13,7 @@ export function tmpdir() { return "/tmp/"; }
 export function homedir() { return "/tmp/"; }
 export function hostname() { return "localhost"; }
 export function availableParallelism() { return 1; }
-export function cpus() { return []; }
+export function cpus(): never[] { return []; }
 export function networkInterfaces() { return {}; }
 export function userInfo() { return {}; }
 export function loadavg() { return [0, 0, 0]; }
@@ -21,7 +21,7 @@ export function freemem() { return 0; }
 export function totalmem() { return 0; }
 export function uptime() { return 0; }
 export function getPriority() { return 0; }
-export function setPriority(pid, priority) {
+export function setPriority(pid: unknown, priority?: unknown): void {
   if (priority === undefined) throw codedError(TypeError, "The \"priority\" argument must be specified", "ERR_INVALID_ARG_TYPE");
 }
 
