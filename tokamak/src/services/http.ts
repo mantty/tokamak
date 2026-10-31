@@ -1,31 +1,35 @@
+import type { JsMessage, ServiceCall } from 'tokamak:host';
 import { encode } from '../rpc/values.ts';
-import { encodeRequest, decodeResponse } from '../rpc/http.ts';
+import { encodeRequest, decodeResponse, responseParts } from '../rpc/http.ts';
 import { replyValue } from './streams.ts';
 
-export async function fetchService(call, name, input, init) {
+/** Calls `method` on the service bound as `name` with the arguments `message`. */
+export type ServiceCaller = (name: string, method: string, message: JsMessage) => ServiceCall;
+
+export async function fetchService(call: ServiceCaller, name: string, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const request = new Request(input, init);
   const { signal } = request;
   signal.throwIfAborted();
   const operation = call(name, 'fetch', encode(encodeRequest(request)));
-  const abort = () => operation.cancel();
+  const abort = () => { operation.cancellation.cancel(); };
   signal.addEventListener('abort', abort, { once: true });
-  const finish = () => signal.removeEventListener('abort', abort);
-  let value;
+  const finish = () => { signal.removeEventListener('abort', abort); };
+  let parts;
   try {
-    const reply = await operation.result;
+    const reply = await operation.reply;
     signal.throwIfAborted();
-    value = replyValue(reply);
+    parts = responseParts(replyValue(reply));
   } catch (error) {
     finish();
     signal.throwIfAborted();
     throw error;
   }
-  if (value.body === null) {
+  if (parts.body === null) {
     finish();
-    return decodeResponse(value);
+    return decodeResponse(parts);
   }
-  const reader = value.body.getReader();
-  value.body = new ReadableStream({
+  const reader = parts.body.getReader();
+  parts.body = new ReadableStream({
     type: 'bytes',
     async pull(controller) {
       try {
@@ -38,8 +42,8 @@ export async function fetchService(call, name, input, init) {
     },
     async cancel(reason) {
       try { await reader.cancel(reason); }
-      finally { operation.cancel(); finish(); }
+      finally { operation.cancellation.cancel(); finish(); }
     },
   });
-  return decodeResponse(value);
+  return decodeResponse(parts);
 }

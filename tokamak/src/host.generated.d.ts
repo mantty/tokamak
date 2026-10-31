@@ -132,25 +132,65 @@ declare module "tokamak:host" {
 
   export function registerDomException(constructor: abstract new (...args: never[]) => unknown): void;
 
-  export function scheduleTimer(callback: () => void, milliseconds: number): TimerHandle;
+  export function scheduleTimer(callback: () => void, milliseconds: number): Cancellation;
 
   export function socketConnect(host: string, port: number, secure: boolean): SocketConnection;
 
-  export function urlDecodeParams(input: string): string;
+  export function urlDecodeParams(input: string): Array<[string, string]>;
 
-  export function urlEncodeParams(entries: string): string;
+  export function urlEncodeParams(entries: Array<[string, string]>): string;
 
-  export function urlParse(input: string, base: string | undefined): object;
+  export function urlParse(input: string, base: string | undefined): UrlParts;
 
-  export function urlPatternCompile(input: string, base: string | undefined, ignoreCase: boolean, runner: (...args: never[]) => unknown): object;
+  export function urlPatternCompile(input: string, base: string | undefined, ignoreCase: boolean, runner: (arg0: string, arg1: string, arg2: string) => Array<[number, number] | undefined> | undefined): CompiledPattern;
 
-  export function urlPatternMatchInput(input: string, base: string | undefined): string[] | undefined;
+  export function urlPatternMatchInput(input: string, base: string | undefined): PatternInput | undefined;
 
-  export function urlSetComponent(href: string, component: string, value: string): object;
+  export function urlSetComponent(href: string, component: string, value: string): UrlParts;
 
   export function writeStderr(text: string): void;
 
   export function writeStdout(text: string): void;
+
+  export interface AssetFetcher {
+    readonly [classBrand]: "AssetFetcher";
+    fetch(method: string, path: string): AssetReply;
+  }
+
+  export interface AssetReply {
+    status: number;
+    statusText?: string | undefined;
+    contentType?: string | undefined;
+    body?: Uint8Array | undefined;
+  }
+
+  export interface BodyChunk {
+    payload: Uint8Array;
+    failed: boolean;
+    done: boolean;
+  }
+
+  export interface BodyReader {
+    read: () => Promise<Uint8Array | undefined>;
+    cancel: () => Promise<void>;
+  }
+
+  export interface Bootstrap {
+    hostRequest: (arg0: RequestDescriptor, arg1: Uint8Array | undefined) => object;
+    hostResponse: (arg0: unknown) => ResponseParts;
+    dispatchEvent: (arg0: object, arg1: string, arg2: Uint8Array) => Promise<unknown>;
+    installAssets: (arg0: string, arg1: AssetFetcher) => void;
+    installPlugins: (arg0: NativeHost, arg1: NativePlatform) => void;
+    installServices: (arg0: string[], arg1: ServiceHost) => void;
+    invokeService: (arg0: object, arg1: string, arg2: string, arg3: JsMessage) => Promise<JsReply>;
+    serviceStreams: StreamCodec;
+    trackWaitUntil: (arg0: WaitUntilObserver) => void;
+  }
+
+  export interface Cancellation {
+    readonly [classBrand]: "Cancellation";
+    cancel(): void;
+  }
 
   export interface CipherState {
     readonly [classBrand]: "CipherState";
@@ -160,6 +200,18 @@ declare module "tokamak:host" {
     setAAD(data: Uint8Array): void;
     setAuthTag(tag: Uint8Array): void;
     getAuthTag(): ArrayBuffer;
+  }
+
+  export interface CompiledPattern {
+    protocol: PatternComponent;
+    username: PatternComponent;
+    password: PatternComponent;
+    hostname: PatternComponent;
+    port: PatternComponent;
+    pathname: PatternComponent;
+    search: PatternComponent;
+    hash: PatternComponent;
+    hasRegExpGroups: boolean;
   }
 
   export interface CompressionCodec {
@@ -174,6 +226,97 @@ declare module "tokamak:host" {
     copy(): DigestState;
   }
 
+  export interface JsMessage {
+    data: string;
+    buffers: ArrayBuffer[];
+    streams: ReadableStream[];
+  }
+
+  export interface JsReply {
+    failed: boolean;
+    value: JsMessage;
+  }
+
+  export interface NativeCall {
+    reply: Promise<PluginReply>;
+    cancellation: Cancellation;
+  }
+
+  export interface NativeHost {
+    readonly [classBrand]: "NativeHost";
+    call(plugin: string, method: string, payload: Uint8Array, pull: (() => Promise<BodyChunk>) | undefined): NativeCall;
+    subscribe(plugin: string, method: string, payload: Uint8Array, subscriber: Subscriber): Cancellation;
+  }
+
+  export type NativePlatform = "ios" | "macos" | "android" | "windows" | "linux";
+
+  export interface NativeSocket {
+    receive: (arg0: string | ArrayBuffer) => void;
+    close: (arg0: number, arg1: string) => void;
+    disconnect: () => void;
+    take: () => OutboxFrame[];
+    listen: (arg0: SocketNotifier) => void;
+  }
+
+  export type OutboxFrame = { type: "message"; binary: true; data: ArrayBuffer } | { type: "message"; binary: false; data: string } | { type: "close"; code: number; reason: string };
+
+  export type Overflow = "error" | "dropOldest";
+
+  export interface PatternComponent {
+    pattern: string;
+    regexp: string;
+    flags: string;
+    groups: string[];
+  }
+
+  export interface PatternInput {
+    protocol: string;
+    username: string;
+    password: string;
+    hostname: string;
+    port: string;
+    pathname: string;
+    search: string;
+    hash: string;
+  }
+
+  export interface PluginReply {
+    payload: ArrayBuffer;
+    failed: boolean;
+    done: boolean;
+  }
+
+  export interface RequestDescriptor {
+    method: string;
+    url: string;
+    headers: Array<[string, string]>;
+  }
+
+  export interface ResponseParts {
+    status: number;
+    statusText: string;
+    headers: Array<[string, string]>;
+    encodeBody: string;
+    body: Uint8Array | BodyReader;
+    webSocket?: NativeSocket | undefined;
+  }
+
+  export interface ServiceCall {
+    reply: Promise<JsReply>;
+    cancellation: Cancellation;
+  }
+
+  export interface ServiceHost {
+    readonly [classBrand]: "ServiceHost";
+    call(name: string, method: string, message: JsMessage, codec: StreamCodec): ServiceCall;
+  }
+
+  export interface ServiceStreamPort {
+    readonly [classBrand]: "ServiceStreamPort";
+    read(codec: StreamCodec): Promise<JsReply>;
+    cancel(reason: JsMessage, codec: StreamCodec): Promise<JsReply>;
+  }
+
   export interface SocketConnection {
     readonly [classBrand]: "SocketConnection";
     opened(): Promise<void>;
@@ -184,15 +327,50 @@ declare module "tokamak:host" {
     startTls(host: string): SocketConnection;
   }
 
+  export interface SocketNotifier {
+    readonly [classBrand]: "SocketNotifier";
+    notify(): void;
+  }
+
+  export interface StreamCodec {
+    openServiceStream: (arg0: ReadableStream) => StreamSource;
+    receiveServiceStream: (arg0: ServiceStreamPort) => ReadableStream;
+  }
+
+  export interface StreamRead {
+    done: boolean;
+    failed: boolean;
+    value: JsMessage;
+  }
+
+  export interface StreamSource {
+    read: () => Promise<StreamRead>;
+    cancel: (arg0: JsMessage) => Promise<JsReply>;
+  }
+
+  export interface Subscriber {
+    deliver: (arg0: PluginReply) => void;
+    overflow: Overflow;
+  }
+
   export interface TextDecoderState {
     readonly [classBrand]: "TextDecoderState";
     readonly encoding: string;
     decode(input: Uint8Array, stream: boolean): string;
   }
 
-  export interface TimerHandle {
-    readonly [classBrand]: "TimerHandle";
-    cancel(): void;
+  export interface UrlParts {
+    href: string;
+    protocol: string;
+    username: string;
+    password: string;
+    host: string;
+    hostname: string;
+    port: string;
+    pathname: string;
+    search: string;
+    hash: string;
+    origin: string;
   }
 
   export interface ViewParts {
@@ -200,6 +378,11 @@ declare module "tokamak:host" {
     offset: number;
     length: number;
     tracking: boolean;
+  }
+
+  export interface WaitUntilObserver {
+    readonly [classBrand]: "WaitUntilObserver";
+    observe(pending: boolean): void;
   }
 }
 

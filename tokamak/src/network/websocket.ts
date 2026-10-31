@@ -8,7 +8,7 @@ import { CloseEvent, EventTarget, MessageEvent } from "../events/web.ts";
 let pair;
 // The host's end of `client`: `receive` and `close` deliver frames to the server socket,
 // `disconnect()` tells it the connection dropped without a close frame, `take()` returns
-// the frames the server sent, and `listen(notify)` runs `notify` whenever it sends one.
+// the frames the server sent, and `listen(notifier)` calls `notifier.notify()` whenever it sends one.
 let nativeWebSocket;
 
 export class WebSocket extends EventTarget {
@@ -89,7 +89,7 @@ export class WebSocket extends EventTarget {
         close: (code, reason) => server.#receiveClose(code, reason, true),
         disconnect: () => server.#receiveClose(1006, "WebSocket disconnected without sending Close frame.", false),
         take: () => client.#outbox.splice(0),
-        listen: notify => { client.#notify = notify; },
+        listen: notifier => { client.#notify = () => { notifier.notify(); }; },
       };
     };
   }

@@ -1,4 +1,5 @@
 import { string } from "../globals/conversions.ts";
+import { objectOf } from "../globals/objects.ts";
 import { URL, URLSearchParams } from "../network/url.ts";
 import { parse as parseQuery, stringify as stringifyQuery } from "./querystring.ts";
 import { toASCII, toUnicode } from "./punycode.ts";
@@ -6,17 +7,13 @@ import { codedError } from "./errors.ts";
 
 export { URL, URLSearchParams };
 
-function queryValue(value) {
+function queryValue(value: unknown): string {
   if (value === undefined || value === null) return "";
   return typeof value === "string" ? value : stringifyQuery(value);
 }
 
-function emptyUrl() {
-  return Object.create(Url.prototype);
-}
-
-function parseRelative(value, parseQueryString, slashesDenoteHost) {
-  const output = emptyUrl();
+function parseRelative(value: unknown, parseQueryString: unknown, slashesDenoteHost: unknown): Url {
+  const output = new Url();
   const input = string(value);
   const hashIndex = input.indexOf("#");
   const withoutHash = hashIndex < 0 ? input : input.slice(0, hashIndex);
@@ -50,13 +47,28 @@ function parseRelative(value, parseQueryString, slashesDenoteHost) {
   return output;
 }
 
+// A URL's parts, which `parse` sets and `format` reads; a `Url` from the
+// constructor has none.
 export class Url {
-  parse(value, parseQueryString = false, slashesDenoteHost = false) {
+  declare protocol?: string | null;
+  declare slashes?: boolean | null;
+  declare auth?: string | null;
+  declare host?: string | null;
+  declare port?: string | null;
+  declare hostname?: string | null;
+  declare hash?: string | null;
+  declare search?: string | null;
+  declare query?: string | null | Record<PropertyKey, unknown>;
+  declare pathname?: string | null;
+  declare path?: string | null;
+  declare href?: string;
+
+  parse(value: unknown, parseQueryString: unknown = false, slashesDenoteHost: unknown = false): Url {
     const input = string(value);
     const protocol = /^[A-Za-z][A-Za-z\d+.-]*:/.test(input);
     if (!protocol && !(slashesDenoteHost && input.startsWith("//"))) return parseRelative(input, parseQueryString, slashesDenoteHost);
     const parsed = new URL(input, protocol ? undefined : "http://localhost");
-    const output = emptyUrl();
+    const output = new Url();
     output.protocol = parsed.protocol || null;
     output.slashes = input.includes("//") ? true : null;
     output.auth = urlAuth(parsed);
@@ -72,46 +84,55 @@ export class Url {
     return output;
   }
 
-  format(value) { return format(value); }
-  resolve(from, to) { return resolveUrl(from, to); }
-  resolveObject(from, to) { return new Url().parse(this.resolve(from, to)); }
-  toString() { return this.href ?? format(this); }
+  format(value: unknown): string { return format(value); }
+  resolve(from: unknown, to: unknown): string { return resolveUrl(from, to); }
+  resolveObject(from: unknown, to: unknown): Url { return new Url().parse(this.resolve(from, to)); }
+  toString(): string { return this.href ?? format(this); }
 }
 
-function decodePart(value) {
+function decodePart(value: string): string {
   try { return decodeURIComponent(value); }
   catch { return value; }
 }
 
-function urlAuth(url) {
+function urlAuth(url: URL): string | null {
   return url.username || url.password ? `${decodePart(url.username)}${url.password ? `:${decodePart(url.password)}` : ""}` : null;
 }
 
-export function parse(value, parseQueryString = false, slashesDenoteHost = false) {
+export function parse(value: unknown, parseQueryString: unknown = false, slashesDenoteHost: unknown = false): Url {
   return new Url().parse(value, parseQueryString, slashesDenoteHost);
 }
 
-export function format(value) {
+// The `?search` that a URL object's `search`, or else its `query`, gives.
+function searchOf(parts: Record<PropertyKey, unknown>): string {
+  if (parts.search !== undefined && parts.search !== null) {
+    const search = string(parts.search);
+    return search === "" || search.startsWith("?") ? search : `?${search}`;
+  }
+  const query = parts.query === undefined || parts.query === null ? "" : queryValue(parts.query);
+  return query ? `?${query}` : "";
+}
+
+export function format(value: unknown): string {
   if (value instanceof URL) return value.href;
   if (value === null || value === undefined) throw new TypeError("The url argument must be of type string or an object");
   if (typeof value === "string") return value;
-  const protocol = value.protocol ? String(value.protocol).replace(/:$/, "") + ":" : "";
-  const auth = value.auth ? encodeURIComponent(String(value.auth)).replace(/%3A/i, ":") + "@" : "";
-  const hostname = value.hostname ? String(value.hostname) : "";
-  const host = value.host ?? (hostname ? `${hostname.includes(":") ? `[${hostname}]` : hostname}${value.port ? `:${value.port}` : ""}` : "");
-  let pathname = value.pathname ?? "";
+  const parts = objectOf(value);
+  const protocol = parts.protocol ? string(parts.protocol).replace(/:$/, "") + ":" : "";
+  const auth = parts.auth ? encodeURIComponent(string(parts.auth)).replace(/%3A/i, ":") + "@" : "";
+  const hostname = parts.hostname ? string(parts.hostname) : "";
+  const port = parts.port ? `:${string(parts.port)}` : "";
+  const host = string(parts.host ?? (hostname ? `${hostname.includes(":") ? `[${hostname}]` : hostname}${port}` : ""));
+  let pathname = string(parts.pathname ?? "");
   if (host && pathname && !pathname.startsWith("/")) pathname = "/" + pathname;
-  const search = value.search !== undefined && value.search !== null
-    ? (String(value.search) === "" ? "" : (String(value.search).startsWith("?") ? String(value.search) : `?${value.search}`))
-    : (value.query !== undefined && value.query !== null ? (queryValue(value.query) ? `?${queryValue(value.query)}` : "") : "");
-  const hash = value.hash ? (String(value.hash).startsWith("#") ? String(value.hash) : `#${value.hash}`) : "";
-  const slashes = value.slashes || host || ["http:", "https:", "ftp:", "gopher:", "file:"].includes(protocol);
-  return protocol + (slashes ? "//" : "") + auth + host + pathname + search + hash;
+  const hash = parts.hash ? (string(parts.hash).startsWith("#") ? string(parts.hash) : `#${string(parts.hash)}`) : "";
+  const slashes = parts.slashes || host || ["http:", "https:", "ftp:", "gopher:", "file:"].includes(protocol);
+  return protocol + (slashes ? "//" : "") + auth + host + pathname + searchOf(parts) + hash;
 }
 
-function normalizeDotPath(pathname) {
+function normalizeDotPath(pathname: string): string {
   const trailing = pathname.endsWith("/");
-  const parts = [];
+  const parts: string[] = [];
   for (const part of pathname.split("/")) {
     if (part === "" || part === ".") continue;
     if (part === "..") { parts.pop(); continue; }
@@ -121,7 +142,7 @@ function normalizeDotPath(pathname) {
   return trailing && normalized !== "/" ? normalized + "/" : normalized;
 }
 
-function resolveUrl(from, to) {
+function resolveUrl(from: unknown, to: unknown): string {
   const input = string(to);
   const base = new URL(string(from));
   const suffixIndex = input.search(/[?#]/);
@@ -144,34 +165,47 @@ function resolveUrl(from, to) {
   return new URL(input, string(from)).href;
 }
 
-export function resolve(from, to) { return resolveUrl(from, to); }
-export function resolveObject(from, to) { return new Url().resolveObject(from, to); }
+export function resolve(from: unknown, to: unknown): string { return resolveUrl(from, to); }
+export function resolveObject(from: unknown, to: unknown): Url { return new Url().resolveObject(from, to); }
 
-export function domainToASCII(value) { return toASCII(value); }
-export function domainToUnicode(value) { return toUnicode(value); }
+export function domainToASCII(value: unknown): string { return toASCII(value); }
+export function domainToUnicode(value: unknown): string { return toUnicode(value); }
 
-export function fileURLToPath(value) {
+export function fileURLToPath(value: unknown): string {
   const url = value instanceof URL ? value : new URL(string(value));
   if (url.protocol !== "file:") throw codedError(TypeError, "The URL must be of scheme file", "ERR_INVALID_URL_SCHEME");
   if (url.hostname && url.hostname !== "localhost") throw codedError(TypeError, "File URL host must be \"localhost\" or empty", "ERR_INVALID_FILE_URL_HOST");
   return decodeURIComponent(url.pathname);
 }
 
-export function pathToFileURL(value) {
+export function pathToFileURL(value: unknown): URL {
   const input = string(value).replaceAll("\\", "/");
   const path = input.startsWith("/") ? input : `/${input}`;
   const encoded = path.split("/").map(part => encodeURIComponent(part)).join("/");
   return new URL(`file://${encoded}`);
 }
 
-export function toPathIfFileURL(value) {
+export function toPathIfFileURL(value: unknown): unknown {
   if (value instanceof URL && value.protocol === "file:") return fileURLToPath(value);
   return value;
 }
 
-export function urlToHttpOptions(value) {
+// The options of an HTTP request to a URL, as `http.request` takes them.
+interface HttpOptions {
+  protocol: string;
+  hostname: string;
+  hash: string;
+  search: string;
+  pathname: string;
+  path: string;
+  href: string;
+  port?: number;
+  auth?: string;
+}
+
+export function urlToHttpOptions(value: unknown): HttpOptions {
   const url = value instanceof URL ? value : new URL(string(value));
-  const options = {
+  const options: HttpOptions = {
     protocol: url.protocol,
     hostname: url.hostname,
     hash: url.hash,

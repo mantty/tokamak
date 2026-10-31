@@ -1,4 +1,4 @@
-import { isObject, markHostObject, objectOf } from "./objects.ts";
+import { isObject, markHostObject, propertyOf } from "./objects.ts";
 import { EventTarget } from "../events/web.ts";
 import { string } from "./conversions.ts";
 
@@ -15,12 +15,8 @@ const now = Date.now;
 const json = (value: Record<string, unknown>): Record<string, unknown> => Object.assign(Object.create(null), value);
 
 // The option `name` of `options`, which may be any value.
-function option(options: unknown, name: string): unknown {
-  return options == null ? undefined : objectOf(options)[name];
-}
-
 function detailOption(options: unknown): unknown {
-  const detail = option(options, "detail");
+  const detail = propertyOf(options, "detail");
   if (detail !== undefined && (detail === null || (typeof detail !== "object" && typeof detail !== "function"))) {
     throw new TypeError("Performance detail must be an object");
   }
@@ -58,7 +54,7 @@ export class PerformanceMark extends PerformanceEntry {
   constructor(name: unknown, options: unknown = {}) {
     if (arguments.length === 0) throw new TypeError("A mark name is required");
     const markName = string(name);
-    const startTime = option(options, "startTime");
+    const startTime = propertyOf(options, "startTime");
     super(internal, { name: markName, entryType: "mark", startTime: startTime === undefined ? now() : Number(startTime), duration: 0, detail: detailOption(options) });
   }
   get detail() { return stateOf(this).detail ?? null; }

@@ -3,8 +3,10 @@
 //! runtime's TypeScript is checked against.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 
 use rquickjs::function::{Opt, Rest, This};
+use rquickjs::prelude::List;
 use rquickjs::{
     Array, ArrayBuffer, BigInt, Coerced, Constructor, Ctx, Exception, Function, Null, Object,
     Promise, Symbol, TypedArray, Undefined, Value,
@@ -194,6 +196,13 @@ impl<V: JsType, S> JsType for HashMap<String, V, S> {
     }
 }
 
+/// rquickjs converts a `List` of a tuple to and from an array.
+impl<A: JsType, B: JsType> JsType for List<(A, B)> {
+    fn typescript(types: &mut Types) -> String {
+        tuple(&[A::typescript(types), B::typescript(types)])
+    }
+}
+
 /// `typescript` as one member of a union: a function type is parenthesised,
 /// since its result type would otherwise take in the union.
 fn union_member(typescript: &str) -> String {
@@ -235,7 +244,7 @@ pub(crate) fn interface(name: &str, properties: &[(&str, bool, String)]) -> Stri
     let mut declaration = format!("export interface {name} {{\n");
     for (property, optional, typescript) in properties {
         let optional = if *optional { "?" } else { "" };
-        declaration.push_str(&format!("  {property}{optional}: {typescript};\n"));
+        let _ = writeln!(declaration, "  {property}{optional}: {typescript};");
     }
     declaration.push('}');
     declaration
@@ -304,7 +313,7 @@ impl Types {
             let mut declaration =
                 format!("export interface {name} {{\n  readonly [classBrand]: {name:?};\n");
             for member in members(types) {
-                declaration.push_str(&format!("  {member};\n"));
+                let _ = writeln!(declaration, "  {member};");
             }
             declaration.push('}');
             declaration
@@ -389,10 +398,13 @@ impl Module {
 }
 
 /// The contents of `src/host.generated.d.ts`.
-#[cfg(feature = "native")]
 fn declarations() -> String {
     let modules = [
-        Module::new("tokamak:host", crate::globals::native::declarations),
+        Module::new("tokamak:host", |types| {
+            // `builtins/runtime.ts` exports the bootstrap that Rust reads.
+            crate::dispatcher::Bootstrap::typescript(types);
+            crate::globals::native::declarations(types)
+        }),
         Module::new("tokamak:storage", crate::storage::declarations),
     ];
     let mut file = String::from(concat!(
@@ -406,7 +418,7 @@ fn declarations() -> String {
     file
 }
 
-#[cfg(feature = "native")]
+#[cfg(test)]
 mod tests {
     use std::path::Path;
 

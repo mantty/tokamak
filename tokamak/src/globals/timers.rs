@@ -3,13 +3,13 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::time::Duration;
 
-use rquickjs::class::Trace;
 use rquickjs::{Class, Ctx, Exception, Function, JsLifetime};
 use tokamak_macros::host_function;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::cancellation::Cancellation;
 use crate::typed::JsFunction;
 
 #[derive(Default)]
@@ -35,22 +35,6 @@ impl Drop for PendingTimer {
 #[derive(JsLifetime)]
 struct Timers(Rc<TimerQueue>);
 
-/// A scheduled timer, which `cancel` stops if it has not yet run.
-#[derive(Trace, JsLifetime)]
-#[rquickjs::class]
-pub(crate) struct TimerHandle {
-    #[qjs(skip_trace)]
-    cancelled: CancellationToken,
-}
-
-#[tokamak_macros::js_methods]
-#[rquickjs::methods]
-impl TimerHandle {
-    pub fn cancel(&self) {
-        self.cancelled.cancel();
-    }
-}
-
 /// Runs `callback` after `milliseconds`, after timers due earlier.
 #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
 #[host_function]
@@ -58,25 +42,27 @@ pub(super) fn schedule_timer<'js>(
     ctx: Ctx<'js>,
     callback: JsFunction<'js, ()>,
     milliseconds: u64,
-) -> rquickjs::Result<Class<'js, TimerHandle>> {
-    let queue = match ctx.userdata::<Timers>() {
-        Some(timers) => Rc::clone(&timers.0),
-        None => {
-            let queue = Rc::new(TimerQueue::default());
-            ctx.store_userdata(Timers(Rc::clone(&queue))).map_err(|_| {
-                Exception::throw_internal(&ctx, "The timer queue could not be stored")
-            })?;
-            queue
-        }
-    };
-    let cancelled = schedule(ctx.clone(), &queue, callback.into_inner(), milliseconds);
-    Class::instance(ctx, TimerHandle { cancelled })
+) -> rquickjs::Result<Class<'js, Cancellation>> {
+    let queue = timer_queue(&ctx)?;
+    let cancelled = schedule(&ctx, &queue, callback.into_inner(), milliseconds);
+    Cancellation::instance(&ctx, cancelled)
+}
+
+/// The context's timer queue, created when it schedules its first timer.
+fn timer_queue(ctx: &Ctx<'_>) -> rquickjs::Result<Rc<TimerQueue>> {
+    if let Some(timers) = ctx.userdata::<Timers>() {
+        return Ok(Rc::clone(&timers.0));
+    }
+    let queue = Rc::new(TimerQueue::default());
+    ctx.store_userdata(Timers(Rc::clone(&queue)))
+        .map_err(|_| Exception::throw_internal(ctx, "The timer queue could not be stored"))?;
+    Ok(queue)
 }
 
 /// Runs `callback` after `milliseconds`, unless the token it returns is
 /// cancelled first.
 fn schedule<'js>(
-    ctx: Ctx<'js>,
+    ctx: &Ctx<'js>,
     queue: &Rc<TimerQueue>,
     callback: Function<'js>,
     milliseconds: u64,
@@ -153,7 +139,7 @@ mod tests {
                 ctx.eval::<(), _>("globalThis.order = []")?;
                 let callback: Function = ctx.eval("() => order.push('timeout')")?;
                 let queue = std::rc::Rc::new(super::TimerQueue::default());
-                let cancelled = super::schedule(ctx.clone(), &queue, callback, 0);
+                let cancelled = super::schedule(&ctx, &queue, callback, 0);
                 let clear = Function::new(ctx.clone(), move || cancelled.cancel())?;
                 ctx.globals().set("clear", clear)?;
                 ctx.eval::<(), _>(format!("Promise.resolve().then(() => {{ {microtask} }})"))?;
@@ -217,7 +203,7 @@ mod tests {
                     std::hint::black_box(&capture);
                 })?;
                 let queue = std::rc::Rc::new(super::TimerQueue::default());
-                let cancelled = super::schedule(ctx.clone(), &queue, callback, 3_600_000);
+                let cancelled = super::schedule(&ctx, &queue, callback, 3_600_000);
                 if cancel {
                     cancelled.cancel();
                 }

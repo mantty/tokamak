@@ -11,7 +11,6 @@ use hyper::{
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use rustls::{AlertDescription, ServerConfig, ServerConnection, StreamOwned};
-use serde::Serialize;
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -74,17 +73,14 @@ pub(super) fn client_disconnected(
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone)]
 pub(super) struct HttpRequest {
     /// Whether the connection stays open after the response, decided by the gateway.
-    #[serde(skip_serializing)]
     pub(super) persistent: bool,
     pub(super) method: String,
     pub(super) target: String,
     pub(super) url: String,
-    #[serde(serialize_with = "crate::network::headers::serialize")]
     pub(super) headers: HeaderMap,
-    #[serde(skip_serializing)]
     pub(super) body: Option<Vec<u8>>,
 }
 
@@ -1239,20 +1235,15 @@ mod tests {
     }
 
     #[test]
-    fn reads_and_serializes_repeated_request_headers() -> Result<(), Box<dyn std::error::Error>> {
+    fn reads_repeated_and_non_ascii_request_headers() -> Result<(), Box<dyn std::error::Error>> {
         let mut input = Cursor::new(
             "GET / HTTP/1.1\r\nX-Repeated: one\r\nX-Repeated: two\r\nX-Text: 東京\r\n\r\n",
         );
         let request = read_request(&mut input, "app.test")?.ok_or("request was empty")?;
-        let json = serde_json::to_value(request)?;
-        let pairs = json["headers"].as_array().ok_or("expected header pairs")?;
-        for pair in [
-            serde_json::json!(["x-repeated", "one"]),
-            serde_json::json!(["x-repeated", "two"]),
-            serde_json::json!(["x-text", "東京"]),
-        ] {
-            assert!(pairs.contains(&pair), "{pair} in {pairs:?}");
-        }
+        let repeated: Vec<_> = request.headers.get_all("x-repeated").iter().collect();
+        assert_eq!(repeated, ["one", "two"]);
+        let text = request.headers.get("x-text").map(HeaderValue::as_bytes);
+        assert_eq!(text, Some("東京".as_bytes()));
         Ok(())
     }
 

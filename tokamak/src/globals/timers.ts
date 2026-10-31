@@ -1,10 +1,10 @@
-import { scheduleTimer, type TimerHandle } from "tokamak:host";
+import { scheduleTimer, type Cancellation } from "tokamak:host";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.ts";
 import { logUncaught, reportError } from "../events/web.ts";
 import { isFunction } from "./objects.ts";
 
 const queueEngineMicrotask = globalThis.queueMicrotask;
-const timers = new Map<number, TimerHandle>();
+const timers = new Map<number, Cancellation>();
 let nextTimer = 1;
 
 function timer(callback: unknown, timeout: unknown, repeat: boolean, args: unknown[]): number {

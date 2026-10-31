@@ -3,9 +3,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use rquickjs::{AsyncContext, AsyncRuntime, Ctx, Function, Object};
+use rquickjs::class::Trace;
+use rquickjs::{AsyncContext, AsyncRuntime, Class, Ctx, JsLifetime};
 
-use super::{drain_wait_until, js_exception};
+use super::{Bootstrap, drain_wait_until, js_exception};
 use crate::event_loop::AwaitedPromise;
 use crate::quickjs::Error;
 use crate::services::{Lifetime, Streams};
@@ -60,20 +61,13 @@ impl Invocation {
     pub(super) fn track_wait_until<'js>(
         self: &Arc<Self>,
         ctx: &Ctx<'js>,
-        bootstrap: &Object<'js>,
+        bootstrap: &Bootstrap<'js>,
     ) -> Result<(), Error> {
-        let invocation = Arc::clone(self);
-        let observe = Function::new(ctx.clone(), move |pending: bool| {
-            if pending {
-                invocation.retained.fetch_add(1, Ordering::AcqRel);
-            } else {
-                invocation.retained.fetch_sub(1, Ordering::AcqRel);
-            }
-        })
-        .map_err(|error| js_exception(ctx, "waitUntil observer", error))?;
-        bootstrap
-            .get::<_, Function>("trackWaitUntil")
-            .and_then(|track| track.call::<_, ()>((observe,)))
+        let observer = WaitUntilObserver {
+            invocation: Arc::clone(self),
+        };
+        Class::instance(ctx.clone(), observer)
+            .and_then(|observer| bootstrap.track_wait_until.call((observer,)))
             .map_err(|error| js_exception(ctx, "waitUntil observer", error))
     }
 
@@ -93,6 +87,27 @@ impl Invocation {
             result = crate::event_loop::run(runtime, awaited, drain) => result,
             () = tokio::time::sleep_until(deadline.into()) => Err(Error::Engine("Worker waitUntil deadline exceeded".into())),
             () = self.lifetime.stopped.cancelled() => Ok(()),
+        }
+    }
+}
+
+/// Counts an invocation's `waitUntil` work that has not settled.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct WaitUntilObserver {
+    #[qjs(skip_trace)]
+    invocation: Arc<Invocation>,
+}
+
+#[tokamak_macros::js_methods]
+#[rquickjs::methods]
+impl WaitUntilObserver {
+    /// Counts work that starts when `pending`, else work that settles.
+    pub fn observe(&self, pending: bool) {
+        if pending {
+            self.invocation.retained.fetch_add(1, Ordering::AcqRel);
+        } else {
+            self.invocation.retained.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }

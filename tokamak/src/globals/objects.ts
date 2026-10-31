@@ -47,6 +47,12 @@ export function objectOf(value: {}): Record<PropertyKey, unknown> {
   return Object(value);
 }
 
+// `value?.[name]`: the property `name` of `value`, or undefined when `value`
+// is null or undefined.
+export function propertyOf(value: unknown, name: PropertyKey): unknown {
+  return value == null ? undefined : objectOf(value)[name];
+}
+
 // Calls `value(...args)` with `thisArg` as its receiver, with a TypeError
 // when `value` is not a function, as calling it in JavaScript would.
 export function callFunction(value: unknown, thisArg: unknown, ...args: unknown[]): unknown {

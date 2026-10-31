@@ -100,6 +100,7 @@ pub(crate) struct CompressionCodec {
 impl CompressionCodec {
     /// Passes `input` through the codec, finishing the stream when `finish`
     /// is set, and calls `emit` with each block of output.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
     pub fn write<'js>(
         &mut self,
         ctx: Ctx<'js>,

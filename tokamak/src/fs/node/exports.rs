@@ -1,7 +1,7 @@
 //! Native `node:fs` bindings for the tokamak `QuickJS` runtime.
 
-use super::*;
 #[allow(clippy::wildcard_imports)]
+use super::*;
 use tokamak_macros::host_function;
 
 /// The native `node:fs` module name.

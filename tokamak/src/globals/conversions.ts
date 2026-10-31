@@ -22,6 +22,11 @@ export function string(value: unknown): string {
   return String(value);
 }
 
+// ToPropertyKey: a symbol itself, any other value's string.
+export function propertyKey(value: unknown): PropertyKey {
+  return typeof value === "symbol" ? value : String(value);
+}
+
 // ToString with lone surrogates replaced, as WebIDL's USVString does.
 export function usvString(value: unknown): string {
   return string(value).toWellFormed();

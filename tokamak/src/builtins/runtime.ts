@@ -1,64 +1,67 @@
 import "./globals.ts";
 import { createTracing } from "./tracing.ts";
 import { reportError } from "../events/web.ts";
-import { Request, Response } from "../network/fetch.ts";
+import type { AssetFetcher, BodyChunk, Bootstrap, NativeHost, NativePlatform, PluginReply, WaitUntilObserver } from "tokamak:host";
+import type { NativeConnection } from "../context.ts";
+import { Request, Response, hostRequest, hostResponse } from "../network/fetch.ts";
 import { URL } from "../network/url.ts";
 import { nativeError, platformGlobal } from "../native-protocol.mjs";
-
-export { installServices, invokeService } from "../services/bindings.ts";
-
-export { hostRequest, hostResponse } from "../network/fetch.ts";
+import { installServices, invokeService } from "../services/bindings.ts";
+import { serviceStreamCodec } from "../services/streams.ts";
+import { callMethod, propertyOf } from "../globals/objects.ts";
 
 // Binds `binding` in the environment, unless taken, to the app's assets, which
-// `fetchAsset(method, path)` answers.
-export function installAssets(binding, fetchAsset) {
+// `fetcher` reads.
+function installAssets(binding: string, fetcher: AssetFetcher): void {
   if (globalThis.__tokamak_env[binding] !== undefined) return;
   globalThis.__tokamak_env[binding] = {
-    async fetch(input, init) {
+    async fetch(input: RequestInfo | URL, init?: RequestInit) {
       const request = new Request(input, init);
-      const { status, statusText, contentType, body } = fetchAsset(request.method, new URL(request.url).pathname);
+      const { status, statusText, contentType, body } = fetcher.fetch(request.method, new URL(request.url).pathname);
       return new Response(body, { status, statusText, headers: contentType ? { "content-type": contentType } : {} });
     },
   };
 }
 
-// Connects the Worker's byte endpoints to the native host on `platform`,
+// Connects the Worker's byte endpoints to the native `host` on `platform`,
 // which `@tokamakdev/plugin` reads, as its `platformGlobal` names, while the
 // Worker's modules load.
-export function installPlugins(call, subscribe, platform) {
+function installPlugins(host: NativeHost, platform: NativePlatform): void {
   globalThis[platformGlobal] = platform;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const decoded = payload => JSON.parse(decoder.decode(payload));
-  const buffer = value => value.byteOffset === 0 && value.byteLength === value.buffer.byteLength
-    ? value.buffer : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
-  const result = ({ payload, failed }) => {
-    if (failed) throw nativeError(decoded(payload));
-    return new Uint8Array(payload);
+  // The DOMException that a failed reply's JSON `{ name, message, cause? }` describes.
+  const failure = (payload: ArrayBuffer) => {
+    const value: unknown = JSON.parse(decoder.decode(payload));
+    const name = propertyOf(value, "name");
+    const message = propertyOf(value, "message");
+    if (typeof name !== "string" || typeof message !== "string") throw new TypeError("A native failure must have a name and a message");
+    return nativeError({ name, message, cause: propertyOf(value, "cause") });
   };
   // The next chunk of a call's body, with a failure encoded as an endpoint error.
-  const pull = reader => async () => {
+  const pull = (reader: ReadableStreamDefaultReader<Uint8Array>) => async (): Promise<BodyChunk> => {
     try {
       const { value, done } = await reader.read();
       if (done) return { payload: new Uint8Array(), failed: false, done: true };
       if (!(value instanceof Uint8Array)) throw new TypeError("A native call's body must contain Uint8Array chunks");
       return { payload: value, failed: false, done: false };
     } catch (error) {
-      const failure = { name: error?.name ?? "Error", message: String(error?.message ?? error) };
+      const failure = { name: propertyOf(error, "name") ?? "Error", message: String(propertyOf(error, "message") ?? error) };
       return { payload: encoder.encode(JSON.stringify(failure)), failed: true, done: true };
     }
   };
-  const connection = {
+  const connection: NativeConnection = {
     platform,
     async call(plugin, method, payload, { body, signal } = {}) {
       signal?.throwIfAborted();
       const reader = body?.getReader();
-      const [reply, cancel] = reader
-        ? call(plugin, method, buffer(payload), pull(reader))
-        : call(plugin, method, buffer(payload));
+      const { reply, cancellation } = host.call(plugin, method, payload, reader && pull(reader));
+      const cancel = () => { cancellation.cancel(); };
       signal?.addEventListener("abort", cancel, { once: true });
       try {
-        return result(await reply);
+        const { payload, failed } = await reply;
+        if (failed) throw failure(payload);
+        return new Uint8Array(payload);
       } catch (error) {
         throw signal?.aborted ? signal.reason : error;
       } finally {
@@ -67,48 +70,56 @@ export function installPlugins(call, subscribe, platform) {
       }
     },
     listen(plugin, method, payload, { next, error, overflow = "error" }) {
-      return subscribe(plugin, method, buffer(payload), reply => {
-        let value;
-        try { value = result(reply); }
-        catch (failure) {
-          try { error(failure, reply.done); } catch (thrown) { reportError(thrown); }
-          return;
-        }
-        try { next(value, reply.done); } catch (thrown) { reportError(thrown); }
-      }, overflow);
+      const deliver = ({ payload, failed, done }: PluginReply) => {
+        try {
+          if (failed) error(failure(payload), done);
+          else next(new Uint8Array(payload), done);
+        } catch (thrown) { reportError(thrown); }
+      };
+      const subscription = host.subscribe(plugin, method, payload, { deliver, overflow });
+      return () => { subscription.cancel(); };
     },
   };
   globalThis.__tokamak_context[Symbol.for("tokamak.native")] = connection;
 }
 
 // Delivers the event `name`, whose encoded data is `event`, to the
-// `TokamakEvents` the Worker's entry module `exports`, returning the encoded
-// reply and the names of the events that have listeners.
-export async function dispatchEvent(exports, name, event) {
-  const { TokamakEvents } = exports;
+// `TokamakEvents` the Worker's entry module `exports`, resolving to the
+// encoded reply and the names of the events that have listeners.
+async function dispatchEvent(exports: object, name: string, event: Uint8Array): Promise<unknown> {
+  const TokamakEvents: unknown = Reflect.get(exports, "TokamakEvents");
   if (typeof TokamakEvents !== "function") throw new TypeError("The Worker does not export TokamakEvents");
-  const events = new TokamakEvents(globalThis.__tokamak_context, globalThis.__tokamak_env);
-  const { reply, listened } = await events.dispatch(name, new Uint8Array(event));
-  return { reply: reply.slice().buffer, listened };
+  const events: unknown = Reflect.construct(TokamakEvents, [globalThis.__tokamak_context, globalThis.__tokamak_env]);
+  return callMethod(events, "dispatch", name, event);
 }
 
 // The storage part attaches the app's storage bindings when it has any.
 if (globalThis.__tokamak_storage) await (await import("../storage/bindings.ts")).install(globalThis.__tokamak_env, globalThis.__tokamak_storage);
-const waitUntilValues = [];
-let observeWaitUntil;
-export function trackWaitUntil(observer) { observeWaitUntil = observer; }
-class ExecutionContext {
-  waitUntil(value) {
+const waitUntilValues: Promise<unknown>[] = [];
+let waitUntilObserver: WaitUntilObserver | undefined;
+function trackWaitUntil(observer: WaitUntilObserver): void { waitUntilObserver = observer; }
+
+/** The execution context passed to the Worker's handlers. */
+export class ExecutionContext {
+  access = undefined;
+  cache = undefined;
+  exports = undefined;
+  props = {};
+  tracing = createTracing();
+  /** Values that plugins read by registered symbol, such as the native connection. */
+  [key: symbol]: unknown;
+  waitUntil(value: unknown): void {
     const task = Promise.resolve(value);
     waitUntilValues.push(task);
-    if (observeWaitUntil) {
-      observeWaitUntil(true);
-      const settled = () => observeWaitUntil(false);
+    const observer = waitUntilObserver;
+    if (observer) {
+      observer.observe(true);
+      const settled = () => { observer.observe(false); };
       task.then(settled, settled);
     }
   }
-  abort() { throw new Error("The Worker isolate was aborted"); }
-  passThroughOnException() {}
+  abort(): never { throw new Error("The Worker isolate was aborted"); }
+  passThroughOnException(): void {}
 }
 Object.defineProperty(globalThis, "__tokamak_drain_wait_until", {
   configurable: false,
@@ -119,12 +130,16 @@ Object.defineProperty(globalThis, "__tokamak_drain_wait_until", {
     }
   },
 });
-globalThis.__tokamak_context = Object.assign(Object.create(ExecutionContext.prototype), {
-  access: undefined,
-  cache: undefined,
-  exports: undefined,
-  props: {},
-  tracing: createTracing(),
-});
+globalThis.__tokamak_context = new ExecutionContext();
 
-export { openServiceStream, receiveServiceStream } from "../services/streams.ts";
+export const bootstrap: Bootstrap = {
+  hostRequest,
+  hostResponse,
+  dispatchEvent,
+  installAssets,
+  installPlugins,
+  installServices,
+  invokeService,
+  serviceStreams: serviceStreamCodec,
+  trackWaitUntil,
+};

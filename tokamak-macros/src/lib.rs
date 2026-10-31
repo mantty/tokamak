@@ -15,9 +15,9 @@ use syn::{
     Path, PathArguments, ReturnType, Signature, Token, Type, TypeParamBound, Visibility,
 };
 
-/// Implements `JsType` for a struct that rquickjs's `FromJs` and `IntoJs`
-/// derives convert: an interface of a struct's fields, with the property names
-/// those derives use, or a tuple of a tuple struct's fields.
+/// Implements `JsType` for a struct with named fields that rquickjs's
+/// `FromJs` and `IntoJs` derives convert: an interface of its fields, with the
+/// property names those derives use.
 #[proc_macro_derive(JsType, attributes(qjs))]
 pub fn derive_js_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -33,31 +33,25 @@ fn js_type(input: &DeriveInput) -> syn::Result<Tokens> {
             "JsType is derived for structs",
         ));
     };
+    let Fields::Named(fields) = &data.fields else {
+        return Err(syn::Error::new_spanned(
+            &data.fields,
+            "JsType is derived for structs with named fields",
+        ));
+    };
     if input.generics.type_params().next().is_some() {
         let message = "JsType is derived for structs without type parameters";
         return Err(syn::Error::new_spanned(&input.generics, message));
     }
     let name = &input.ident;
     let label = name.to_string();
-    let declaration = match &data.fields {
-        Fields::Named(fields) => {
-            let case = rename_all(&input.attrs)?;
-            let properties = fields
-                .named
-                .iter()
-                .map(|field| property(field, case))
-                .collect::<syn::Result<Vec<_>>>()?;
-            quote!(crate::typescript::interface(#label, &[#(#properties),*]))
-        }
-        Fields::Unnamed(fields) => {
-            let elements = fields.unnamed.iter().map(|field| {
-                let field_type = &field.ty;
-                quote!(<#field_type as crate::typescript::JsType>::typescript(types))
-            });
-            quote!(crate::typescript::alias(#label, &crate::typescript::tuple(&[#(#elements),*])))
-        }
-        Fields::Unit => quote!(crate::typescript::alias(#label, "undefined")),
-    };
+    let case = rename_all(&input.attrs)?;
+    let properties = fields
+        .named
+        .iter()
+        .map(|field| property(field, case))
+        .collect::<syn::Result<Vec<_>>>()?;
+    let declaration = quote!(crate::typescript::interface(#label, &[#(#properties),*]));
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         #[cfg(test)]
@@ -71,14 +65,9 @@ fn js_type(input: &DeriveInput) -> syn::Result<Tokens> {
 
 /// A field's property: its name, whether it may be missing, and its type.
 fn property(field: &Field, case: Option<Case<'static>>) -> syn::Result<Tokens> {
-    let name = match qjs_value(&field.attrs, "rename")? {
-        Some(name) => name,
-        None => {
-            let ident = field.ident.as_ref().map(ToString::to_string);
-            let ident = ident.ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?;
-            case.map_or_else(|| ident.clone(), |case| ident.to_case(case))
-        }
-    };
+    let ident = field.ident.as_ref();
+    let ident = ident.ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?;
+    let name = js_name(&field.attrs, &ident.to_string(), case)?;
     let field_type = &field.ty;
     Ok(quote! {
         (
@@ -87,6 +76,19 @@ fn property(field: &Field, case: Option<Case<'static>>) -> syn::Result<Tokens> {
             <#field_type as crate::typescript::JsType>::typescript(types),
         )
     })
+}
+
+/// The JavaScript name of a field or method: its `#[qjs(rename = ...)]`, else
+/// its Rust name in `case`.
+fn js_name(
+    attributes: &[Attribute],
+    ident: &str,
+    case: Option<Case<'static>>,
+) -> syn::Result<String> {
+    if let Some(name) = qjs_value(attributes, "rename")? {
+        return Ok(name);
+    }
+    Ok(case.map_or_else(|| ident.to_owned(), |case| ident.to_case(case)))
 }
 
 /// The case `#[qjs(rename_all = ...)]` names fields in, as rquickjs maps it.
@@ -325,13 +327,7 @@ fn class_declaration(implementation: &syn::ItemImpl) -> syn::Result<Tokens> {
                 return Err(syn::Error::new_spanned(&method.sig, message));
             }
         }
-        let name = match qjs_value(&method.attrs, "rename")? {
-            Some(name) => name,
-            None => {
-                let ident = method.sig.ident.to_string();
-                case.map_or_else(|| ident.clone(), |case| ident.to_case(case))
-            }
-        };
+        let name = js_name(&method.attrs, &method.sig.ident.to_string(), case)?;
         let mut signature = method.sig.clone();
         ReplaceSelf(&implementation.self_ty).visit_signature_mut(&mut signature);
         members.push(if qjs_flag(&method.attrs, "get")? {
@@ -382,11 +378,12 @@ struct ReplaceSelf<'a>(&'a Type);
 
 impl VisitMut for ReplaceSelf<'_> {
     fn visit_type_mut(&mut self, node: &mut Type) {
-        if let Type::Path(path) = node {
-            if path.qself.is_none() && path.path.is_ident("Self") {
-                *node = self.0.clone();
-                return;
-            }
+        if let Type::Path(path) = node
+            && path.qself.is_none()
+            && path.path.is_ident("Self")
+        {
+            *node = self.0.clone();
+            return;
         }
         syn::visit_mut::visit_type_mut(self, node);
     }
@@ -425,9 +422,10 @@ pub fn host_functions(input: TokenStream) -> TokenStream {
     let names = functions.iter().map(|function| &function.name);
     let exported = functions.iter().map(|function| {
         let (name, path) = (&function.name, &function.path);
-        match function.asynchronous {
-            true => quote!(exports.export(#name, rquickjs::Function::new(ctx.clone(), rquickjs::function::Async(#path))?)?;),
-            false => quote!(exports.export(#name, rquickjs::Function::new(ctx.clone(), #path)?)?;),
+        if function.asynchronous {
+            quote!(exports.export(#name, rquickjs::Function::new(ctx.clone(), rquickjs::function::Async(#path))?)?;)
+        } else {
+            quote!(exports.export(#name, rquickjs::Function::new(ctx.clone(), #path)?)?;)
         }
     });
     let declarations = functions.iter().map(|function| {

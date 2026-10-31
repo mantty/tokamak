@@ -1,16 +1,17 @@
-import { string } from "../globals/conversions.ts";
+import { propertyKey, string } from "../globals/conversions.ts";
+import { isFunction, isObject, objectOf, propertyOf } from "../globals/objects.ts";
 import { TextDecoder } from "../streams/text.ts";
 import { Buffer } from "./buffer.ts";
 import { codedError } from "./errors.ts";
 
 const hexDigit = /[0-9A-Fa-f]/;
 
-function malformedURI() {
+function malformedURI(): Error {
   return Object.assign(codedError(Error, "URI malformed", "ERR_INVALID_URI"), { name: "URIError" });
 }
 
 // UTF-8 percent-encoding in which any surrogate code unit pairs with the unit after it.
-function encodeString(value) {
+function encodeString(value: string): string {
   if (value.isWellFormed()) return encodeURIComponent(value);
   let output = "";
   for (let index = 0; index < value.length; index += 1) {
@@ -27,43 +28,76 @@ function encodeString(value) {
 }
 
 // A function converts by concatenation, any other value by ToString.
-function escape(input) {
-  return encodeString(typeof input === "function" ? input + "" : string(input));
+function escape(input: unknown): string {
+  return encodeString(isFunction(input) ? input + "" : string(input));
 }
 
-function decodeComponent(input, decodeSpaces) {
+function decodeComponent(input: string, decodeSpaces: boolean): string {
   try { return decodeURIComponent(input); }
   catch { return new TextDecoder("utf-8", { ignoreBOM: true }).decode(unescapeBuffer(input, decodeSpaces)); }
 }
 
-function decodeWith(decode, text) {
+// Decodes a key or value, as the default decoder or a custom one returns it.
+type Decoder = (text: string) => unknown;
+
+function decodeWith(decode: Decoder, text: string): unknown {
   try { return decode(text); }
   catch { return unescape(text, true); }
 }
 
 // The number of pairs parse reads; -1, never reached by counting down, reads all.
-function maxPairs(options) {
-  if (typeof options?.maxKeys !== "number") return 1000;
-  return options.maxKeys > 0 ? options.maxKeys : -1;
+function maxPairs(options: unknown): number {
+  const maxKeys = propertyOf(options, "maxKeys");
+  if (typeof maxKeys !== "number") return 1000;
+  return maxKeys > 0 ? maxKeys : -1;
 }
 
-function startPair(scan, position) {
-  Object.assign(scan, { key: "", value: "", keyEncoded: scan.custom, valueEncoded: scan.custom, escapeProgress: 0, pendingStart: position, separatorMatched: 0, equalsMatched: 0 });
+// The state of the pair being read.
+interface Pair {
+  key: string;
+  value: string;
+  keyEncoded: boolean;
+  valueEncoded: boolean;
+  escapeProgress: number;
+  pendingStart: number;
+  separatorMatched: number;
+  equalsMatched: number;
+}
+
+// The state of one parse.
+interface Scan extends Pair {
+  input: string;
+  output: Record<PropertyKey, unknown>;
+  decode: Decoder;
+  custom: boolean;
+  separator: string;
+  equals: string;
+  plus: string;
+  pairs: number;
+}
+
+// A pair starting at `position`, encoded from the start when the decoder is custom.
+function pairAt(position: number, custom: boolean): Pair {
+  return { key: "", value: "", keyEncoded: custom, valueEncoded: custom, escapeProgress: 0, pendingStart: position, separatorMatched: 0, equalsMatched: 0 };
+}
+
+function startPair(scan: Scan, position: number): void {
+  Object.assign(scan, pairAt(position, scan.custom));
 }
 
 // A key or value is decoded only when it holds a percent escape or the decoder is custom.
-function addPair(scan) {
-  const key = scan.key.length > 0 && scan.keyEncoded ? decodeWith(scan.decode, scan.key) : scan.key;
+function addPair(scan: Scan): void {
+  const key = propertyKey(scan.key.length > 0 && scan.keyEncoded ? decodeWith(scan.decode, scan.key) : scan.key);
   const value = scan.value.length > 0 && scan.valueEncoded ? decodeWith(scan.decode, scan.value) : scan.value;
   const current = scan.output[key];
   if (current === undefined) scan.output[key] = value;
   // Any value with `pop` collects repeats, whatever type a custom decoder returns.
-  else if (current.pop) current[current.length] = value;
+  else if (isObject(current) && current.pop) current[propertyKey(current.length)] = value;
   else scan.output[key] = [current, value];
 }
 
 // Ends the pair before the separator ending at `index`; true when no more pairs may be read.
-function endPair(scan, index) {
+function endPair(scan: Scan, index: number): boolean {
   const pending = scan.input.slice(scan.pendingStart, index - scan.separatorMatched + 1);
   const inKey = scan.equalsMatched < scan.equals.length;
   if (inKey) scan.key += pending;
@@ -77,7 +111,7 @@ function endPair(scan, index) {
 
 // Advances the percent-escape check by `character`; true while it may continue
 // an escape, which is complete when `escapeProgress` reaches 3.
-function trackEscape(scan, character) {
+function trackEscape(scan: Scan, character: string): boolean {
   if (character === "%") {
     scan.escapeProgress = 1;
     return true;
@@ -92,13 +126,13 @@ function trackEscape(scan, character) {
 }
 
 // Appends the text before the "+" at `index`, and the "+" as a space, to the key or value.
-function appendPlus(scan, part, index) {
+function appendPlus(scan: Scan, part: "key" | "value", index: number): void {
   scan[part] += scan.input.slice(scan.pendingStart, index) + scan.plus;
   scan.pendingStart = index + 1;
 }
 
 // Reads a key character; false when the value's rules still apply to it.
-function readKeyCharacter(scan, index) {
+function readKeyCharacter(scan: Scan, index: number): boolean {
   const character = scan.input[index];
   if (character === scan.equals[scan.equalsMatched]) {
     scan.equalsMatched += 1;
@@ -118,14 +152,14 @@ function readKeyCharacter(scan, index) {
   return true;
 }
 
-function readValueCharacter(scan, index) {
+function readValueCharacter(scan: Scan, index: number): void {
   const character = scan.input[index];
   if (character === "+") appendPlus(scan, "value", index);
   else if (!scan.valueEncoded && trackEscape(scan, character) && scan.escapeProgress === 3) scan.valueEncoded = true;
 }
 
 // Reads the character at `index`; true when no more pairs may be read.
-function readCharacter(scan, index) {
+function readCharacter(scan: Scan, index: number): boolean {
   if (scan.input[index] === scan.separator[scan.separatorMatched]) {
     scan.separatorMatched += 1;
     return scan.separatorMatched === scan.separator.length && endPair(scan, index);
@@ -137,16 +171,19 @@ function readCharacter(scan, index) {
 }
 
 // A single pass over `input`, matching separators one character at a time.
-export function parse(input, separator, equals, options) {
-  const output = { __proto__: null };
+export function parse(input: unknown, separator?: unknown, equals?: unknown, options?: unknown): Record<PropertyKey, unknown> {
+  const output: Record<PropertyKey, unknown> = { __proto__: null };
   if (typeof input !== "string" || input.length === 0) return output;
   const pairSeparator = separator ? String(separator) : "&";
   const keySeparator = equals ? String(equals) : "=";
   const pairs = maxPairs(options);
-  const decode = typeof options?.decodeURIComponent === "function" ? options.decodeURIComponent : unescape;
+  const decoder = propertyOf(options, "decodeURIComponent");
+  const decode: Decoder = isFunction(decoder) ? decoder : unescape;
   const custom = decode !== unescape;
-  const scan = { input, output, decode, custom, separator: pairSeparator, equals: keySeparator, plus: custom ? "%20" : " ", pairs };
-  startPair(scan, 0);
+  const scan: Scan = {
+    input, output, decode, custom, separator: pairSeparator, equals: keySeparator, plus: custom ? "%20" : " ", pairs,
+    ...pairAt(0, custom),
+  };
   for (let index = 0; index < input.length; index += 1) {
     if (readCharacter(scan, index)) return output;
   }
@@ -160,7 +197,7 @@ export function parse(input, separator, equals, options) {
 
 export const decode = parse;
 
-function stringifyPrimitive(value) {
+function stringifyPrimitive(value: unknown): string {
   if (typeof value === "string") return value;
   if ((typeof value === "number" && Number.isFinite(value)) || typeof value === "bigint") return String(value);
   if (typeof value === "boolean") return value ? "true" : "false";
@@ -168,23 +205,26 @@ function stringifyPrimitive(value) {
 }
 
 // Numbers from 1e21 up are written in exponent form, so escaped.
-function encodeStringified(value) {
+function encodeStringified(value: unknown): string {
   if (typeof value === "string") return value.length ? escape(value) : "";
   if (typeof value === "number" && Number.isFinite(value)) return Math.abs(value) < 1e21 ? String(value) : escape(String(value));
   return stringifyPrimitive(value);
 }
 
-export function stringify(object, separator, equals, options) {
+export function stringify(object: unknown, separator?: unknown, equals?: unknown, options?: unknown): string {
   const pairSeparator = separator || "&";
   const keySeparator = equals || "=";
-  const encode = typeof options?.encodeURIComponent === "function" ? options.encodeURIComponent : escape;
-  const convert = encode === escape ? encodeStringified : value => encode(stringifyPrimitive(value));
+  const encoder = propertyOf(options, "encodeURIComponent");
+  const encode = isFunction(encoder) ? encoder : escape;
+  const convert = encode === escape ? encodeStringified : (value: unknown) => encode(stringifyPrimitive(value));
   if (object === null || typeof object !== "object") return "";
   let fields = "";
   for (const name of Object.keys(object)) {
-    const value = object[name];
-    const field = convert(name) + keySeparator;
-    const values = Array.isArray(value) ? value : [value];
+    const value = objectOf(object)[name];
+    let field = "";
+    field += convert(name);
+    field += keySeparator;
+    const values: readonly unknown[] = Array.isArray(value) ? value : [value];
     if (values.length === 0) continue;
     if (fields) fields += pairSeparator;
     for (let index = 0; index < values.length; index += 1) {
@@ -199,12 +239,12 @@ export function stringify(object, separator, equals, options) {
 export const encode = stringify;
 export { escape };
 
-export function unescape(value, decodeSpaces = false) { return decodeComponent(string(value), decodeSpaces); }
+export function unescape(value: unknown, decodeSpaces = false): string { return decodeComponent(string(value), decodeSpaces); }
 
 // Each UTF-16 unit that is not a percent escape becomes its low byte.
-export function unescapeBuffer(value, decodeSpaces = false) {
+export function unescapeBuffer(value: unknown, decodeSpaces = false): Buffer {
   const input = string(value);
-  const bytes = [];
+  const bytes: number[] = [];
   for (let index = 0; index < input.length; index += 1) {
     const hex = input.slice(index + 1, index + 3);
     if (decodeSpaces && input[index] === "+") bytes.push(32);

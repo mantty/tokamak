@@ -72,11 +72,15 @@ fn builtin_sources() -> Result<Vec<String>, Box<dyn std::error::Error>> {
             .strip_prefix("src")?
             .to_string_lossy()
             .replace('\\', "/");
-        if (module.ends_with(".ts") && !module.ends_with(".d.ts")) || module.ends_with(".js") {
+        if matches!(extension(&module), Some("ts" | "js")) && !module.ends_with(".d.ts") {
             modules.push(module);
         }
     }
     Ok(modules)
+}
+
+fn extension(module: &str) -> Option<&str> {
+    Path::new(module).extension()?.to_str()
 }
 
 /// Write each of `modules` under `from` to the same path under `to` as
@@ -90,7 +94,7 @@ fn write_javascript(
     for module in modules {
         let source = from.join(module);
         println!("cargo:rerun-if-changed={}", source.display());
-        if module.ends_with(".ts") {
+        if extension(module) == Some("ts") {
             typescript.push(module);
         } else {
             let destination = to.join(module);

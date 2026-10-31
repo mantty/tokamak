@@ -20,6 +20,8 @@ mod bridge;
 #[cfg(feature = "native")]
 mod cache;
 #[cfg(feature = "native")]
+mod cancellation;
+#[cfg(feature = "native")]
 mod cert_generation;
 #[cfg(feature = "native")]
 mod cert_validation;
@@ -79,7 +81,7 @@ mod readiness;
 mod tls;
 #[cfg(feature = "native")]
 mod transport;
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod typescript;
 #[cfg(feature = "native")]
 mod worker_events;
