@@ -1,7 +1,7 @@
 mod lifetime;
 mod streams;
 pub(crate) use lifetime::{Lifetime, Scope};
-pub(crate) use streams::Streams;
+pub(crate) use streams::{Codec, Streams};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -129,11 +129,7 @@ impl Message {
         }
     }
 
-    fn from_js<'js>(
-        object: &Object<'js>,
-        bootstrap: &Object<'js>,
-        channels: &Arc<Streams>,
-    ) -> rquickjs::Result<Self> {
+    fn from_js<'js>(object: &Object<'js>, codec: &Codec<'js>) -> rquickjs::Result<Self> {
         let buffers: Array = object.get("buffers")?;
         let buffers = buffers
             .iter::<ArrayBuffer>()
@@ -148,7 +144,7 @@ impl Message {
         let streams: Array = object.get("streams")?;
         let streams = streams
             .iter::<Object>()
-            .map(|stream| channels.take(stream?, bootstrap))
+            .map(|stream| codec.take(stream?))
             .collect::<rquickjs::Result<_>>()?;
         Ok(Self {
             data: object.get("data")?,
@@ -157,12 +153,8 @@ impl Message {
         })
     }
 
-    pub(crate) fn into_js<'js>(
-        self,
-        ctx: &Ctx<'js>,
-        bootstrap: &Object<'js>,
-        channels: &Arc<Streams>,
-    ) -> rquickjs::Result<Object<'js>> {
+    pub(crate) fn into_js<'js>(self, codec: &Codec<'js>) -> rquickjs::Result<Object<'js>> {
+        let ctx = codec.ctx();
         let object = Object::new(ctx.clone())?;
         let buffers = Array::new(ctx.clone())?;
         for (index, buffer) in self.buffers.into_iter().enumerate() {
@@ -172,7 +164,7 @@ impl Message {
         object.set("buffers", buffers)?;
         let streams = Array::new(ctx.clone())?;
         for (index, stream) in self.streams.into_iter().enumerate() {
-            streams.set(index, channels.receive(ctx, stream, bootstrap)?)?;
+            streams.set(index, codec.receive(stream)?)?;
         }
         object.set("streams", streams)?;
         Ok(object)
@@ -185,30 +177,19 @@ pub(crate) struct Reply {
 }
 
 impl Reply {
-    pub(crate) fn from_js<'js>(
-        object: &Object<'js>,
-        bootstrap: &Object<'js>,
-        channels: &Arc<Streams>,
-    ) -> rquickjs::Result<Self> {
+    pub(crate) fn from_js<'js>(object: &Object<'js>, codec: &Codec<'js>) -> rquickjs::Result<Self> {
         Ok(Self {
             failed: object.get("failed")?,
-            value: Message::from_js(&object.get("value")?, bootstrap, channels)?,
+            value: Message::from_js(&object.get("value")?, codec)?,
         })
     }
 
-    // jscpd:ignore-start: a reply converts to JavaScript as its message does.
-    fn into_js<'js>(
-        self,
-        ctx: &Ctx<'js>,
-        bootstrap: &Object<'js>,
-        channels: &Arc<Streams>,
-    ) -> rquickjs::Result<Object<'js>> {
-        let object = Object::new(ctx.clone())?;
+    fn into_js<'js>(self, codec: &Codec<'js>) -> rquickjs::Result<Object<'js>> {
+        let object = Object::new(codec.ctx().clone())?;
         object.set("failed", self.failed)?;
-        object.set("value", self.value.into_js(ctx, bootstrap, channels)?)?;
+        object.set("value", self.value.into_js(codec)?)?;
         Ok(object)
     }
-    // jscpd:ignore-end
 }
 
 pub(crate) fn install<'js>(
@@ -220,7 +201,7 @@ pub(crate) fn install<'js>(
     let names: Vec<_> = bindings.targets.keys().cloned().collect();
     let bindings = bindings.clone();
     let lifetime = scope.lifetime.clone();
-    let channels = Arc::clone(&scope.streams);
+    let streams = Arc::clone(&scope.streams);
     let call = Function::new(
         ctx.clone(),
         move |ctx: Ctx<'js>,
@@ -233,7 +214,8 @@ pub(crate) fn install<'js>(
                 .get(&name)
                 .cloned()
                 .ok_or_else(|| Exception::throw_type(&ctx, "Unknown service binding"))?;
-            let message = Message::from_js(&arguments, &bootstrap, &channels)?;
+            let codec = Codec::new(bootstrap, &streams);
+            let message = Message::from_js(&arguments, &codec)?;
             let registry = Arc::clone(&bindings.registry);
             let lifetime = Lifetime {
                 caller: lifetime.caller.child_token(),
@@ -241,13 +223,12 @@ pub(crate) fn install<'js>(
             };
             let cancellation = lifetime.caller.clone();
             let calling = ctx.clone();
-            let channels = Arc::clone(&channels);
             let result = Promise::wrap_future(&ctx, async move {
                 let result = registry
                     .invoke(target, method, message, lifetime)
                     .await
                     .map_err(|error| crate::errors::throw_message(&calling, &error.to_string()))?;
-                result.into_js(&calling, &bootstrap, &channels)
+                result.into_js(&codec)
             })?;
             let operation = Object::new(ctx.clone())?;
             operation.set("result", result)?;

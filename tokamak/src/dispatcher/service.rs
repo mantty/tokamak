@@ -4,7 +4,7 @@ use super::{
 };
 use crate::event_loop::AwaitedPromise;
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
-use crate::services::{Call, Lifetime, Reply, Scope};
+use crate::services::{Call, Codec, Lifetime, Reply, Scope};
 use rquickjs::{AsyncContext, AsyncRuntime, Function, Object, Promise};
 use std::sync::Arc;
 
@@ -21,10 +21,11 @@ pub(crate) async fn execute_service(
     let awaited = AwaitedPromise::default();
     let invocation = context.async_with(async |ctx| -> Result<Reply, Error> {
         let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services, &owner)?;
+        let codec = Codec::new(bootstrap.clone(), &services.streams);
         let exports = load_worker_exports(&ctx, worker).await?;
         let arguments = call
             .arguments
-            .into_js(&ctx, &bootstrap, &services.streams)
+            .into_js(&codec)
             .map_err(|error| js_exception(&ctx, "service arguments", error))?;
         let invoke: Function = bootstrap
             .get("invokeService")
@@ -33,8 +34,7 @@ pub(crate) async fn execute_service(
             .call((exports, call.entrypoint, call.method, arguments))
             .map_err(|error| js_exception(&ctx, "service invocation", error))?;
         let result: Object = finish_promise(&ctx, &pending, "service result").await?;
-        Reply::from_js(&result, &bootstrap, &services.streams)
-            .map_err(|error| js_exception(&ctx, "service result", error))
+        Reply::from_js(&result, &codec).map_err(|error| js_exception(&ctx, "service result", error))
     });
     let result = tokio::select! {
         result = crate::event_loop::run(&runtime, &awaited, invocation) => result,

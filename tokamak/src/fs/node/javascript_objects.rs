@@ -481,7 +481,7 @@ pub(super) fn handle_write<'js>(
         .next()
         .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
     handle_write_promise(ctx, state, "buffer", || {
-        file_handle_write(ctx, value, args.collect())
+        write_request(ctx, value, args.collect(), file_handle_string_write)
     })
 }
 

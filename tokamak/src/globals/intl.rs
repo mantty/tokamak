@@ -78,9 +78,7 @@ super::host_functions! {
     "intlPlural" => plural,
     "intlPluralRange" => plural_range,
     "intlPluralCategories" => plural_categories,
-    "intlList" => list,
     "intlListParts" => list_parts,
-    "intlRelative" => relative,
     "intlRelativeParts" => relative_parts,
     "intlCollatorCompare" => collator_compare,
     "intlSegment" => segment,
@@ -230,19 +228,6 @@ fn plural_categories(ctx: Ctx<'_>, locales: String, kind: String) -> rquickjs::R
     to_json(&ctx, &values)
 }
 
-// jscpd:ignore-start: the string and parts forms read their arguments alike.
-fn list(
-    ctx: Ctx<'_>,
-    values: String,
-    locales: String,
-    options: String,
-) -> rquickjs::Result<String> {
-    let values: Vec<String> = from_json(&ctx, &values)?;
-    let formatter = list_formatter(&ctx, &locales, &options)?;
-    Ok(formatter.format_to_string(values.iter().map(String::as_str)))
-}
-// jscpd:ignore-end
-
 fn list_parts(
     ctx: Ctx<'_>,
     values: String,
@@ -254,19 +239,6 @@ fn list_parts(
     let formatted_list = formatter.format(values.iter().map(String::as_str));
     to_json(&ctx, &collect_parts(&formatted_list))
 }
-
-// jscpd:ignore-start: the string and parts forms read their arguments alike.
-fn relative(
-    ctx: Ctx<'_>,
-    value: f64,
-    unit: String,
-    locales: String,
-    options: String,
-) -> rquickjs::Result<String> {
-    let (locale, options) = relative_inputs(&ctx, value, &locales, &options)?;
-    format_relative(&ctx, value, &unit, &locale, &options)
-}
-// jscpd:ignore-end
 
 fn relative_inputs(
     ctx: &Ctx<'_>,

@@ -8,11 +8,11 @@ use crate::packaging::PackageLayout;
 use crate::{Config, DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime};
 
 /// What the shell gives a runtime it starts.
-pub(crate) struct Shell {
+pub(crate) struct Shell<P> {
     /// Whether the app is in the foreground.
     pub(crate) foreground: bool,
     /// The plugins the Worker calls.
-    pub(crate) plugins: Arc<dyn PluginHandler>,
+    pub(crate) plugins: P,
     /// Logs the runtime's events.
     pub(crate) report: fn(&Event),
 }
@@ -23,7 +23,7 @@ pub(crate) fn start(
     state_dir: &str,
     storage_dir: &str,
     host: &str,
-    shell: Shell,
+    shell: Shell<impl PluginHandler + 'static>,
 ) -> Result<Runtime, String> {
     let config = Config {
         app: PackageLayout::new(packaged_dir),
@@ -31,7 +31,7 @@ pub(crate) fn start(
         storage_dir: PathBuf::from(storage_dir),
         host: host.to_owned(),
         foreground: shell.foreground,
-        plugins: Some(shell.plugins),
+        plugins: Some(Arc::new(shell.plugins)),
     };
     let report = shell.report;
     Runtime::start(config, move |event| report(&event)).map_err(|error| error.to_string())
@@ -44,7 +44,7 @@ pub(crate) fn start_development(
     host: &str,
     endpoint: &str,
     session_token: &str,
-    shell: Shell,
+    shell: Shell<impl PluginHandler + 'static>,
 ) -> Result<Runtime, String> {
     let config = DevelopmentConfig {
         state_dir: PathBuf::from(state_dir),
@@ -54,7 +54,7 @@ pub(crate) fn start_development(
             session_token: session_token.to_owned(),
         },
         foreground: shell.foreground,
-        plugins: Some(shell.plugins),
+        plugins: Some(Arc::new(shell.plugins)),
     };
     let report = shell.report;
     Runtime::start_development(config, move |event| report(&event))

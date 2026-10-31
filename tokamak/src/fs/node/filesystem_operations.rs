@@ -1156,7 +1156,7 @@ pub(super) fn write_sync<'js>(
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<u32> {
     let descriptor = descriptor_value(&ctx, descriptor)?;
-    let write = sync_write(&ctx, value, args.0)?;
+    let write = write_request(&ctx, value, args.0, sync_string_write)?;
     write_views(&ctx, descriptor, &write)
 }
 

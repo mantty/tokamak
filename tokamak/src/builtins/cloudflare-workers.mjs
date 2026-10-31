@@ -30,20 +30,24 @@ export class RpcStub {
   dup() { return new RpcStub(this.__value); }
   get [Symbol.toStringTag]() { return "JsRpcStub"; }
 }
-export class RpcPromise extends Promise {
-  constructor() { throw new TypeError("Illegal constructor"); }
-  then(...args) { return Promise.prototype.then.apply(this, args); }
-  catch(...args) { return Promise.prototype.catch.apply(this, args); }
-  finally(...args) { return Promise.prototype.finally.apply(this, args); }
+// Tokamak makes no RPC calls, so the RPC result classes have no instances and
+// their methods never have a valid `this`.
+const illegalInvocation = "Illegal invocation: function called with incorrect `this` reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.";
+export function RpcPromise() { throw new TypeError("Illegal constructor"); }
+export function RpcProperty() { throw new TypeError("Illegal constructor"); }
+for (const [RpcResult, tag] of [[RpcPromise, "JsRpcPromise"], [RpcProperty, "JsRpcProperty"]]) {
+  Object.assign(RpcResult.prototype, {
+    then() { throw new TypeError(illegalInvocation); },
+    catch() { throw new TypeError(illegalInvocation); },
+    finally() { throw new TypeError(illegalInvocation); },
+  });
+  Object.defineProperty(RpcResult.prototype, Symbol.toStringTag, { value: tag, writable: true, configurable: true });
 }
-// jscpd:ignore-start: workerd exports RpcPromise and RpcProperty as separate classes.
-export class RpcProperty extends Promise {
-  constructor() { throw new TypeError("Illegal constructor"); }
-  then(...args) { return Promise.prototype.then.apply(this, args); }
-  catch(...args) { return Promise.prototype.catch.apply(this, args); }
-  finally(...args) { return Promise.prototype.finally.apply(this, args); }
-}
-// jscpd:ignore-end
+Object.defineProperty(RpcPromise.prototype, Symbol.dispose, {
+  value() { throw new TypeError(illegalInvocation); },
+  writable: true,
+  configurable: true,
+});
 export class ServiceStub {
   constructor() { throw new TypeError("Illegal constructor"); }
   fetch() { throw new TypeError("Service bindings are not available in the Tokamak runtime"); }

@@ -2,7 +2,6 @@
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bridge::{self, Shell};
@@ -550,10 +549,10 @@ unsafe fn start_development(
     )
 }
 
-fn shell(foreground: bool, plugins: TokamakPluginHandler) -> Shell {
+fn shell(foreground: bool, plugins: TokamakPluginHandler) -> Shell<TokamakPluginHandler> {
     Shell {
         foreground,
-        plugins: Arc::new(plugins),
+        plugins,
         report,
     }
 }

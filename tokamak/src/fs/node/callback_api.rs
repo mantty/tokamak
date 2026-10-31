@@ -270,7 +270,7 @@ pub(super) fn callback_call<'js>(
         CallbackOperation::Write => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let value = take_arg(&ctx, &mut args)?;
-            let write = callback_write(&ctx, value, args)?;
+            let write = write_request(&ctx, value, args, callback_string_write)?;
             let count = write_views(&ctx, descriptor, &write);
             reply_with_buffer(&ctx, count, write.data)
         }
