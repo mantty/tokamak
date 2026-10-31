@@ -5,6 +5,7 @@ mod units;
 include!("intl/plurals_data.rs");
 
 use provider::{PROVIDER, resolve};
+use tokamak_macros::host_function;
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -69,7 +70,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use writeable::{Part, PartsWrite, Writeable};
 
-super::host_functions! {
+tokamak_macros::host_functions! {
     pub(super),
     "intlCanonicalLocales" => canonical_locales,
     "intlDateTime" => date_time,
@@ -161,6 +162,7 @@ fn to_json<T: Serialize + ?Sized>(ctx: &Ctx<'_>, value: &T) -> rquickjs::Result<
     serde_json::to_string(value).map_err(internal_error(ctx))
 }
 
+#[host_function]
 fn canonical_locales(ctx: Ctx<'_>, input: String) -> rquickjs::Result<String> {
     let values: Vec<String> = from_json(&ctx, &input)?;
     let canonicalizer =
@@ -177,11 +179,13 @@ fn canonical_locales(ctx: Ctx<'_>, input: String) -> rquickjs::Result<String> {
     to_json(&ctx, &output)
 }
 
+#[host_function]
 fn number(ctx: Ctx<'_>, value: f64, locales: String, options: String) -> rquickjs::Result<String> {
     let parts = format_number_parts(&ctx, value, &locales, &options)?;
     Ok(parts.into_iter().map(|(_, value)| value).collect())
 }
 
+#[host_function]
 fn number_parts(
     ctx: Ctx<'_>,
     value: f64,
@@ -191,6 +195,7 @@ fn number_parts(
     to_json(&ctx, &format_number_parts(&ctx, value, &locales, &options)?)
 }
 
+#[host_function]
 fn plural(ctx: Ctx<'_>, value: f64, locales: String, kind: String) -> rquickjs::Result<String> {
     if !value.is_finite() {
         return Ok("other".to_owned());
@@ -200,6 +205,7 @@ fn plural(ctx: Ctx<'_>, value: f64, locales: String, kind: String) -> rquickjs::
     Ok(plural_category(rules.category_for(&decimal)).to_owned())
 }
 
+#[host_function]
 fn plural_range(
     ctx: Ctx<'_>,
     start: f64,
@@ -222,12 +228,14 @@ fn plural_range(
     Ok(plural_category(rules.category_for_range(&start, &end)).to_owned())
 }
 
+#[host_function]
 fn plural_categories(ctx: Ctx<'_>, locales: String, kind: String) -> rquickjs::Result<String> {
     let rules = plural_rules(&ctx, &locales, &kind)?;
     let values = rules.categories().map(plural_category).collect::<Vec<_>>();
     to_json(&ctx, &values)
 }
 
+#[host_function]
 fn list_parts(
     ctx: Ctx<'_>,
     values: String,
@@ -312,6 +320,7 @@ fn format_relative(
     Ok(formatter.format(parse_decimal(ctx, value)?).to_string())
 }
 
+#[host_function]
 fn relative_parts(
     ctx: Ctx<'_>,
     value: f64,
@@ -349,6 +358,7 @@ fn relative_parts(
     to_json(&ctx, &parts)
 }
 
+#[host_function]
 fn collator_compare(
     ctx: Ctx<'_>,
     left: String,
@@ -404,6 +414,7 @@ fn collator(ctx: &Ctx<'_>, locales: &str, options: &str) -> rquickjs::Result<Col
 
 /// The segments of `text` as JSON `[segment, UTF-16 index, isWordLike]`
 /// triples, with `isWordLike` null unless `granularity` is "word".
+#[host_function]
 fn segment(ctx: Ctx<'_>, text: String, granularity: String) -> rquickjs::Result<String> {
     let (mut boundaries, word_types): (Vec<usize>, _) = match granularity.as_str() {
         "grapheme" => {
@@ -456,6 +467,7 @@ fn segment(ctx: Ctx<'_>, text: String, granularity: String) -> rquickjs::Result<
     to_json(&ctx, &values)
 }
 
+#[host_function]
 fn display_name(
     ctx: Ctx<'_>,
     code: String,
@@ -537,6 +549,7 @@ fn english_display_name<'a>(kind: &str, code: &'a str) -> &'a str {
     }
 }
 
+#[host_function]
 fn locale_info(ctx: Ctx<'_>, tag: String) -> rquickjs::Result<String> {
     let mut locale = tag.parse::<Locale>().map_err(range_error(&ctx))?;
     LocaleCanonicalizer::try_new_extended_unstable(&*PROVIDER)
@@ -574,6 +587,7 @@ fn locale_info(ctx: Ctx<'_>, tag: String) -> rquickjs::Result<String> {
 }
 
 /// The hour cycle `locales` format times with, which `-u-hc` sets.
+#[host_function]
 fn hour_cycle(ctx: Ctx<'_>, locales: String) -> rquickjs::Result<&'static str> {
     let options = serde_json::json!({ "hour": "numeric" });
     let formatter = date_time_formatter(&ctx, resolved_locale(&ctx, &locales)?, &options)?;
@@ -681,6 +695,7 @@ fn locale_keyword(locale: &Locale, name: &str) -> Option<String> {
 }
 
 /// `milliseconds` formatted as a string, or as JSON parts when `parts` is set.
+#[host_function]
 fn date_time(
     ctx: Ctx<'_>,
     milliseconds: f64,
@@ -943,6 +958,7 @@ fn prepared_number(
 
 /// The minimum and maximum fraction digits a number format with `options`
 /// uses: `[minimum, maximum]`.
+#[host_function]
 fn number_fraction_digits(ctx: Ctx<'_>, options: String) -> rquickjs::Result<Vec<u64>> {
     let options: Value = from_json(&ctx, &options)?;
     let style = options

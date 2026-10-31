@@ -22,7 +22,7 @@ use rquickjs::{Coerced, FromJs, IntoJs};
 use url::Url;
 
 mod callback_api;
-mod exports;
+pub(crate) mod exports;
 mod filesystem_operations;
 mod glob;
 mod javascript_objects;
@@ -45,7 +45,7 @@ use reads::*;
 use writes::*;
 
 pub use exports::{
-    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, change_directory,
-    install, read_bundle_file, working_directory,
+    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install,
+    read_bundle_file, working_directory,
 };
 use exports::{VfsHandle, VfsUserData};

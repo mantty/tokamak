@@ -7,12 +7,13 @@ use rquickjs::{
     ArrayBuffer, Constructor, Ctx, Exception, Function, JsLifetime, Object, TypedArray, Value,
 };
 use std::io::Write;
+use tokamak_macros::host_function;
 
 use crate::runtime_modules;
 
 pub(crate) struct HostModule;
 
-super::host_functions! {
+tokamak_macros::host_functions! {
     pub(super),
     "asyncContextGet" => super::async_context::get,
     "asyncContextSet" => super::async_context::set,
@@ -26,18 +27,30 @@ super::host_functions! {
     "htmlValidateSelector" => super::html_rewriter::validate_selector,
     "httpStatusText" => crate::network::http::status_text,
     "socketConnect" => crate::network::sockets::start,
-    "ipVersion" => |input: String| crate::network::sockets::ip_version(&input),
+    "ipVersion" => ip_version,
     "cacheMatch" => crate::cache::cache_match,
     "cachePut" => crate::cache::cache_put,
     "cacheDelete" => crate::cache::cache_delete,
-    "writeStdout" => |text: String| write_flushed(&mut std::io::stdout().lock(), &text),
-    "writeStderr" => |text: String| write_flushed(&mut std::io::stderr().lock(), &text),
+    "writeStdout" => write_stdout,
+    "writeStderr" => write_stderr,
     "registerDomException" => register_dom_exception,
-    "builtinNamespace" => |ctx: Ctx<'js>, name: String| runtime_modules::builtin_namespace(ctx, &name),
-    "isNodeBuiltin" => |name: String| runtime_modules::is_node_builtin(&name),
+    "builtinNamespace" => builtin_namespace,
+    "isNodeBuiltin" => is_node_builtin,
     "nodeBuiltinNames" => runtime_modules::node_builtin_names,
-    "processCwd" => crate::fs::working_directory,
-    "processChdir" => crate::fs::change_directory,
+    "processCwd" => crate::fs::node::exports::working_directory,
+    "processChdir" => crate::fs::node::exports::change_directory,
+}
+
+/// The TypeScript signatures of this module's exports.
+#[cfg(test)]
+pub(crate) fn declarations(
+    types: &mut crate::typescript::Types,
+) -> Vec<(&'static str, crate::typescript::Signature)> {
+    let mut declarations = host_declarations(types);
+    declarations.extend(super::crypto::host_declarations(types));
+    declarations.extend(super::intl::host_declarations(types));
+    declarations.extend(super::url::host_declarations(types));
+    declarations
 }
 
 /// The `DOMException` class native errors are created with, registered by the
@@ -45,6 +58,7 @@ super::host_functions! {
 #[derive(JsLifetime)]
 struct DomException<'js>(Constructor<'js>);
 
+#[host_function]
 fn register_dom_exception<'js>(
     ctx: Ctx<'js>,
     constructor: Constructor<'js>,
@@ -114,11 +128,37 @@ impl ModuleDef for HostModule {
     }
 }
 
+#[host_function]
+fn ip_version(input: String) -> u8 {
+    crate::network::sockets::ip_version(&input)
+}
+
+#[host_function]
+fn write_stdout(text: String) {
+    write_flushed(&mut std::io::stdout().lock(), &text);
+}
+
+#[host_function]
+fn write_stderr(text: String) {
+    write_flushed(&mut std::io::stderr().lock(), &text);
+}
+
+#[host_function]
+fn builtin_namespace(ctx: Ctx<'_>, name: String) -> rquickjs::Result<Option<Object<'_>>> {
+    runtime_modules::builtin_namespace(ctx, &name)
+}
+
+#[host_function]
+fn is_node_builtin(name: String) -> bool {
+    runtime_modules::is_node_builtin(&name)
+}
+
 fn write_flushed(output: &mut dyn Write, text: &str) {
     let _ = output.write_all(text.as_bytes());
     let _ = output.flush();
 }
 
+#[host_function]
 fn create_decoder<'js>(
     ctx: Ctx<'js>,
     label: String,
@@ -180,6 +220,7 @@ fn create_decoder<'js>(
     Ok(object)
 }
 
+#[host_function]
 fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, u8>> {
     if length > 65_536 {
         return Err(Exception::throw_range(
@@ -193,6 +234,7 @@ fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, 
     TypedArray::new(ctx, bytes)
 }
 
+#[host_function]
 fn detach_array_buffer(mut buffer: ArrayBuffer<'_>) {
     buffer.detach();
 }

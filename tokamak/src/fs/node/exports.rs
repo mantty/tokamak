@@ -1,7 +1,8 @@
 //! Native `node:fs` bindings for the tokamak `QuickJS` runtime.
 
-#[allow(clippy::wildcard_imports)]
 use super::*;
+#[allow(clippy::wildcard_imports)]
+use tokamak_macros::host_function;
 
 /// The native `node:fs` module name.
 pub const MODULE_NAME: &str = "node:fs";
@@ -27,12 +28,14 @@ pub fn install(ctx: &Ctx<'_>, vfs: &VfsHandle) -> rquickjs::Result<()> {
 }
 
 /// `process.cwd()`: the request VFS's working directory.
+#[host_function]
 pub fn working_directory(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     let vfs = vfs_handle(&ctx)?;
     Ok(lock(&vfs).working_directory().to_owned())
 }
 
 /// `process.chdir(directory)`.
+#[host_function]
 pub fn change_directory<'js>(ctx: Ctx<'js>, directory: Value<'js>) -> rquickjs::Result<()> {
     let Some(directory) = directory.as_string() else {
         return Err(throw_type_error(

@@ -32,6 +32,14 @@ use host::{HostModule, StorageHandle};
 
 include!(concat!(env!("OUT_DIR"), "/storage_builtins.rs"));
 
+/// The TypeScript signatures of the `tokamak:storage` module's exports.
+#[cfg(test)]
+pub(crate) fn declarations(
+    types: &mut crate::typescript::Types,
+) -> Vec<(&'static str, crate::typescript::Signature)> {
+    host::host_declarations(types)
+}
+
 /// The storage part's entry point, exported as [`crate::STORAGE_ENTRY_POINT`].
 #[unsafe(export_name = "tokamak_storage")]
 static ENTRY: StorageEntry = StorageEntry { open };

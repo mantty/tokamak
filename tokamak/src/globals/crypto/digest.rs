@@ -4,6 +4,7 @@ use md4::Md4;
 use rquickjs::class::Trace;
 use rquickjs::function::Opt;
 use rquickjs::{ArrayBuffer, Class, Ctx, Exception, JsLifetime, TypedArray};
+use tokamak_macros::host_function;
 
 use super::hash::{DynHmac, MacState, Md5Sha1};
 
@@ -19,6 +20,7 @@ pub(crate) struct DigestState {
     state: Option<State>,
 }
 
+#[host_function]
 pub(super) fn create<'js>(
     ctx: Ctx<'js>,
     algorithm: String,
@@ -57,6 +59,7 @@ pub(super) fn create<'js>(
     Class::instance(ctx, DigestState { state: Some(state) })
 }
 
+#[tokamak_macros::js_methods]
 #[rquickjs::methods]
 impl DigestState {
     pub fn update(&mut self, input: TypedArray<'_, u8>) -> rquickjs::Result<()> {

@@ -10,6 +10,7 @@ build = "build.rs"
 default = []
 native = [
     "dep:aes",
+    "dep:tokamak-macros",
     "dep:aes-kw",
     "dep:cbc",
     "dep:ctr",
@@ -134,6 +135,7 @@ rusqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokamak-macros = { path = "../tokamak-macros", optional = true }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }

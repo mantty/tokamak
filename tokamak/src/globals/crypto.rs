@@ -13,6 +13,7 @@ use ::rsa::traits::PublicKeyParts;
 use rquickjs::{ArrayBuffer, Ctx, Exception, Object, TypedArray};
 use serde_json::Value as JsonValue;
 use subtle::ConstantTimeEq;
+use tokamak_macros::host_function;
 
 use self::aes::{Mode, Stream};
 use self::curves::Curve;
@@ -20,7 +21,7 @@ use self::hash::Hash;
 use self::keys::{KeyError, KeyMaterial, Kind, PrivateKey, PublicKey};
 use super::native::throw_dom_exception;
 
-super::host_functions! {
+tokamak_macros::host_functions! {
     pub(super),
     "digest" => digest,
     "cryptoCreateDigest" => digest::create,
@@ -55,6 +56,7 @@ pub(super) fn rng() -> rand_core::UnwrapErr<getrandom::SysRng> {
     rand_core::UnwrapErr(getrandom::SysRng)
 }
 
+#[host_function]
 fn timing_safe_equal<'js>(
     ctx: Ctx<'js>,
     left: TypedArray<'js, u8>,
@@ -71,6 +73,7 @@ fn timing_safe_equal<'js>(
     Ok(left.ct_eq(right).into())
 }
 
+#[host_function]
 pub(super) fn digest<'js>(
     ctx: Ctx<'js>,
     algorithm: String,
@@ -81,6 +84,7 @@ pub(super) fn digest<'js>(
     ArrayBuffer::new_copy(ctx, hash.digest(&input))
 }
 
+#[host_function]
 pub(super) fn pbkdf2<'js>(
     ctx: Ctx<'js>,
     algorithm: String,
@@ -103,6 +107,7 @@ pub(super) fn pbkdf2<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 pub(super) fn hkdf<'js>(
     ctx: Ctx<'js>,
     algorithm: String,
@@ -123,6 +128,7 @@ pub(super) fn hkdf<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 pub(super) fn aes_gcm<'js>(
     ctx: Ctx<'js>,
     encrypt: bool,
@@ -281,11 +287,13 @@ fn aes_kw_operation(
     output.map_err(|error| operation_error(ctx, error.0))
 }
 
+#[host_function]
 fn host_generate_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
     let key = generate_key(&ctx, &options)?;
     key_object(&ctx, &KeyMaterial::Private(key))
 }
 
+#[host_function]
 fn host_import_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
     let input = optional_bytes(&ctx, &options, "key")?;
     let material = parse_key(&ctx, &input, &options)?;
@@ -320,6 +328,7 @@ fn key_object<'js>(ctx: &Ctx<'js>, material: &KeyMaterial) -> rquickjs::Result<O
     Ok(object)
 }
 
+#[host_function]
 fn host_export_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
     let format = required_string(&ctx, &options, "format")?;
     let key_format = required_string(&ctx, &options, "keyFormat")?;
@@ -346,6 +355,7 @@ fn host_export_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 fn host_sign<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
@@ -356,6 +366,7 @@ fn host_sign<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 fn host_verify<'js>(
     ctx: Ctx<'js>,
     signature: TypedArray<'js, u8>,
@@ -365,6 +376,7 @@ fn host_verify<'js>(
     verify_key(&ctx, &signature, &options)
 }
 
+#[host_function]
 fn host_encrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
@@ -378,6 +390,7 @@ fn host_encrypt<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 fn host_decrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
@@ -404,6 +417,7 @@ fn oaep_operands<'js>(
     Ok((material, hash, label))
 }
 
+#[host_function]
 fn host_derive<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
     let material = required_key(&ctx, &options)?;
     let peer = required_bytes(&ctx, &options, "peer")?;
@@ -421,6 +435,7 @@ fn host_derive<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Arr
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 fn host_check_prime<'js>(
     ctx: Ctx<'js>,
     candidate: TypedArray<'js, u8>,
@@ -437,6 +452,7 @@ fn host_check_prime<'js>(
     Ok(bignum::check_prime(&candidate))
 }
 
+#[host_function]
 fn host_generate_prime<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
@@ -456,6 +472,7 @@ fn host_generate_prime<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 fn host_scrypt<'js>(
     ctx: Ctx<'js>,
     password: TypedArray<'js, u8>,
@@ -522,6 +539,7 @@ fn ecdh_secret<'js>(
     Ok((curve, key))
 }
 
+#[host_function]
 fn host_ecdh_public<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
@@ -530,6 +548,7 @@ fn host_ecdh_public<'js>(
     ArrayBuffer::new_copy(ctx, curves::encode_point(&curves::public_of(&key), false))
 }
 
+#[host_function]
 fn host_ecdh_compute<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
@@ -541,6 +560,7 @@ fn host_ecdh_compute<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 fn host_ecdh_convert<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
@@ -553,6 +573,7 @@ fn host_ecdh_convert<'js>(
     ArrayBuffer::new_copy(ctx, curves::encode_point(&point, compressed))
 }
 
+#[host_function]
 fn host_dh_params<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
     let bits = required_u32(&ctx, &options, "bits")?;
     let generator: Option<u32> = options.get("generator")?;
@@ -564,6 +585,7 @@ fn host_dh_params<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<
     Ok(params)
 }
 
+#[host_function]
 fn host_dh_generate<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
     let prime = required_bytes(&ctx, &options, "prime")?;
     let generator = required_bytes(&ctx, &options, "generator")?;
@@ -579,6 +601,7 @@ fn host_dh_generate<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Resul
     Ok(keys)
 }
 
+#[host_function]
 fn host_dh_compute<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
     let prime = required_bytes(&ctx, &options, "prime")?;
     let private = required_bytes(&ctx, &options, "private")?;
@@ -588,6 +611,7 @@ fn host_dh_compute<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result
     ArrayBuffer::new_copy(ctx, &secret)
 }
 
+#[host_function]
 fn host_rsa_legacy_private_encrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
@@ -602,6 +626,7 @@ fn host_rsa_legacy_private_encrypt<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+#[host_function]
 fn host_rsa_legacy_public_decrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,

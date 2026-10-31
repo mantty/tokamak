@@ -1,10 +1,12 @@
 use rquickjs::{Ctx, Value, qjs};
+use tokamak_macros::host_function;
 
 unsafe extern "C" {
     fn JS_GetAsyncContext(ctx: *mut qjs::JSContext) -> qjs::JSValue;
     fn JS_SetAsyncContext(ctx: *mut qjs::JSContext, value: qjs::JSValue);
 }
 
+#[host_function]
 pub(super) fn get(ctx: Ctx<'_>) -> Value<'_> {
     // The engine returns an owned reference belonging to this context.
     let value = unsafe { JS_GetAsyncContext(ctx.as_raw().as_ptr()) };
@@ -12,6 +14,7 @@ pub(super) fn get(ctx: Ctx<'_>) -> Value<'_> {
 }
 
 #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+#[host_function]
 pub(super) fn set(value: Value<'_>) {
     // The engine retains its own reference; the argument remains borrowed.
     unsafe { JS_SetAsyncContext(value.ctx().as_raw().as_ptr(), value.as_raw()) };

@@ -3,6 +3,7 @@ use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
+use tokamak_macros::host_function;
 
 use futures_util::{FutureExt, TryStreamExt, future::LocalBoxFuture};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
@@ -41,6 +42,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE: Duration = Duration::from_secs(15);
 const ONE_TIME_BODY_REDIRECT: &str = "A request with a one-time-use body (it was initialized from a stream, not a buffer) encountered a redirect requiring the body to be retransmitted. To avoid this error in the future, construct this request from a buffer-like body initializer.";
 
+#[host_function]
 pub(crate) fn status_text(status: u16) -> &'static str {
     if status == 203 {
         return "Non-Authoritative Information";

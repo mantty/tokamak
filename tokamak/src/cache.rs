@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokamak_macros::host_function;
 
 use rquickjs::{Ctx, Exception, Object, TypedArray};
 
@@ -47,6 +48,7 @@ fn caches(ctx: &Ctx<'_>) -> rquickjs::Result<Arc<Caches>> {
         .ok_or_else(|| Exception::throw_internal(ctx, "caches are not available"))
 }
 
+#[host_function]
 pub(crate) fn cache_match(
     ctx: Ctx<'_>,
     name: String,
@@ -69,6 +71,7 @@ pub(crate) fn cache_match(
     Ok(Some(result))
 }
 
+#[host_function]
 pub(crate) fn cache_put<'js>(
     ctx: Ctx<'js>,
     name: String,
@@ -95,6 +98,7 @@ pub(crate) fn cache_put<'js>(
     Ok(())
 }
 
+#[host_function]
 pub(crate) fn cache_delete(ctx: Ctx<'_>, name: String, key: String) -> rquickjs::Result<bool> {
     let caches = caches(&ctx)?;
     let mut caches = lock(&caches.0);

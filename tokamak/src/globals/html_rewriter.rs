@@ -9,6 +9,7 @@ mod parser;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::thread::{self, JoinHandle};
+use tokamak_macros::host_function;
 
 use flume::{Receiver, Sender};
 use lol_html::AsciiCompatibleEncoding;
@@ -19,6 +20,7 @@ use serde_json::json;
 use parser::{Event, Handler, Port, Release, Releases, Reply};
 
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 pub(super) fn validate_selector(ctx: Ctx<'_>, selector: String) -> rquickjs::Result<()> {
     selector
         .parse::<lol_html::Selector>()
@@ -133,6 +135,7 @@ impl State {
 }
 
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 pub(super) fn rewrite_html<'js>(
     ctx: Ctx<'js>,
     handlers: String,

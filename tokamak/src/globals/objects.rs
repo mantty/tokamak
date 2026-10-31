@@ -1,8 +1,10 @@
 use super::checked;
 use rquickjs::{Ctx, Value, qjs};
+use tokamak_macros::host_function;
 
 // The class name comes from the engine, not a user-controlled toStringTag.
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 pub(super) fn class_name<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Value<'js>> {
     if value.is_proxy() {
         return Ok(rquickjs::String::from_str(ctx, "Proxy")?.into_value());

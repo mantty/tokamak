@@ -5,13 +5,13 @@
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokamak_macros::host_function;
 
 use super::kv::{Entry, Value};
 use super::r2::{BodyReader, BodyWriter, Failure, R2Bucket, Read};
 use super::{Storage, text};
 use crate::lock;
 use rquickjs::class::Trace;
-use rquickjs::function::Async;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{Class, Ctx, Exception, JsLifetime, Object, TypedArray};
 
@@ -41,7 +41,7 @@ impl ModuleDef for HostModule {
     }
 }
 
-crate::globals::host_functions! {
+tokamak_macros::host_functions! {
     pub(super),
     "d1Query" => Async(d1_query),
     "kvGet" => Async(kv_get),
@@ -68,7 +68,7 @@ crate::globals::host_functions! {
 }
 
 /// A body the R2 binding reads, chunk by chunk.
-#[derive(Trace, JsLifetime)]
+#[derive(Trace, JsLifetime, tokamak_macros::JsClass)]
 #[rquickjs::class(rename = "R2BodyReader")]
 pub(crate) struct Reader {
     #[qjs(skip_trace)]
@@ -76,7 +76,7 @@ pub(crate) struct Reader {
 }
 
 /// A body the R2 binding writes, chunk by chunk, before recording it.
-#[derive(Trace, JsLifetime)]
+#[derive(Trace, JsLifetime, tokamak_macros::JsClass)]
 #[rquickjs::class(rename = "R2BodyWriter")]
 pub(crate) struct Writer {
     #[qjs(skip_trace)]
@@ -84,7 +84,7 @@ pub(crate) struct Writer {
 }
 
 /// A value the KV binding writes, chunk by chunk, before storing it.
-#[derive(Trace, JsLifetime)]
+#[derive(Trace, JsLifetime, tokamak_macros::JsClass)]
 #[rquickjs::class(rename = "KvValueWriter")]
 pub(crate) struct ValueWriter {
     #[qjs(skip_trace)]
@@ -92,6 +92,7 @@ pub(crate) struct ValueWriter {
 }
 
 /// Resolve to `{ body, bookmark }`: a D1 service response for `binding`.
+#[host_function]
 async fn d1_query(
     ctx: Ctx<'_>,
     binding: String,
@@ -108,6 +109,7 @@ async fn d1_query(
 }
 
 /// Resolve to `{ value, metadata }` for an unexpired key, or null.
+#[host_function]
 async fn kv_get(
     ctx: Ctx<'_>,
     binding: String,
@@ -123,6 +125,7 @@ async fn kv_get(
 }
 
 /// Resolve to the entry, or null, for each key.
+#[host_function]
 async fn kv_get_many(
     ctx: Ctx<'_>,
     binding: String,
@@ -141,6 +144,7 @@ async fn kv_get_many(
 }
 
 /// A new value for the KV binding to write.
+#[host_function]
 fn kv_value(ctx: Ctx<'_>) -> rquickjs::Result<Class<'_, ValueWriter>> {
     let value = Value::default();
     Class::instance(ctx, ValueWriter { value })
@@ -148,12 +152,14 @@ fn kv_value(ctx: Ctx<'_>) -> rquickjs::Result<Class<'_, ValueWriter>> {
 
 /// Append `chunk` to the value `writer` writes.
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 fn kv_write<'js>(writer: Class<'js, ValueWriter>, chunk: TypedArray<'js, u8>) {
     let bytes = chunk.as_bytes().unwrap_or_default();
     writer.borrow_mut().value.write(bytes);
 }
 
 /// Store the value `writer` wrote under `key`, as the JSON `options` ask.
+#[host_function]
 async fn kv_put<'js>(
     ctx: Ctx<'js>,
     binding: String,
@@ -170,12 +176,14 @@ async fn kv_put<'js>(
     .await
 }
 
+#[host_function]
 async fn kv_delete(ctx: Ctx<'_>, binding: String, key: String) -> rquickjs::Result<()> {
     let storage = storage(&ctx)?;
     blocking(&ctx, move || storage.kv(&binding)?.delete(&key, now())).await
 }
 
 /// Resolve to a page of keys as JSON: `{ keys, cursor? }`.
+#[host_function]
 async fn kv_list(
     ctx: Ctx<'_>,
     binding: String,
@@ -192,6 +200,7 @@ async fn kv_list(
 }
 
 /// Resolve to the metadata of the object `key` as JSON, or null.
+#[host_function]
 async fn r2_head(ctx: Ctx<'_>, binding: String, key: String) -> rquickjs::Result<Option<String>> {
     in_bucket(&ctx, binding, move |bucket| {
         let object = bucket.head(&key)?;
@@ -203,6 +212,7 @@ async fn r2_head(ctx: Ctx<'_>, binding: String, key: String) -> rquickjs::Result
 /// Resolve to `{ object, body }` for the object `key`: its metadata as JSON,
 /// and a reader of the range `request` selects unless the object fails the
 /// request's conditions. Resolve to null when there is no object.
+#[host_function]
 async fn r2_get(
     ctx: Ctx<'_>,
     binding: String,
@@ -230,6 +240,7 @@ async fn r2_get(
 }
 
 /// Resolve to the next bytes `reader` reads, or null after the last.
+#[host_function]
 async fn r2_read<'js>(
     ctx: Ctx<'js>,
     reader: Class<'js, Reader>,
@@ -252,12 +263,14 @@ async fn r2_read<'js>(
 
 /// Close the file `reader` reads.
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 fn r2_close_body(reader: Class<'_, Reader>) {
     lock(&reader.borrow().body).take();
 }
 
 /// Resolve to a writer of a `length`-byte object body, checked against the
 /// JSON `checksum` when there is one.
+#[host_function]
 async fn r2_object_writer(
     ctx: Ctx<'_>,
     binding: String,
@@ -273,6 +286,7 @@ async fn r2_object_writer(
 }
 
 /// Resolve to a writer of a `length`-byte part body.
+#[host_function]
 async fn r2_part_writer(
     ctx: Ctx<'_>,
     binding: String,
@@ -283,6 +297,7 @@ async fn r2_part_writer(
 }
 
 /// Append `chunk` to the body `writer` writes.
+#[host_function]
 async fn r2_write<'js>(
     ctx: Ctx<'js>,
     writer: Class<'js, Writer>,
@@ -303,6 +318,7 @@ async fn r2_write<'js>(
 /// Record the body `writer` wrote as the object `key`, resolving to the
 /// object's metadata as JSON, or to null when the object it would replace
 /// fails the JSON `request`'s conditions.
+#[host_function]
 async fn r2_put<'js>(
     ctx: Ctx<'js>,
     binding: String,
@@ -319,11 +335,13 @@ async fn r2_put<'js>(
     .await
 }
 
+#[host_function]
 async fn r2_delete(ctx: Ctx<'_>, binding: String, keys: Vec<String>) -> rquickjs::Result<()> {
     in_bucket(&ctx, binding, move |bucket| bucket.delete(&keys)).await
 }
 
 /// Resolve to the page of the listing the JSON `request` asks for, as JSON.
+#[host_function]
 async fn r2_list(ctx: Ctx<'_>, binding: String, request: String) -> rquickjs::Result<String> {
     in_bucket(&ctx, binding, move |bucket| {
         let listing = bucket.list(&serde_json::from_str(&request)?)?;
@@ -334,6 +352,7 @@ async fn r2_list(ctx: Ctx<'_>, binding: String, request: String) -> rquickjs::Re
 
 /// Resolve to the ID of a new upload of the object `key`, which gets the
 /// JSON `metadata`.
+#[host_function]
 async fn r2_create_upload(
     ctx: Ctx<'_>,
     binding: String,
@@ -348,6 +367,7 @@ async fn r2_create_upload(
 
 /// Record the body `writer` wrote as part `number` of an upload, resolving to
 /// the part's etag.
+#[host_function]
 async fn r2_upload_part<'js>(
     ctx: Ctx<'js>,
     binding: String,
@@ -365,6 +385,7 @@ async fn r2_upload_part<'js>(
 
 /// Join the JSON `parts` of an upload into the object `key`, resolving to
 /// the object's metadata as JSON.
+#[host_function]
 async fn r2_complete_upload(
     ctx: Ctx<'_>,
     binding: String,
@@ -380,6 +401,7 @@ async fn r2_complete_upload(
     .await
 }
 
+#[host_function]
 async fn r2_abort_upload(
     ctx: Ctx<'_>,
     binding: String,

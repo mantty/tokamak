@@ -6,6 +6,7 @@ mod zstd;
 
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 use rquickjs::{Ctx, Exception, Function, TypedArray, function::MutFn};
+use tokamak_macros::host_function;
 
 enum Codec {
     Compress(Compress),
@@ -53,6 +54,7 @@ impl Codec {
 
 // rquickjs converts JavaScript string arguments to owned Rust strings.
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 pub(super) fn create<'js>(
     ctx: Ctx<'js>,
     format: String,

@@ -77,6 +77,8 @@ mod readiness;
 mod tls;
 #[cfg(feature = "native")]
 mod transport;
+#[cfg(test)]
+mod typescript;
 #[cfg(feature = "native")]
 mod worker_events;
 

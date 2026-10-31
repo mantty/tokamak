@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use tokamak_macros::host_function;
 
 use rquickjs::{Ctx, Exception, Function, Object, TypedArray};
 use serde::Deserialize;
@@ -85,6 +86,7 @@ impl Codec {
 
 // Arguments are owned conversions from JavaScript.
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 pub(in crate::globals) fn create<'js>(
     ctx: Ctx<'js>,
     mode: u8,

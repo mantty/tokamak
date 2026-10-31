@@ -1,6 +1,7 @@
 //! The runtime's public builtin modules: their names, and their namespaces.
 
 use rquickjs::{Ctx, Module, Object};
+use tokamak_macros::host_function;
 
 /// Each public module name with the module it resolves to.
 const PUBLIC_MODULES: &[(&str, &str)] = &[
@@ -144,6 +145,7 @@ pub(crate) fn is_node_builtin(name: &str) -> bool {
 }
 
 /// The names `node:module`'s `builtinModules` lists, in order.
+#[host_function]
 pub(crate) fn node_builtin_names() -> Vec<&'static str> {
     let mut names: Vec<_> = PUBLIC_MODULES
         .iter()

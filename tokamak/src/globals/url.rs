@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use tokamak_macros::host_function;
 use url::Url;
 use urlpattern::parser::RegexSyntax;
 use urlpattern::quirks::{self, StringOrInit};
@@ -38,7 +39,7 @@ impl Drop for RestoreCompiling {
     }
 }
 
-super::host_functions! {
+tokamak_macros::host_functions! {
     pub(super),
     "urlParse" => url_parse,
     "urlSetComponent" => url_set_component,
@@ -79,6 +80,7 @@ fn parse_url(ctx: &Ctx<'_>, input: &str, base: Option<&str>) -> rquickjs::Result
         .map_err(|_| invalid_url(ctx, input))
 }
 
+#[host_function]
 fn url_parse(ctx: Ctx<'_>, input: String, base: Option<String>) -> rquickjs::Result<Object<'_>> {
     let url = parse_url(&ctx, &input, base.as_deref())?;
     url_components(&ctx, &url)
@@ -87,6 +89,7 @@ fn url_parse(ctx: Ctx<'_>, input: String, base: Option<String>) -> rquickjs::Res
 /// Applies a WHATWG component-set algorithm and returns the resulting
 /// components. Per the spec, setter failures leave the URL unchanged; only
 /// the href setter throws on invalid input.
+#[host_function]
 fn url_set_component(
     ctx: Ctx<'_>,
     href: String,
@@ -112,6 +115,7 @@ fn url_set_component(
 }
 
 /// Serializes `[[name, value], ...]` JSON entries as application/x-www-form-urlencoded.
+#[host_function]
 fn encode_params(ctx: Ctx<'_>, entries: String) -> rquickjs::Result<String> {
     let pairs: Vec<(String, String)> = serde_json::from_str(&entries)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
@@ -121,6 +125,7 @@ fn encode_params(ctx: Ctx<'_>, entries: String) -> rquickjs::Result<String> {
 }
 
 /// Parses application/x-www-form-urlencoded input into `[[name, value], ...]` JSON.
+#[host_function]
 fn decode_params(ctx: Ctx<'_>, input: String) -> rquickjs::Result<String> {
     let pairs: Vec<(String, String)> = url::form_urlencoded::parse(input.as_bytes())
         .into_owned()
@@ -287,6 +292,7 @@ fn cached_pattern<'js>(
     Ok(pattern)
 }
 
+#[host_function]
 fn pattern_compile<'js>(
     ctx: Ctx<'js>,
     input: String,
@@ -325,6 +331,7 @@ fn pattern_compile<'js>(
 /// The component strings a URL or `URLPatternInit` input matches against, in
 /// `protocol` to `hash` order, or None when the input is not a URL, which
 /// the spec treats as no match.
+#[host_function]
 fn pattern_match_input(
     ctx: Ctx<'_>,
     input: String,

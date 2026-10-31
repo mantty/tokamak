@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::io;
 use std::rc::Rc;
 use std::time::Duration;
+use tokamak_macros::host_function;
 
 use futures_util::{
     FutureExt,
@@ -177,6 +178,7 @@ fn opening(
     }.boxed_local().shared()
 }
 
+#[host_function]
 pub(crate) fn start(
     ctx: Ctx<'_>,
     host: String,
