@@ -61,21 +61,16 @@ data class StoreOptions(
     val authentication: Authentication?,
     /** Whether backups restore the value only to this device, which Android always does. */
     val thisDeviceOnly: Boolean,
-    /** An Apple keychain feature, which Android rejects. */
     val keychainGroup: String?,
 )
 
 data class ReadOptions(
     /** The title of the system authentication prompt. */
     val prompt: String?,
-    /** An Apple keychain feature, which Android rejects. */
     val keychainGroup: String?,
 )
 
-data class GroupOptions(
-    /** An Apple keychain feature, which Android rejects. */
-    val keychainGroup: String?,
-)
+data class GroupOptions(val keychainGroup: String?)
 
 /**
  * Stores each value sealed with a random AES-GCM key, wrapped by an RSA key pair in the
@@ -145,6 +140,7 @@ class TokamakSecureStoragePlugin(
             }
         }
 
+    /** The options carry `keychainGroup`, an Apple keychain feature, for Android to reject. */
     private fun requireNoGroup(keychainGroup: String?) {
         if (keychainGroup != null) throw TokamakPluginError.notSupported("keychainGroup is an Apple keychain feature")
     }

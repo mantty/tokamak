@@ -21,13 +21,24 @@ pub(super) fn set(value: Value<'_>) {
 mod tests {
     use rquickjs::{Context, Function, Runtime};
 
-    #[test]
-    fn releases_abandoned_continuation_contexts() -> Result<(), Box<dyn std::error::Error>> {
+    /// A runtime and a context whose `setContext` global is installed.
+    fn context_with_setter() -> Result<(Runtime, Context), Box<dyn std::error::Error>> {
         let runtime = Runtime::new()?;
         let context = Context::full(&runtime)?;
+        context.with(|ctx| install_setter(&ctx))?;
+        Ok((runtime, context))
+    }
+
+    /// Install the `setContext` global the runtime bootstrap provides.
+    fn install_setter(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
+        ctx.globals()
+            .set("setContext", Function::new(ctx.clone(), super::set)?)
+    }
+
+    #[test]
+    fn releases_abandoned_continuation_contexts() -> Result<(), Box<dyn std::error::Error>> {
+        let (runtime, context) = context_with_setter()?;
         context.with(|ctx| -> rquickjs::Result<()> {
-            ctx.globals()
-                .set("setContext", Function::new(ctx.clone(), super::set)?)?;
             ctx.eval::<(), _>(
                 r"
                 globalThis.makeCycles = () => {
@@ -58,11 +69,8 @@ mod tests {
     fn releases_queued_contexts_when_runtime_is_dropped() -> Result<(), Box<dyn std::error::Error>>
     {
         for _ in 0..10 {
-            let runtime = Runtime::new()?;
-            let context = Context::full(&runtime)?;
+            let (_runtime, context) = context_with_setter()?;
             context.with(|ctx| -> rquickjs::Result<()> {
-                ctx.globals()
-                    .set("setContext", Function::new(ctx.clone(), super::set)?)?;
                 ctx.eval::<(), _>("setContext({}); queueMicrotask(() => {}); setContext(undefined)")
             })?;
         }

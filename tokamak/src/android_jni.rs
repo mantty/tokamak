@@ -3,12 +3,14 @@
 //! The shell owns the Activity, `WebView`, and lifecycle. This crate only
 //! moves values across the boundary; every decision belongs to the runtime.
 
+// jscpd:ignore-start: the Android and Apple boundaries import the same runtime types.
 use std::ffi::{CString, c_char, c_int};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bridge::{self, Shell};
 use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
+// jscpd:ignore-end
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{JNI_TRUE, jboolean, jint, jlong};
 use jni::{JNIEnv, JavaVM};
@@ -301,15 +303,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeEmit<'local
     event: JByteArray,
     timeout_millis: jlong,
 ) -> JByteArray<'local> {
-    let timeout = millis(timeout_millis);
-    let result = emit(&mut env, handle, &name, &event, timeout).and_then(|reply| {
-        env.byte_array_from_slice(&reply)
-            .map_err(|error| error.to_string())
-    });
-    result.unwrap_or_else(|message| {
-        let _ = env.throw_new(FAILURE, message);
-        JByteArray::from(JObject::null())
-    })
+    let reply = emit(&mut env, handle, &name, &event, millis(timeout_millis));
+    byte_array_or_throw(&mut env, reply)
 }
 
 /// Fetch what the app serves at `path`, blocking for up to
@@ -322,15 +317,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeFetch<'loca
     path: JString,
     timeout_millis: jlong,
 ) -> JByteArray<'local> {
-    let timeout = millis(timeout_millis);
-    let result = fetch(&mut env, handle, &path, timeout).and_then(|body| {
-        env.byte_array_from_slice(&body)
-            .map_err(|error| error.to_string())
-    });
-    result.unwrap_or_else(|message| {
-        let _ = env.throw_new(FAILURE, message);
-        JByteArray::from(JObject::null())
-    })
+    let body = fetch(&mut env, handle, &path, millis(timeout_millis));
+    byte_array_or_throw(&mut env, body)
 }
 
 /// Return `[certificate, private key]` in DER for `host`, or null when tokamak
@@ -475,6 +463,22 @@ fn identity<'local>(
     env.set_object_array_element(&array, 0, env.byte_array_from_slice(certificate)?)?;
     env.set_object_array_element(&array, 1, env.byte_array_from_slice(private_key)?)?;
     Ok(array)
+}
+
+/// `bytes` in a new Java array. When `bytes` is an error or the array cannot be
+/// made, throws `FAILURE` and returns null.
+fn byte_array_or_throw<'local>(
+    env: &mut JNIEnv<'local>,
+    bytes: Result<Vec<u8>, String>,
+) -> JByteArray<'local> {
+    let array = bytes.and_then(|bytes| {
+        env.byte_array_from_slice(&bytes)
+            .map_err(|error| error.to_string())
+    });
+    array.unwrap_or_else(|message| {
+        let _ = env.throw_new(FAILURE, message);
+        null_array()
+    })
 }
 
 fn null_array<'local>() -> JByteArray<'local> {

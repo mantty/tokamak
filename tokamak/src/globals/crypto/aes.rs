@@ -211,9 +211,11 @@ impl<C: BlockCipherDecrypt + KeyInit> Stream for CbcDecrypt<C> {
         Ok(self.decrypt(&ready))
     }
 
+    // jscpd:ignore-start: CBC encryption and decryption switch padding alike.
     fn set_padding(&mut self, enabled: bool) {
         self.padding = enabled;
     }
+    // jscpd:ignore-end
 
     fn finish(mut self: Box<Self>) -> Result<Finished, Failure> {
         if !self.padding {

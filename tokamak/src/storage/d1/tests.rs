@@ -248,8 +248,29 @@ fn reports_results_and_metadata_as_local_d1_does() -> TestResult {
     );
 
     let inserted: Json = serde_json::from_str(&body)?;
-    let meta = &inserted[0]["meta"];
     assert_eq!(inserted[0]["success"], json!(true));
+    assert!(
+        objects.starts_with(
+            r#"[{"success":true,"results":[{"id":1,"name":"a","data":[1,2]}],"meta":{"served_by""#
+        ),
+        "{objects}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reports_the_metadata_of_a_write_as_local_d1_does() -> TestResult {
+    let (_directory, database) = database()?;
+    rows(
+        &database,
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, data BLOB)",
+    )?;
+    let insert =
+        json!({ "sql": "INSERT INTO t (name, data) VALUES (?, ?)", "params": ["a", [1, 2]] });
+    let (body, _) = database.query(&insert.to_string(), "NONE");
+
+    let inserted: Json = serde_json::from_str(&body)?;
+    let meta = &inserted[0]["meta"];
     assert_eq!(meta["served_by"], json!("tokamak.db"));
     assert_eq!(meta["total_attempts"], json!(1));
     assert_eq!(meta["changes"], json!(1));
@@ -258,12 +279,6 @@ fn reports_results_and_metadata_as_local_d1_does() -> TestResult {
     assert_eq!(meta["rows_written"], json!(1));
     assert!(meta["size_after"].as_u64().is_some_and(|size| size > 0));
     assert!(meta["duration"].as_f64().is_some());
-    assert!(
-        objects.starts_with(
-            r#"[{"success":true,"results":[{"id":1,"name":"a","data":[1,2]}],"meta":{"served_by""#
-        ),
-        "{objects}"
-    );
     Ok(())
 }
 

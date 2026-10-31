@@ -427,10 +427,7 @@ pub unsafe extern "C" fn tokamak_runtime_server_authority(
         return DECISION_CANCEL;
     }
     unsafe { authority.write(TokamakBytes::empty()) };
-    let Some(runtime) = (unsafe { runtime(handle) }) else {
-        return DECISION_CANCEL;
-    };
-    let Some(host) = (unsafe { text(host) }) else {
+    let Some((runtime, host)) = (unsafe { challenge_inputs(handle, host) }) else {
         return DECISION_CANCEL;
     };
     match runtime
@@ -463,10 +460,7 @@ pub unsafe extern "C" fn tokamak_runtime_client_identity(
         return DECISION_CANCEL;
     }
     unsafe { identity.write(TokamakIdentity::empty()) };
-    let Some(runtime) = (unsafe { runtime(handle) }) else {
-        return DECISION_CANCEL;
-    };
-    let Some(host) = (unsafe { text(host) }) else {
+    let Some((runtime, host)) = (unsafe { challenge_inputs(handle, host) }) else {
         return DECISION_CANCEL;
     };
     match runtime
@@ -625,6 +619,16 @@ unsafe fn text<'value>(value: *const c_char) -> Option<&'value str> {
         return None;
     }
     unsafe { CStr::from_ptr(value) }.to_str().ok()
+}
+
+/// The runtime and host of a challenge, when `handle` and `host` are usable.
+unsafe fn challenge_inputs<'a>(
+    handle: *const c_void,
+    host: *const c_char,
+) -> Option<(&'a Runtime, &'a str)> {
+    let runtime = unsafe { runtime(handle) }?;
+    let host = unsafe { text(host) }?;
+    Some((runtime, host))
 }
 
 fn write_error(output: *mut c_char, capacity: usize, message: &str) {

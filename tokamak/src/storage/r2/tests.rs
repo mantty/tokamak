@@ -333,12 +333,6 @@ fn lists_keys_in_order_rolling_up_delimited_prefixes() -> TestResult {
     }
 
     let all = bucket.list(&request(&json!({ "prefix": "l/" }))?)?;
-    let grouped = bucket.list(&request(&json!({ "prefix": "l/", "delimiter": "/" }))?)?;
-    let nested = bucket.list(&request(&json!({ "prefix": "l/b/", "delimiter": "/" }))?)?;
-    let after = bucket.list(&request(
-        &json!({ "prefix": "l/", "startAfter": "l/b/2", "delimiter": "/" }),
-    )?)?;
-
     assert_eq!(
         keys(&all),
         [
@@ -356,13 +350,41 @@ fn lists_keys_in_order_rolling_up_delimited_prefixes() -> TestResult {
         ]
     );
     assert!(!all.truncated && all.cursor.is_none());
+    assert_eq!(all.objects[0].http_metadata, None);
+    Ok(())
+}
+
+#[test]
+fn rolls_up_delimited_prefixes_as_workerd_does() -> TestResult {
+    let (_directory, bucket) = bucket()?;
+    for key in [
+        "l/a",
+        "l/b/1",
+        "l/b/2",
+        "l/b/c/3",
+        "l/b/d",
+        "l/b0",
+        "l/c",
+        "l/c/",
+        "l/c//x",
+        "l/é/1",
+        "l/\u{1F600}",
+    ] {
+        put(&bucket, key, b"")?;
+    }
+
+    let grouped = bucket.list(&request(&json!({ "prefix": "l/", "delimiter": "/" }))?)?;
+    let nested = bucket.list(&request(&json!({ "prefix": "l/b/", "delimiter": "/" }))?)?;
+    let after = bucket.list(&request(
+        &json!({ "prefix": "l/", "startAfter": "l/b/2", "delimiter": "/" }),
+    )?)?;
+
     assert_eq!(keys(&grouped), ["l/a", "l/b0", "l/c", "l/\u{1F600}"]);
     assert_eq!(grouped.delimited_prefixes, ["l/b/", "l/c/", "l/é/"]);
     assert_eq!(keys(&nested), ["l/b/1", "l/b/2", "l/b/d"]);
     assert_eq!(nested.delimited_prefixes, ["l/b/c/"]);
     assert_eq!(keys(&after), ["l/b0", "l/c", "l/\u{1F600}"]);
     assert_eq!(after.delimited_prefixes, ["l/b/", "l/c/", "l/é/"]);
-    assert_eq!(all.objects[0].http_metadata, None);
     Ok(())
 }
 

@@ -1707,12 +1707,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn signing_inventory_reports_unmatched_and_unreadable_profiles() -> anyhow::Result<()> {
-        let mut bytes = Vec::new();
-        profile_value("TEAM.com.example.app", "DEVICE").to_writer_xml(&mut bytes)?;
-        let profile = parse_profile(
+        let profile = parsed_profile(
             Platform::Ios,
-            Path::new("/profiles/dev.mobileprovision"),
-            &bytes,
+            "/profiles/dev.mobileprovision",
+            &profile_value("TEAM.com.example.app", "DEVICE"),
         )?;
         let error = anyhow::anyhow!("invalid profile").context("/profiles/broken.mobileprovision");
         let output = super::signing_inventory(&[], &[Ok(profile), Err(error)])?;
@@ -1783,25 +1781,7 @@ mod tests {
         ];
         let mut profiles = Vec::new();
         for (team_id, identity) in ["TEAMAAAAAA", "TEAMBBBBBB"].iter().zip(&identities) {
-            let mut value = profile_value(&format!("{team_id}.com.example.app"), "DEVICE");
-            let root = value
-                .as_dictionary_mut()
-                .context("profile fixture is a dictionary")?;
-            root.insert(
-                "TeamIdentifier".to_owned(),
-                Value::Array(vec![Value::String((*team_id).to_owned())]),
-            );
-            root.insert(
-                "DeveloperCertificates".to_owned(),
-                Value::Array(vec![Value::Data(identity.certificate_der.clone())]),
-            );
-            let mut bytes = Vec::new();
-            value.to_writer_xml(&mut bytes)?;
-            profiles.push(parse_profile(
-                Platform::Ios,
-                Path::new("profile.mobileprovision"),
-                &bytes,
-            )?);
+            profiles.push(team_profile(identity, team_id, "com.example.app")?);
         }
         let project = tempfile::tempdir()?;
         for device_id in [Some("DEVICE"), None] {
@@ -1905,23 +1885,74 @@ mod tests {
         Value::Dictionary(root)
     }
 
-    #[test]
-    fn parses_and_matches_a_development_profile() -> Result<(), Box<dyn std::error::Error>> {
-        let value = profile_value("TEAM.com.example.app", "DEVICE");
-        let mut bytes = Vec::new();
-        value.to_writer_xml(&mut bytes)?;
-        let profile = parse_profile(
-            Platform::Ios,
-            Path::new("PROFILE-1.mobileprovision"),
-            &bytes,
-        )?;
-        let identity = Identity {
-            name: "Apple Development: Test".to_owned(),
+    /// The identity whose certificate `profile_value` declares.
+    fn profile_identity(name: &str) -> Identity {
+        Identity {
+            name: name.to_owned(),
             fingerprint: fingerprint(&[1, 2, 3]),
             selector: sha1_fingerprint(&[1, 2, 3]),
             certificate_der: vec![1, 2, 3],
-        };
+        }
+    }
 
+    /// Serializes `value` and parses it back as the profile at `path`.
+    fn parsed_profile(
+        platform: Platform,
+        path: &str,
+        value: &Value,
+    ) -> anyhow::Result<crate::Profile> {
+        let mut bytes = Vec::new();
+        value.to_writer_xml(&mut bytes)?;
+        parse_profile(platform, Path::new(path), &bytes)
+    }
+
+    /// The profile of `identity`'s `team_id` for `bundle_id`.
+    #[cfg(target_os = "macos")]
+    fn team_profile(
+        identity: &Identity,
+        team_id: &str,
+        bundle_id: &str,
+    ) -> anyhow::Result<crate::Profile> {
+        let mut value = profile_value(&format!("{team_id}.{bundle_id}"), "DEVICE");
+        let root = value
+            .as_dictionary_mut()
+            .context("profile fixture is a dictionary")?;
+        root.insert(
+            "TeamIdentifier".to_owned(),
+            Value::Array(vec![Value::String(team_id.to_owned())]),
+        );
+        root.insert(
+            "DeveloperCertificates".to_owned(),
+            Value::Array(vec![Value::Data(identity.certificate_der.clone())]),
+        );
+        parsed_profile(Platform::Ios, "profile.mobileprovision", &value)
+    }
+
+    /// An expired profile of `team_id` for `bundle_id`, named `name`.
+    #[cfg(target_os = "macos")]
+    fn expired_profile(
+        name: &str,
+        team_id: &str,
+        bundle_id: &str,
+        certificate: Vec<u8>,
+    ) -> Profile {
+        crate::Profile {
+            path: Path::new(&format!("{}.mobileprovision", name.to_lowercase())).to_owned(),
+            id: name.to_lowercase(),
+            name: name.to_owned(),
+            team_id: team_id.to_owned(),
+            application_identifier: format!("{team_id}.{bundle_id}"),
+            created: SystemTime::now() - Duration::from_hours(1),
+            expiration: SystemTime::now() - Duration::from_secs(1),
+            expiration_label: String::new(),
+            devices: vec!["DEVICE".to_owned()],
+            developer_certificates: vec![certificate],
+            entitlements: Dictionary::new(),
+        }
+    }
+
+    /// Assert the fields `profile_value` gives a development profile and its identity.
+    fn assert_development_profile(profile: &crate::Profile, identity: &Identity) {
         assert_eq!(profile.path, Path::new("PROFILE-1.mobileprovision"));
         assert_eq!(profile.id, "PROFILE-1");
         assert_eq!(profile.name, "Development");
@@ -1930,18 +1961,35 @@ mod tests {
         assert_eq!(identity.name, "Apple Development: Test");
         assert_eq!(identity.fingerprint, fingerprint(&[1, 2, 3]));
         assert_eq!(identity.selector, sha1_fingerprint(&[1, 2, 3]));
-        assert!(profile.matches("com.example.app", Some("DEVICE"), &identity));
-        assert!(!profile.matches("com.example.other", Some("DEVICE"), &identity));
-        assert!(!profile.matches("com.example.app", Some("OTHER"), &identity));
-        assert!(profile.matches("com.example.app", None, &identity));
+    }
+
+    #[test]
+    fn parses_and_matches_a_development_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let profile = parsed_profile(
+            Platform::Ios,
+            "PROFILE-1.mobileprovision",
+            &profile_value("TEAM.com.example.app", "DEVICE"),
+        )?;
+        let identity = profile_identity("Apple Development: Test");
+        assert_development_profile(&profile, &identity);
+        for (bundle_id, device_id, matches) in [
+            ("com.example.app", Some("DEVICE"), true),
+            ("com.example.other", Some("DEVICE"), false),
+            ("com.example.app", Some("OTHER"), false),
+            ("com.example.app", None, true),
+        ] {
+            assert_eq!(profile.matches(bundle_id, device_id, &identity), matches);
+        }
         Ok(())
     }
 
     #[test]
     fn names_a_declared_entitlement_the_profile_does_not_permit() -> anyhow::Result<()> {
-        let mut bytes = Vec::new();
-        profile_value("TEAM.com.example.app", "DEVICE").to_writer_xml(&mut bytes)?;
-        let profile = parse_profile(Platform::Ios, Path::new("profile"), &bytes)?;
+        let profile = parsed_profile(
+            Platform::Ios,
+            "profile",
+            &profile_value("TEAM.com.example.app", "DEVICE"),
+        )?;
         let mut declared = Dictionary::new();
         declared.insert(
             "aps-environment".to_owned(),
@@ -1964,19 +2012,8 @@ mod tests {
             .as_dictionary_mut()
             .context("profile dictionary")?
             .remove("ProvisionedDevices");
-        let mut bytes = Vec::new();
-        value.to_writer_xml(&mut bytes)?;
-        let profile = parse_profile(
-            Platform::Ios,
-            Path::new("distribution.mobileprovision"),
-            &bytes,
-        )?;
-        let identity = Identity {
-            name: "Apple Distribution: Test".to_owned(),
-            fingerprint: fingerprint(&[1, 2, 3]),
-            selector: sha1_fingerprint(&[1, 2, 3]),
-            certificate_der: vec![1, 2, 3],
-        };
+        let profile = parsed_profile(Platform::Ios, "distribution.mobileprovision", &value)?;
+        let identity = profile_identity("Apple Distribution: Test");
         assert!(profile.devices.is_empty());
         assert!(!profile.matches("com.example.app", None, &identity));
         assert!(!profile.matches("com.example.app", Some("DEVICE"), &identity));
@@ -2024,7 +2061,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_profiles_for_other_platforms() -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_profiles_for_other_platforms() {
         let mut value = profile_value("TEAM.com.example.app", "DEVICE");
         let Value::Dictionary(root) = &mut value else {
             unreachable!("profile fixture is a dictionary");
@@ -2033,18 +2070,7 @@ mod tests {
             "Platform".to_owned(),
             Value::Array(vec![Value::String("macOS".to_owned())]),
         );
-        let mut bytes = Vec::new();
-        value.to_writer_xml(&mut bytes)?;
-
-        assert!(
-            parse_profile(
-                Platform::Ios,
-                Path::new("PROFILE-1.mobileprovision"),
-                &bytes
-            )
-            .is_err()
-        );
-        Ok(())
+        assert!(parsed_profile(Platform::Ios, "PROFILE-1.mobileprovision", &value).is_err());
     }
 
     #[test]
@@ -2061,21 +2087,12 @@ mod tests {
             "Platform".to_owned(),
             Value::Array(vec![Value::String("OSX".to_owned())]),
         );
-        let mut bytes = Vec::new();
-        value.to_writer_xml(&mut bytes)?;
-        let identity = Identity {
-            name: "Apple Development: Test".to_owned(),
-            fingerprint: fingerprint(&[1, 2, 3]),
-            selector: sha1_fingerprint(&[1, 2, 3]),
-            certificate_der: vec![1, 2, 3],
-        };
-
-        let path = Path::new("PROFILE-1.provisionprofile");
-        let profile = parse_profile(Platform::Macos, path, &bytes)?;
+        let profile = parsed_profile(Platform::Macos, "PROFILE-1.provisionprofile", &value)?;
+        let identity = profile_identity("Apple Development: Test");
         assert_eq!(profile.application_identifier, "TEAM.com.example.app");
         assert!(profile.matches("com.example.app", Some("MAC"), &identity));
         assert!(!profile.matches("com.example.app", Some("OTHER-MAC"), &identity));
-        assert!(parse_profile(Platform::Ios, path, &bytes).is_err());
+        assert!(parsed_profile(Platform::Ios, "PROFILE-1.provisionprofile", &value).is_err());
         Ok(())
     }
 
@@ -2134,23 +2151,7 @@ mod tests {
             (&identities[0], "PERSONAL", "com.tokamak.old-app"),
             (&identities[1], "COMPANY", "com.example.other"),
         ] {
-            let mut value = profile_value(&format!("{team_id}.{bundle_id}"), "DEVICE");
-            let root = value.as_dictionary_mut().context("profile dictionary")?;
-            root.insert(
-                "TeamIdentifier".to_owned(),
-                Value::Array(vec![Value::String(team_id.to_owned())]),
-            );
-            root.insert(
-                "DeveloperCertificates".to_owned(),
-                Value::Array(vec![Value::Data(identity.certificate_der.clone())]),
-            );
-            let mut bytes = Vec::new();
-            value.to_writer_xml(&mut bytes)?;
-            profiles.push(parse_profile(
-                Platform::Ios,
-                Path::new("profile.mobileprovision"),
-                &bytes,
-            )?);
+            profiles.push(team_profile(identity, team_id, bundle_id)?);
         }
         let project = tempfile::tempdir()?;
         let mut deviceless = profiles[1].clone();
@@ -2193,32 +2194,8 @@ mod tests {
             },
         ];
         let profiles = vec![
-            Profile {
-                path: Path::new("personal.mobileprovision").to_owned(),
-                id: "personal".to_owned(),
-                name: "Personal".to_owned(),
-                team_id: "PERSONAL".to_owned(),
-                application_identifier: "PERSONAL.com.tokamak.old-app".to_owned(),
-                created: SystemTime::now() - Duration::from_hours(1),
-                expiration: SystemTime::now() - Duration::from_secs(1),
-                expiration_label: String::new(),
-                devices: vec!["DEVICE".to_owned()],
-                developer_certificates: vec![vec![1, 2, 3]],
-                entitlements: Dictionary::new(),
-            },
-            Profile {
-                path: Path::new("company.mobileprovision").to_owned(),
-                id: "company".to_owned(),
-                name: "Company".to_owned(),
-                team_id: "COMPANY".to_owned(),
-                application_identifier: "COMPANY.com.example.other".to_owned(),
-                created: SystemTime::now() - Duration::from_hours(1),
-                expiration: SystemTime::now() - Duration::from_secs(1),
-                expiration_label: String::new(),
-                devices: vec!["DEVICE".to_owned()],
-                developer_certificates: vec![vec![4, 5, 6]],
-                entitlements: Dictionary::new(),
-            },
+            expired_profile("Personal", "PERSONAL", "com.tokamak.old-app", vec![1, 2, 3]),
+            expired_profile("Company", "COMPANY", "com.example.other", vec![4, 5, 6]),
         ];
 
         assert_eq!(

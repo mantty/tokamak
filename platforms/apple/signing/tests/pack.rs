@@ -441,7 +441,17 @@ public final class {name}: TokamakPlugin {{
 #[test]
 fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     let fixture = Fixture::new("macos-arm64")?;
-    // Each plugin is its own module, so their sources may share a file name.
+    stage_demo_plugins(&fixture)?;
+    // A plugin's package resources reach the bundle, where `Bundle.module` finds them.
+    add_location_resource_bundle(&fixture)?;
+
+    run(&mut fixture.build())?;
+    assert_macos_bundle(&fixture)?;
+    Ok(())
+}
+
+/// Stages the demo app's three plugins, each its own module, so their sources may share a file name.
+fn stage_demo_plugins(fixture: &Fixture) -> Result<()> {
     for (id, class) in [
         ("location", "TokamakLocation.TokamakLocationPlugin"),
         ("echo", "TokamakEcho.TokamakEchoPlugin"),
@@ -449,7 +459,11 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     ] {
         stage_plugin(&fixture.input(), id, class)?;
     }
-    // A plugin's package resources reach the bundle, where `Bundle.module` finds them.
+    Ok(())
+}
+
+/// Gives the location plugin a package resource and a usage description.
+fn add_location_resource_bundle(fixture: &Fixture) -> Result<()> {
     let plugin = fixture.input().join("plugins/location");
     let manifest = fs::read_to_string(plugin.join("native/Package.swift"))?;
     fs::write(
@@ -475,9 +489,11 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
 </plist>
 "#,
     )?;
+    Ok(())
+}
 
-    run(&mut fixture.build())?;
-
+/// Asserts the packed macOS bundle serves the app, its plugins and their resources.
+fn assert_macos_bundle(fixture: &Fixture) -> Result<()> {
     let bundle = fixture.output();
     assert!(bundle.join("Contents/MacOS/demo-app").is_file());
     assert_eq!(
@@ -498,15 +514,23 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     assert!(plist.contains_key("NSLocationUsageDescription"));
     assert!(!plist.contains_key("CFBundleIconName"));
     assert!(!bundle.join("Contents/Resources/Assets.car").exists());
-    let mut resource_bundles = Vec::new();
+    assert_eq!(
+        resource_bundles(&bundle)?,
+        ["TokamakLocation_TokamakLocation.bundle"]
+    );
+    Ok(())
+}
+
+/// The names of the `.bundle` directories in the app bundle's Resources.
+fn resource_bundles(bundle: &std::path::Path) -> Result<Vec<String>> {
+    let mut bundles = Vec::new();
     for entry in fs::read_dir(bundle.join("Contents/Resources"))? {
         let name = entry?.file_name().to_string_lossy().into_owned();
         if name.ends_with(".bundle") {
-            resource_bundles.push(name);
+            bundles.push(name);
         }
     }
-    assert_eq!(resource_bundles, ["TokamakLocation_TokamakLocation.bundle"]);
-    Ok(())
+    Ok(bundles)
 }
 
 #[test]

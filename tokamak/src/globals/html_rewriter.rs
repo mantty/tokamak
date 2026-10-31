@@ -294,6 +294,18 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+    /// The handlers the runtime keeps after registering `handler` on `tag`.
+    fn expected_release(tag: &str, handler: i32) -> serde_json::Value {
+        let kept = if tag == "br" {
+            Some(handler)
+        } else if handler > 1 {
+            Some(handler - 1)
+        } else {
+            None
+        };
+        kept.map_or(json!([]), |id| json!([{"kind":"handler","id":id}]))
+    }
+
     fn released(state: &State) -> serde_json::Value {
         serde_json::to_value(state.take_releases()).unwrap_or_default()
     }
@@ -321,17 +333,7 @@ mod tests {
                     .map_err(|_| "operation send failed")?;
                 let accepted = response.recv_timeout(Duration::from_secs(2))?.is_ok();
                 assert_eq!(accepted, tag == "p");
-                let expected = if tag == "br" {
-                    Some(handler)
-                } else if handler > 1 {
-                    Some(handler - 1)
-                } else {
-                    None
-                };
-                assert_eq!(
-                    released(&state),
-                    expected.map_or(json!([]), |id| json!([{"kind":"handler","id":id}]))
-                );
+                assert_eq!(released(&state), expected_release(tag, handler));
             }
             state.stop()?;
             assert_eq!(
@@ -347,47 +349,7 @@ mod tests {
         for boundary in ["input", "token", "output"] {
             let (finished, completion) = flume::bounded(1);
             let check = thread::spawn(move || -> Result<(), String> {
-                let (handlers, input) = match boundary {
-                    "input" => ("[]", None),
-                    "token" => (
-                        r#"[{"selector":"p","element":0}]"#,
-                        Some(b"<p>hello</p>".to_vec()),
-                    ),
-                    _ => ("[]", Some(vec![b'x'; 65536])),
-                };
-                let mut state = State::new(
-                    parser::handlers(handlers).map_err(|error| error.to_string())?,
-                    AsciiCompatibleEncoding::utf_8(),
-                );
-                let events = state
-                    .events()?
-                    .ok_or_else(|| "event channel closed".to_owned())?;
-                let first = events
-                    .recv_timeout(Duration::from_secs(2))
-                    .map_err(|error| error.to_string())?;
-                assert!(matches!(first, Event::Input(0)));
-                if let Some(bytes) = input {
-                    state
-                        .replies()
-                        .ok_or_else(|| "replies missing".to_owned())?
-                        .send(Reply::Input(Some(bytes)))
-                        .map_err(|error| error.to_string())?;
-                    let event = events
-                        .recv_timeout(Duration::from_secs(2))
-                        .map_err(|error| error.to_string())?;
-                    assert!(
-                        matches!(
-                            (boundary, event),
-                            ("token", Event::Token { .. }) | ("output", Event::Output(_))
-                        ),
-                        "expected a {boundary} event"
-                    );
-                }
-                // Keep a receiver alive: merely dropping the output receiver must
-                // not be necessary to interrupt a blocked send or handler reply.
-                drop(state);
-                while events.recv_timeout(Duration::from_secs(2)).is_ok() {}
-                assert!(events.is_disconnected());
+                drop_blocked_rewriter(boundary)?;
                 finished.send(()).map_err(|error| error.to_string())
             });
             completion
@@ -395,6 +357,52 @@ mod tests {
                 .map_err(|_| "HTML parser did not stop and join")?;
             check.join().map_err(|_| "check thread panicked")??;
         }
+        Ok(())
+    }
+
+    /// Drops a rewriter blocked at `boundary` and checks that its parser stops.
+    fn drop_blocked_rewriter(boundary: &str) -> Result<(), String> {
+        let (handlers, input) = match boundary {
+            "input" => ("[]", None),
+            "token" => (
+                r#"[{"selector":"p","element":0}]"#,
+                Some(b"<p>hello</p>".to_vec()),
+            ),
+            _ => ("[]", Some(vec![b'x'; 65536])),
+        };
+        let mut state = State::new(
+            parser::handlers(handlers).map_err(|error| error.to_string())?,
+            AsciiCompatibleEncoding::utf_8(),
+        );
+        let events = state
+            .events()?
+            .ok_or_else(|| "event channel closed".to_owned())?;
+        let first = events
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| error.to_string())?;
+        assert!(matches!(first, Event::Input(0)));
+        if let Some(bytes) = input {
+            state
+                .replies()
+                .ok_or_else(|| "replies missing".to_owned())?
+                .send(Reply::Input(Some(bytes)))
+                .map_err(|error| error.to_string())?;
+            let event = events
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|error| error.to_string())?;
+            assert!(
+                matches!(
+                    (boundary, event),
+                    ("token", Event::Token { .. }) | ("output", Event::Output(_))
+                ),
+                "expected a {boundary} event"
+            );
+        }
+        // Keep a receiver alive: merely dropping the output receiver must
+        // not be necessary to interrupt a blocked send or handler reply.
+        drop(state);
+        while events.recv_timeout(Duration::from_secs(2)).is_ok() {}
+        assert!(events.is_disconnected());
         Ok(())
     }
 }

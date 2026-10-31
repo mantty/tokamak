@@ -187,103 +187,101 @@ fn html_path(handling: HtmlHandling, path: &str) -> String {
 /// The assets that may serve `path` under `handling`, in the order
 /// Cloudflare's asset worker tries them.
 fn html_steps(handling: HtmlHandling, path: &str) -> Vec<Step> {
-    match handling {
-        HtmlHandling::AutoTrailingSlash => auto_trailing_slash(path),
-        HtmlHandling::ForceTrailingSlash => force_trailing_slash(path),
-        HtmlHandling::DropTrailingSlash => drop_trailing_slash(path),
-        HtmlHandling::None => vec![serve(path)],
+    let mut steps = page_steps(handling, path);
+    steps.extend(form_steps(handling, path));
+    steps
+}
+
+/// The shapes of `path` that trailing-slash handling treats specially, each
+/// carrying the path that remains once its suffix is removed.
+#[derive(Clone, Copy)]
+enum PageShape<'a> {
+    /// `…/index`
+    Index(&'a str),
+    /// `…/index.html`
+    IndexHtml(&'a str),
+    /// `…/`
+    TrailingSlash(&'a str),
+    /// `….html`
+    Html(&'a str),
+    /// Any other path.
+    Other,
+}
+
+fn page_shape(path: &str) -> PageShape<'_> {
+    if let Some(page) = path.strip_suffix("/index") {
+        PageShape::Index(page)
+    } else if let Some(page) = path.strip_suffix("/index.html") {
+        PageShape::IndexHtml(page)
+    } else if let Some(page) = path.strip_suffix('/') {
+        PageShape::TrailingSlash(page)
+    } else if let Some(page) = path.strip_suffix(".html") {
+        PageShape::Html(page)
+    } else {
+        PageShape::Other
     }
 }
 
-fn auto_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = if let Some(page) = path.strip_suffix("/index") {
-        vec![
+/// The assets for the page that `path` names under `handling`, tried before
+/// the forms of `path` itself.
+fn page_steps(handling: HtmlHandling, path: &str) -> Vec<Step> {
+    use HtmlHandling::{AutoTrailingSlash, DropTrailingSlash, ForceTrailingSlash};
+    use PageShape::{Html, Index, IndexHtml, Other, TrailingSlash};
+    match (handling, page_shape(path)) {
+        (DropTrailingSlash, _) if path == "/" => vec![serve("/index.html")],
+        (AutoTrailingSlash | ForceTrailingSlash, Index(page)) => vec![
             serve(path),
             redirect(format!("{path}.html")),
             redirect(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix("/index.html") {
-        vec![redirect(path), redirect(format!("{page}.html"))]
-    } else if let Some(page) = path.strip_suffix('/') {
-        vec![
+        ],
+        (DropTrailingSlash, Index(page)) => vec![
+            serve(path),
+            redirect(format!("{page}.html")),
+            redirect(format!("{path}.html")),
+        ],
+        (AutoTrailingSlash | ForceTrailingSlash, IndexHtml(page)) => {
+            vec![redirect(path), redirect(format!("{page}.html"))]
+        }
+        (DropTrailingSlash, IndexHtml(page)) => vec![
+            redirect(path),
+            serve(path),
+            redirect(format!("{page}.html")),
+        ],
+        (AutoTrailingSlash, TrailingSlash(page)) => vec![
             serve(format!("{path}index.html")),
             redirect(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix(".html") {
-        vec![redirect(path), redirect(format!("{page}/index.html"))]
-    } else {
-        Vec::new()
-    };
-    steps.extend([
-        serve(path),
-        serve(format!("{path}.html")),
-        redirect(format!("{path}/index.html")),
-    ]);
-    steps
-}
-
-fn force_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = if let Some(page) = path.strip_suffix("/index") {
-        vec![
-            serve(path),
-            redirect(format!("{path}.html")),
-            redirect(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix("/index.html") {
-        vec![redirect(path), redirect(format!("{page}.html"))]
-    } else if let Some(page) = path.strip_suffix('/') {
-        vec![
+        ],
+        (ForceTrailingSlash, TrailingSlash(page)) => vec![
             serve(format!("{path}index.html")),
             serve(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix(".html") {
-        vec![
+        ],
+        (DropTrailingSlash, TrailingSlash(page)) => vec![
+            redirect(format!("{page}.html")),
+            redirect(format!("{page}/index.html")),
+        ],
+        (AutoTrailingSlash | DropTrailingSlash, Html(page)) => {
+            vec![redirect(path), redirect(format!("{page}/index.html"))]
+        }
+        (ForceTrailingSlash, Html(page)) => vec![
             redirect(path),
             serve(path),
             redirect(format!("{page}/index.html")),
-        ]
-    } else {
-        Vec::new()
-    };
-    steps.extend([
-        serve(path),
-        redirect(format!("{path}.html")),
-        redirect(format!("{path}/index.html")),
-    ]);
-    steps
+        ],
+        (HtmlHandling::None, _) | (_, Other) => Vec::new(),
+    }
 }
 
-fn drop_trailing_slash(path: &str) -> Vec<Step> {
-    let mut steps = if path == "/" {
-        vec![serve("/index.html")]
-    } else if let Some(page) = path.strip_suffix("/index") {
-        vec![
-            serve(path),
-            redirect(format!("{page}.html")),
-            redirect(format!("{path}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix("/index.html") {
-        vec![
-            redirect(path),
-            serve(path),
-            redirect(format!("{page}.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix('/') {
-        vec![
-            redirect(format!("{page}.html")),
-            redirect(format!("{page}/index.html")),
-        ]
-    } else if let Some(page) = path.strip_suffix(".html") {
-        vec![redirect(path), redirect(format!("{page}/index.html"))]
-    } else {
-        Vec::new()
-    };
-    steps.extend([
-        serve(path),
-        serve(format!("{path}.html")),
-        serve(format!("{path}/index.html")),
-    ]);
-    steps
+/// `path` and its `.html` and `/index.html` forms, each served or redirected
+/// to as `handling` does.
+fn form_steps(handling: HtmlHandling, path: &str) -> Vec<Step> {
+    let html = format!("{path}.html");
+    let index = format!("{path}/index.html");
+    match handling {
+        HtmlHandling::AutoTrailingSlash => vec![serve(path), serve(html), redirect(index)],
+        HtmlHandling::ForceTrailingSlash => vec![serve(path), redirect(html), redirect(index)],
+        HtmlHandling::DropTrailingSlash => vec![serve(path), serve(html), serve(index)],
+        HtmlHandling::None => vec![serve(path)],
+    }
 }
 
 impl AssetResponse {

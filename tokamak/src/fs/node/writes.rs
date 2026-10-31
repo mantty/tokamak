@@ -60,6 +60,7 @@ pub(super) fn callback_write<'js>(
     view_write(ctx, encoded(ctx, value, encoding)?, args)
 }
 
+// jscpd:ignore-start: each write form handles a non-string value alike.
 /// `fileHandle.write(value, ...args)`: a string is encoded with the second
 /// argument, which the write still reads as its length.
 pub(super) fn file_handle_write<'js>(
@@ -76,6 +77,7 @@ pub(super) fn file_handle_write<'js>(
         .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
     view_write(ctx, encoded(ctx, value, encoding)?, args)
 }
+// jscpd:ignore-end
 
 /// `fs.writevSync(fd, buffers, position)`, with `None` for a `null` position.
 pub(super) fn vector_write<'js>(

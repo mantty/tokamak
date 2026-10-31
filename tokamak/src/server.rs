@@ -401,18 +401,22 @@ mod tests {
         Ok(())
     }
 
+    /// Write `environment` into a new app directory, returning that directory.
+    fn write_packaged_environment(
+        environment: &WorkerEnvironment,
+    ) -> TestResult<tempfile::TempDir> {
+        let directory = tempfile::tempdir()?;
+        write_environment(&PackageLayout::new(directory.path()), environment)?;
+        Ok(directory)
+    }
+
     #[test]
     fn loads_packaged_worker_vars() -> TestResult {
-        let directory = tempfile::tempdir()?;
-        let app = PackageLayout::new(directory.path());
-        write_environment(
-            &app,
-            &WorkerEnvironment {
-                services: BTreeMap::new(),
-                vars: BTreeMap::from([("JSON".to_owned(), json!({ "enabled": true }))]),
-                storage: Vec::new(),
-            },
-        )?;
+        let directory = write_packaged_environment(&WorkerEnvironment {
+            services: BTreeMap::new(),
+            vars: BTreeMap::from([("JSON".to_owned(), json!({ "enabled": true }))]),
+            storage: Vec::new(),
+        })?;
 
         assert_eq!(
             quickjs_config(&config(directory.path()), plugins())?
@@ -446,19 +450,14 @@ mod tests {
     // an app without storage bindings does not.
     #[test]
     fn refuses_storage_bindings_when_linked_without_storage() -> TestResult {
-        let directory = tempfile::tempdir()?;
-        let app = PackageLayout::new(directory.path());
-        write_environment(
-            &app,
-            &WorkerEnvironment {
-                services: BTreeMap::new(),
-                vars: BTreeMap::new(),
-                storage: vec![StorageBinding::Kv {
-                    name: "SESSION".to_owned(),
-                    id: "session".to_owned(),
-                }],
-            },
-        )?;
+        let directory = write_packaged_environment(&WorkerEnvironment {
+            services: BTreeMap::new(),
+            vars: BTreeMap::new(),
+            storage: vec![StorageBinding::Kv {
+                name: "SESSION".to_owned(),
+                id: "session".to_owned(),
+            }],
+        })?;
         let config = config(directory.path());
         std::fs::create_dir_all(config.storage_dir.join("kv"))?;
         std::fs::write(config.storage_dir.join("kv/session.sqlite"), "")?;

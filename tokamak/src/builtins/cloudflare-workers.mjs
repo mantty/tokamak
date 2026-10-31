@@ -36,12 +36,14 @@ export class RpcPromise extends Promise {
   catch(...args) { return Promise.prototype.catch.apply(this, args); }
   finally(...args) { return Promise.prototype.finally.apply(this, args); }
 }
+// jscpd:ignore-start: workerd exports RpcPromise and RpcProperty as separate classes.
 export class RpcProperty extends Promise {
   constructor() { throw new TypeError("Illegal constructor"); }
   then(...args) { return Promise.prototype.then.apply(this, args); }
   catch(...args) { return Promise.prototype.catch.apply(this, args); }
   finally(...args) { return Promise.prototype.finally.apply(this, args); }
 }
+// jscpd:ignore-end
 export class ServiceStub {
   constructor() { throw new TypeError("Illegal constructor"); }
   fetch() { throw new TypeError("Service bindings are not available in the Tokamak runtime"); }

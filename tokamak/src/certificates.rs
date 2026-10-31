@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
@@ -1023,30 +1023,34 @@ pub(crate) struct Renewal {
 impl Renewal {
     fn start(certificates: Arc<Certificates>, events: Events) -> Self {
         let (stop, stopped) = mpsc::channel();
-        let task = thread::spawn(move || {
-            let mut retry_delay = None;
-            loop {
-                let delay = retry_delay.unwrap_or_else(|| certificates.next_delay());
-                if stopped.recv_timeout(delay).is_ok() {
-                    break;
-                }
-                match certificates.refresh() {
-                    Ok(()) => {
-                        retry_delay = None;
-                        events.emit(Event::CertificatesRenewed);
-                    }
-                    Err(error) => {
-                        retry_delay = Some(RETRY_DELAY);
-                        events.emit(Event::Failed {
-                            message: format!("certificate renewal failed: {error}"),
-                        });
-                    }
-                }
-            }
-        });
+        let task = thread::spawn(move || renew(&certificates, &events, &stopped));
         Self {
             stop,
             task: Some(task),
+        }
+    }
+}
+
+/// Refreshes `certificates` when they are due, or after `RETRY_DELAY` when a
+/// refresh fails, until `stopped` receives.
+fn renew(certificates: &Certificates, events: &Events, stopped: &Receiver<()>) {
+    let mut retry_delay = None;
+    loop {
+        let delay = retry_delay.unwrap_or_else(|| certificates.next_delay());
+        if stopped.recv_timeout(delay).is_ok() {
+            break;
+        }
+        match certificates.refresh() {
+            Ok(()) => {
+                retry_delay = None;
+                events.emit(Event::CertificatesRenewed);
+            }
+            Err(error) => {
+                retry_delay = Some(RETRY_DELAY);
+                events.emit(Event::Failed {
+                    message: format!("certificate renewal failed: {error}"),
+                });
+            }
         }
     }
 }

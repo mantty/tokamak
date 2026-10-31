@@ -370,10 +370,10 @@ fn host_encrypt<'js>(
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let input = bytes(&ctx, input)?;
+    let plaintext = bytes(&ctx, input)?;
     let (material, hash, label) = oaep_operands(&ctx, &options)?;
     let output = rsa_public(&ctx, &material.public()).and_then(|key| {
-        rsa::encrypt_oaep(key, hash, &label, &input).map_err(|error| operation(&ctx, &error))
+        rsa::encrypt_oaep(key, hash, &label, &plaintext).map_err(|error| operation(&ctx, &error))
     })?;
     ArrayBuffer::new_copy(ctx, &output)
 }
@@ -383,11 +383,11 @@ fn host_decrypt<'js>(
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let input = bytes(&ctx, input)?;
+    let ciphertext = bytes(&ctx, input)?;
     let (material, hash, label) = oaep_operands(&ctx, &options)?;
     let key = rsa_private(&ctx, &material)?;
-    let output =
-        rsa::decrypt_oaep(key, hash, &label, &input).map_err(|error| operation(&ctx, &error))?;
+    let output = rsa::decrypt_oaep(key, hash, &label, &ciphertext)
+        .map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
 }
 
@@ -510,14 +510,23 @@ fn point_format(ctx: &Ctx<'_>, format: &str) -> rquickjs::Result<bool> {
     }
 }
 
+/// The curve and private key that `options` give the ECDH calls.
+fn ecdh_secret<'js>(
+    ctx: &Ctx<'js>,
+    options: &Object<'js>,
+) -> rquickjs::Result<(Curve, curves::EcSecret)> {
+    let curve = required_curve(ctx, options)?;
+    let private = required_bytes(ctx, options, "private")?;
+    let key =
+        curves::secret_from_scalar(curve, &private).map_err(|error| operation(ctx, &error))?;
+    Ok((curve, key))
+}
+
 fn host_ecdh_public<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let curve = required_curve(&ctx, &options)?;
-    let private = required_bytes(&ctx, &options, "private")?;
-    let key =
-        curves::secret_from_scalar(curve, &private).map_err(|error| operation(&ctx, &error))?;
+    let (_, key) = ecdh_secret(&ctx, &options)?;
     ArrayBuffer::new_copy(ctx, curves::encode_point(&curves::public_of(&key), false))
 }
 
@@ -525,11 +534,8 @@ fn host_ecdh_compute<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let curve = required_curve(&ctx, &options)?;
-    let private = required_bytes(&ctx, &options, "private")?;
+    let (curve, key) = ecdh_secret(&ctx, &options)?;
     let peer = required_bytes(&ctx, &options, "peer")?;
-    let key =
-        curves::secret_from_scalar(curve, &private).map_err(|error| operation(&ctx, &error))?;
     let peer = curves::decode_point(curve, &peer).map_err(|error| operation(&ctx, &error))?;
     let output = curves::agree(&key, &peer).map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
@@ -587,12 +593,12 @@ fn host_rsa_legacy_private_encrypt<'js>(
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let input = bytes(&ctx, input)?;
+    let plaintext = bytes(&ctx, input)?;
     let material = required_key(&ctx, &options)?;
     let key = rsa_private(&ctx, &material)?;
     let padding = rsa_padding(&ctx, &options)?;
     let output =
-        rsa::private_encrypt(key, padding, &input).map_err(|error| operation(&ctx, &error))?;
+        rsa::private_encrypt(key, padding, &plaintext).map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
 }
 
@@ -601,11 +607,11 @@ fn host_rsa_legacy_public_decrypt<'js>(
     input: TypedArray<'js, u8>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let input = bytes(&ctx, input)?;
+    let ciphertext = bytes(&ctx, input)?;
     let material = required_key(&ctx, &options)?;
     let padding = rsa_padding(&ctx, &options)?;
     let output = rsa_public(&ctx, &material.public()).and_then(|key| {
-        rsa::public_decrypt(key, padding, &input).map_err(|error| operation(&ctx, &error))
+        rsa::public_decrypt(key, padding, &ciphertext).map_err(|error| operation(&ctx, &error))
     })?;
     ArrayBuffer::new_copy(ctx, &output)
 }

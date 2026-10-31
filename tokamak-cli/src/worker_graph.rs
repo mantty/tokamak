@@ -62,27 +62,12 @@ impl WorkerGraph {
             .collect();
         self.workers()
             .map(|(name, config)| {
-                let services = config
-                    .services
-                    .iter()
-                    .filter_map(|binding| {
-                        names.get(binding.service.as_str()).map(|target| {
-                            (
-                                binding.binding.clone(),
-                                ServiceBinding {
-                                    service: (*target).to_owned(),
-                                    entrypoint: binding.entrypoint().to_owned(),
-                                },
-                            )
-                        })
-                    })
-                    .collect();
                 Ok(CompiledWorker {
                     config,
                     name,
                     compiled: worker::compile(&cache.join(name), config)
                         .with_context(|| format!("compile the {name} worker"))?,
-                    services,
+                    services: service_bindings(config, &names),
                 })
             })
             .collect()
@@ -119,6 +104,28 @@ impl WorkerGraph {
             ),
         }
     }
+}
+
+/// The service bindings of `config` whose targets `names` maps to packaged
+/// service names, keyed by binding name.
+fn service_bindings(
+    config: &WranglerConfig,
+    names: &BTreeMap<&str, &'static str>,
+) -> BTreeMap<String, ServiceBinding> {
+    config
+        .services
+        .iter()
+        .filter_map(|binding| {
+            let target = names.get(binding.service.as_str())?;
+            Some((
+                binding.binding.clone(),
+                ServiceBinding {
+                    service: (*target).to_owned(),
+                    entrypoint: binding.entrypoint().to_owned(),
+                },
+            ))
+        })
+        .collect()
 }
 
 impl CompiledWorker<'_> {
@@ -331,11 +338,17 @@ mod tests {
             let mut main = main.clone();
             main[field] = value;
             let project = project(&main, Some(&native))?;
-            let error = WorkerGraph::load(project.path())
-                .err()
-                .ok_or_else(|| anyhow::anyhow!("accepted invalid graph"))?;
-            assert!(error.to_string().contains(message), "{error:#}");
+            assert_rejected(project.path(), message)?;
         }
+        Ok(())
+    }
+
+    /// Assert that the graph at `root` is rejected with a message containing `message`.
+    fn assert_rejected(root: &std::path::Path, message: &str) -> Result<()> {
+        let error = WorkerGraph::load(root)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("accepted invalid graph"))?;
+        assert!(error.to_string().contains(message), "{error:#}");
         Ok(())
     }
 
@@ -366,10 +379,7 @@ mod tests {
                 }),
                 native.as_ref(),
             )?;
-            let error = WorkerGraph::load(project.path())
-                .err()
-                .ok_or_else(|| anyhow::anyhow!("accepted invalid graph"))?;
-            assert!(error.to_string().contains(message), "{error:#}");
+            assert_rejected(project.path(), message)?;
         }
         Ok(())
     }

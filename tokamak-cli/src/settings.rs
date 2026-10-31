@@ -1011,6 +1011,15 @@ mod tests {
     }
 
     impl Fixture {
+        /// Assert that the fixture rejects its options with `expected`.
+        fn assert_rejects_options(&self, expected: &str) -> Result<()> {
+            let Err(error) = self.plugin_settings(Platform::Ios) else {
+                anyhow::bail!("{expected}: accepted");
+            };
+            assert!(error.to_string().starts_with(expected), "{error}");
+            Ok(())
+        }
+
         /// The alerts plugin's settings on `platform`.
         fn plugin_settings(&self, platform: Platform) -> Result<Value> {
             let plugins = alerts()?;
@@ -1334,11 +1343,7 @@ mod tests {
                 fixture.config = configured(config)?;
             }
 
-            let Err(error) = fixture.plugin_settings(Platform::Ios) else {
-                anyhow::bail!("{expected}: accepted");
-            };
-
-            assert!(error.to_string().starts_with(expected), "{error}");
+            fixture.assert_rejects_options(expected)?;
         }
         Ok(())
     }
@@ -1349,22 +1354,25 @@ mod tests {
             .args(plugin_arguments(&alerts()?))
             .render_help()
             .to_string();
-        let lists = |line: &str| help.lines().any(|help| help.trim_start().starts_with(line));
-
         assert!(help.contains("Plugin options:"), "{help}");
-        assert!(lists("--alerts-loud[=<BOOLEAN>]"), "{help}");
-        assert!(lists("--alerts-volume <INTEGER>"), "{help}");
-        assert!(lists("--alerts-purposes <KEY=VALUE>"), "{help}");
-        assert!(
-            help.contains("[`TOKAMAK_ALERTS_TONE`, `alerts.tone`]"),
-            "{help}"
-        );
-        assert!(
-            help.contains("Tone [default: soft] [`TOKAMAK_ALERTS_TONE`"),
-            "{help}"
-        );
-        assert!(help.contains("Loud [default: false]"), "{help}");
-        assert!(help.contains("[possible values: soft, sharp]"), "{help}");
+        for line in [
+            "--alerts-loud[=<BOOLEAN>]",
+            "--alerts-volume <INTEGER>",
+            "--alerts-purposes <KEY=VALUE>",
+        ] {
+            assert!(
+                help.lines().any(|help| help.trim_start().starts_with(line)),
+                "{help}"
+            );
+        }
+        for expected in [
+            "[`TOKAMAK_ALERTS_TONE`, `alerts.tone`]",
+            "Tone [default: soft] [`TOKAMAK_ALERTS_TONE`",
+            "Loud [default: false]",
+            "[possible values: soft, sharp]",
+        ] {
+            assert!(help.contains(expected), "{help}");
+        }
         assert!(!help.contains("--alerts-ios-tone"), "{help}");
         assert!(plugins_help(&alerts()?).is_some());
         assert_eq!(plugins_help(&[]), None);
@@ -1391,11 +1399,7 @@ mod tests {
             let mut fixture = Fixture::new();
             fixture.config = configured(&config)?;
 
-            let Err(error) = fixture.plugin_settings(Platform::Ios) else {
-                anyhow::bail!("{expected}: accepted");
-            };
-
-            assert!(error.to_string().starts_with(expected), "{error}");
+            fixture.assert_rejects_options(expected)?;
         }
         Ok(())
     }

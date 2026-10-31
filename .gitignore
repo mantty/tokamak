@@ -23,3 +23,6 @@ tokamak-cli/npm/dist/
 /plugins/*/android/.gradle/
 /plugins/*/android/.kotlin/
 /plugins/*/android/local.properties
+
+# Written by scripts/collect-report.mjs.
+/reports/

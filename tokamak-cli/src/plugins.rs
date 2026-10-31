@@ -648,15 +648,19 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn resolves_each_dependency_to_its_nearest_node_modules_copy() -> TestResult {
+    /// A workspace whose app declares `dependencies` in its `package.json`.
+    fn workspace_app(dependencies: &str) -> TestResult<(tempfile::TempDir, std::path::PathBuf)> {
         let workspace = tempfile::tempdir()?;
         let app = workspace.path().join("apps/app");
         fs::create_dir_all(&app)?;
-        fs::write(
-            app.join("package.json"),
-            r#"{"dependencies":{"camera":"1.0.0","location":"2.0.0"}}"#,
-        )?;
+        fs::write(app.join("package.json"), dependencies)?;
+        Ok((workspace, app))
+    }
+
+    #[test]
+    fn resolves_each_dependency_to_its_nearest_node_modules_copy() -> TestResult {
+        let (workspace, app) =
+            workspace_app(r#"{"dependencies":{"camera":"1.0.0","location":"2.0.0"}}"#)?;
         write_plugin(&workspace.path().join("node_modules/camera"), "camera")?;
         write_plugin(
             &workspace.path().join("node_modules/location"),

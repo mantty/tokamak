@@ -94,16 +94,14 @@ pub(crate) enum WranglerStorage {
 impl WranglerStorage {
     /// Binding name in the Worker's `env`.
     pub(crate) fn name(&self) -> &str {
-        match self {
-            Self::Kv { name, .. } | Self::D1 { name, .. } | Self::R2 { name, .. } => name,
-        }
+        let (Self::Kv { name, .. } | Self::D1 { name, .. } | Self::R2 { name, .. }) = self;
+        name
     }
 
     /// Identifier of the store the binding names.
     pub(crate) fn store(&self) -> &str {
-        match self {
-            Self::Kv { id, .. } | Self::D1 { id, .. } | Self::R2 { id, .. } => id,
-        }
+        let (Self::Kv { id, .. } | Self::D1 { id, .. } | Self::R2 { id, .. }) = self;
+        id
     }
 
     /// The Wrangler configuration key that declares the binding.
@@ -713,10 +711,7 @@ mod tests {
 
     #[test]
     fn resolves_storage_bindings_with_local_wrangler_fallbacks() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.json");
-        fs::write(
-            &config,
+        let (directory, config) = config_file(
             r#"{
                 "name": "app",
                 "main": "worker.js",
@@ -809,12 +804,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parses_module_rules() -> Result<()> {
+    /// Write `contents` as the `wrangler.json` of a new directory.
+    fn config_file(contents: &str) -> Result<(tempfile::TempDir, std::path::PathBuf)> {
         let directory = tempfile::tempdir()?;
         let config = directory.path().join("wrangler.json");
-        fs::write(
-            &config,
+        fs::write(&config, contents)?;
+        Ok((directory, config))
+    }
+
+    #[test]
+    fn parses_module_rules() -> Result<()> {
+        let (_directory, config) = config_file(
             r#"{
                 "name": "demo-app",
                 "main": "worker/entry.mjs",
@@ -842,10 +842,7 @@ mod tests {
 
     #[test]
     fn names_the_app_after_the_top_level_worker() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.json");
-        fs::write(
-            &config,
+        let (_directory, config) = config_file(
             r#"{ "name": "app-production", "topLevelName": "app", "main": "index.js" }"#,
         )?;
 
@@ -995,10 +992,7 @@ mod tests {
 
     #[test]
     fn binds_assets_as_assets_by_default() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.json");
-        fs::write(
-            &config,
+        let (_directory, config) = config_file(
             r#"{
                 "name": "demo-app",
                 "main": "index.js",

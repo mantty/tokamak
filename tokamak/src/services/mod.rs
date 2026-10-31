@@ -196,6 +196,7 @@ impl Reply {
         })
     }
 
+    // jscpd:ignore-start: a reply converts to JavaScript as its message does.
     fn into_js<'js>(
         self,
         ctx: &Ctx<'js>,
@@ -207,6 +208,7 @@ impl Reply {
         object.set("value", self.value.into_js(ctx, bootstrap, channels)?)?;
         Ok(object)
     }
+    // jscpd:ignore-end
 }
 
 pub(crate) fn install<'js>(

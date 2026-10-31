@@ -306,22 +306,17 @@ mod tests {
     use super::*;
     use std::{future::Future, task::Poll};
 
-    #[tokio::test]
-    async fn cancelled_tls_upgrade_releases_the_plaintext_connection() -> io::Result<()> {
+    /// A socket over a connected loopback pair, with the peer's end.
+    async fn plaintext_socket() -> io::Result<(Rc<Socket>, TcpStream)> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let connection = TcpStream::connect(listener.local_addr()?).await?;
-        let (mut peer, _) = listener.accept().await?;
+        let (peer, _) = listener.accept().await?;
         let socket = Socket::new(Either::Left(connection), CancellationToken::new());
-        let mut read = Box::pin(socket.read());
-        let mut upgrade = Box::pin(socket.start_tls("localhost"));
-        std::future::poll_fn(|cx| {
-            assert!(read.as_mut().poll(cx).is_pending());
-            assert!(upgrade.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-        drop(upgrade);
-        assert!(read.await.is_err());
+        Ok((socket, peer))
+    }
+
+    /// Assert that the socket released its connection, which `peer` sees close.
+    async fn assert_released(socket: &Socket, peer: &mut TcpStream) -> io::Result<()> {
         let mut byte = [0];
         assert_eq!(
             tokio::time::timeout(Duration::from_millis(100), peer.read(&mut byte)).await??,
@@ -333,23 +328,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_tls_upgrade_releases_the_plaintext_connection() -> io::Result<()> {
+        let (socket, mut peer) = plaintext_socket().await?;
+        let mut read = Box::pin(socket.read());
+        let mut upgrade = Box::pin(socket.start_tls("localhost"));
+        std::future::poll_fn(|cx| {
+            assert!(read.as_mut().poll(cx).is_pending());
+            assert!(upgrade.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(upgrade);
+        assert!(read.await.is_err());
+        assert_released(&socket, &mut peer).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn close_releases_a_connection_with_a_pending_read() -> io::Result<()> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let connection = TcpStream::connect(listener.local_addr()?).await?;
-        let (mut peer, _) = listener.accept().await?;
-        let socket = Socket::new(Either::Left(connection), CancellationToken::new());
+        let (socket, mut peer) = plaintext_socket().await?;
         let (read, ()) = tokio::join!(socket.read(), async {
             tokio::task::yield_now().await;
             socket.close();
         });
         assert!(read.is_err());
-        let mut byte = [0];
-        assert_eq!(
-            tokio::time::timeout(Duration::from_millis(100), peer.read(&mut byte)).await??,
-            0
-        );
-        assert!(socket.reader.lock().await.is_none());
-        assert!(socket.writer.lock().await.is_none());
+        assert_released(&socket, &mut peer).await?;
         Ok(())
     }
 }

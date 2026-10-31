@@ -78,11 +78,7 @@ export class Hash extends Transform {
     this.__finalized = false;
   }
 
-  update(value, encoding) {
-    if (this.__finalized) throw finalizedError();
-    this.__handle.update(Buffer.from(value, encoding));
-    return this;
-  }
+  update(value, encoding) { return updateDigest(this, value, encoding); }
 
   digest(encoding) {
     if (this.__finalized) throw finalizedError();
@@ -96,7 +92,7 @@ export class Hash extends Transform {
   }
 
   _transform(chunk, encoding, callback) { transformUpdate(this, chunk, encoding, callback); }
-  _flush(callback) { try { callback(null, this.digest()); } catch (error) { callback(error); } }
+  _flush(callback) { flushDigest(this, callback); }
 }
 
 export function createHash(algorithm) { return new Hash(algorithm, hashToken); }
@@ -186,11 +182,7 @@ export class Hmac extends Transform {
     this.__finalized = false;
   }
 
-  update(value, encoding) {
-    if (this.__finalized) throw finalizedError();
-    this.__handle.update(Buffer.from(value, encoding));
-    return this;
-  }
+  update(value, encoding) { return updateDigest(this, value, encoding); }
 
   digest(encoding) {
     if (this.__finalized) return encoding === undefined ? Buffer.alloc(0) : "";
@@ -487,19 +479,19 @@ export class SecretKeyObject extends KeyObject {
     keyObjectState.set(this, { type: "secret", kind: "secret", format: "raw", bytes: Buffer.from(bytes) });
   }
 }
+/** The constructor body the signing classes share. */
+function initSigning(instance, algorithm, token) {
+  if (token !== signToken) illegalConstructor();
+  instance.__algorithm = normalizeHash(algorithm);
+  instance.__chunks = [];
+  instance.__finalized = false;
+}
 export class Sign extends Transform {
   constructor(algorithm, token) {
     super();
-    if (token !== signToken) illegalConstructor();
-    this.__algorithm = normalizeHash(algorithm);
-    this.__chunks = [];
-    this.__finalized = false;
+    initSigning(this, algorithm, token);
   }
-  update(value, encoding) {
-    if (this.__finalized) throw finalizedError();
-    this.__chunks.push(Buffer.from(value, encoding));
-    return this;
-  }
+  update(value, encoding) { return updateSigning(this, value, encoding); }
   sign(key, options, callback) {
     if (typeof options === "function") { callback = options; options = undefined; }
     return returnOrDeliver(callback, () => {
@@ -517,16 +509,9 @@ export class Sign extends Transform {
 export class Verify extends Transform {
   constructor(algorithm, token) {
     super();
-    if (token !== signToken) illegalConstructor();
-    this.__algorithm = normalizeHash(algorithm);
-    this.__chunks = [];
-    this.__finalized = false;
+    initSigning(this, algorithm, token);
   }
-  update(value, encoding) {
-    if (this.__finalized) throw finalizedError();
-    this.__chunks.push(Buffer.from(value, encoding));
-    return this;
-  }
+  update(value, encoding) { return updateSigning(this, value, encoding); }
   verify(key, signature, callback) {
     if (typeof signature === "function") { callback = signature; signature = key; key = undefined; }
     return returnOrDeliver(callback, () => {
@@ -541,6 +526,27 @@ export class Verify extends Transform {
   _flush(callback) { callback(); }
 }
 export const X509Certificate = class X509Certificate { constructor() { illegalConstructor(); } };
+
+/** The `{ key, format, type }` settings object `input` carries, if any. */
+function keySettings(input) {
+  return input && typeof input === "object" && !(input instanceof ArrayBuffer) && !ArrayBuffer.isView(input) ? input : {};
+}
+
+function flushDigest(instance, callback) {
+  try { callback(null, instance.digest()); } catch (error) { callback(error); }
+}
+
+function updateSigning(instance, value, encoding) {
+  if (instance.__finalized) throw finalizedError();
+  instance.__chunks.push(Buffer.from(value, encoding));
+  return instance;
+}
+
+function updateDigest(instance, value, encoding) {
+  if (instance.__finalized) throw finalizedError();
+  instance.__handle.update(Buffer.from(value, encoding));
+  return instance;
+}
 
 function outputEncoding(value, encoding) { return encoding === undefined ? value : value.toString(encoding); }
 
@@ -713,7 +719,7 @@ export function createPrivateKey(input) {
     if (record.type !== "private") throw new TypeError("The key is not private");
     return input;
   }
-  const settings = input && typeof input === "object" && !(input instanceof ArrayBuffer) && !ArrayBuffer.isView(input) ? input : {};
+  const settings = keySettings(input);
   let value = settings.key ?? input;
   let format = settings.format;
   let type = settings.type === "pkcs8" ? "private" : undefined;
@@ -733,7 +739,7 @@ export function createPublicKey(input) {
     const bytes = hostKeyExport(record, "spki");
     return createAsymmetricObject({ ...record, type: "public", format: "spki", bytes });
   }
-  const settings = input && typeof input === "object" && !(input instanceof ArrayBuffer) && !ArrayBuffer.isView(input) ? input : {};
+  const settings = keySettings(input);
   let value = settings.key ?? input;
   let format = settings.format;
   let type;

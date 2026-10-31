@@ -381,23 +381,14 @@ fn insert_header(
 
 fn read_chunked_body(stream: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
-    let mut trailer_bytes = 0usize;
     loop {
         let line = read_line(stream)?;
         let size = line.split(';').next().unwrap_or_default().trim();
         let size =
             usize::from_str_radix(size, 16).map_err(|_| invalid_data("chunk size is invalid"))?;
         if size == 0 {
-            loop {
-                let trailer = read_line(stream)?;
-                trailer_bytes = trailer_bytes.saturating_add(trailer.len() + 2);
-                if trailer_bytes > MAX_HEADERS {
-                    return Err(invalid_data("HTTP trailers exceed the limit"));
-                }
-                if trailer.is_empty() {
-                    return Ok(body);
-                }
-            }
+            skip_trailers(stream)?;
+            return Ok(body);
         }
         if body.len().saturating_add(size) > MAX_HTTP_BODY {
             return Err(invalid_data("HTTP body exceeds the limit"));
@@ -409,6 +400,21 @@ fn read_chunked_body(stream: &mut impl Read) -> io::Result<Vec<u8>> {
         stream.read_exact(&mut terminator)?;
         if terminator != *b"\r\n" {
             return Err(invalid_data("chunk is not terminated"));
+        }
+    }
+}
+
+/// Reads the trailer lines that end a chunked body, up to `MAX_HEADERS` bytes.
+fn skip_trailers(stream: &mut impl Read) -> io::Result<()> {
+    let mut trailer_bytes = 0usize;
+    loop {
+        let trailer = read_line(stream)?;
+        trailer_bytes = trailer_bytes.saturating_add(trailer.len() + 2);
+        if trailer_bytes > MAX_HEADERS {
+            return Err(invalid_data("HTTP trailers exceed the limit"));
+        }
+        if trailer.is_empty() {
+            return Ok(());
         }
     }
 }
@@ -1226,12 +1232,7 @@ mod tests {
     {
         for scenario in 0..3 {
             let (response, cancelled) = excess_headers_response(scenario)?;
-            let mut output = Vec::new();
-            assert!(
-                write_response_inner(&mut output, response, None, None, |_| Ok(false), false)
-                    .is_err()
-            );
-            assert!(output.is_empty());
+            assert_unwritable(response);
             assert!(cancelled.is_none_or(|token| token.is_cancelled()));
         }
         Ok(())
@@ -1266,11 +1267,7 @@ mod tests {
 
         let mut response = HttpResponse::text(200, "ok");
         response.status_text = "OK\r\nInjected: true".to_owned();
-        let mut output = Vec::new();
-        assert!(
-            write_response_inner(&mut output, response, None, None, |_| Ok(false), false).is_err()
-        );
-        assert!(output.is_empty());
+        assert_unwritable(response);
         Ok(())
     }
 
@@ -1392,21 +1389,32 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn writes_streamed_responses_as_chunked_data() -> Result<(), Box<dyn std::error::Error>> {
-        let (sender, _cancelled, body) = response_stream();
-        let HttpBody::Stream(body) = body else {
-            return Err("response stream fixture was buffered".into());
-        };
-        sender.send(Ok(b"one".to_vec()))?;
-        sender.send(Ok(b"two".to_vec()))?;
-        drop(sender);
-        let response = HttpResponse {
+    /// A 200 response with no headers and `body`.
+    fn ok_response(body: HttpBody) -> HttpResponse {
+        HttpResponse {
             status: 200,
             status_text: "OK".to_owned(),
             headers: HeaderMap::new(),
-            body: HttpBody::Stream(body),
-        };
+            body,
+        }
+    }
+
+    /// Assert that `response` cannot be written, leaving no output behind.
+    fn assert_unwritable(response: HttpResponse) {
+        let mut output = Vec::new();
+        assert!(
+            write_response_inner(&mut output, response, None, None, |_| Ok(false), false).is_err()
+        );
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn writes_streamed_responses_as_chunked_data() -> Result<(), Box<dyn std::error::Error>> {
+        let (sender, _cancelled, body) = response_stream();
+        sender.send(Ok(b"one".to_vec()))?;
+        sender.send(Ok(b"two".to_vec()))?;
+        drop(sender);
+        let response = ok_response(body);
         let mut output = Vec::new();
 
         write_response_inner(&mut output, response, None, None, |_| Ok(false), false)?;
@@ -1421,16 +1429,8 @@ mod tests {
     #[test]
     fn suppresses_a_stream_body_for_head_requests() -> Result<(), Box<dyn std::error::Error>> {
         let (sender, cancelled, body) = response_stream();
-        let HttpBody::Stream(body) = body else {
-            return Err("response stream fixture was buffered".into());
-        };
         sender.send(Ok(b"body".to_vec()))?;
-        let response = HttpResponse {
-            status: 200,
-            status_text: "OK".to_owned(),
-            headers: HeaderMap::new(),
-            body: HttpBody::Stream(body),
-        };
+        let response = ok_response(body);
         let mut output = Vec::new();
 
         write_response_inner(
@@ -1543,17 +1543,9 @@ mod tests {
     #[test]
     fn reports_stream_errors_to_the_http_writer() -> Result<(), Box<dyn std::error::Error>> {
         let (sender, _cancelled, body) = response_stream();
-        let HttpBody::Stream(body) = body else {
-            return Err("response stream fixture was buffered".into());
-        };
         sender.send(Err("broken".to_owned()))?;
         drop(sender);
-        let response = HttpResponse {
-            status: 200,
-            status_text: "OK".to_owned(),
-            headers: HeaderMap::new(),
-            body: HttpBody::Stream(body),
-        };
+        let response = ok_response(body);
         let Err(error) =
             write_response_inner(io::sink(), response, None, None, |_| Ok(false), false)
         else {

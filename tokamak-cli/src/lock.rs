@@ -143,13 +143,19 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn stages_nothing_for_an_update_or_a_family_without_locks() -> TestResult {
+    /// A project whose Apple family keeps the lock files in `input`.
+    fn project_with_apple_lock() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
         let project = tempfile::tempdir()?;
         let input = tempfile::tempdir()?;
         fs::create_dir(input.path().join("lock"))?;
         fs::write(input.path().join("lock/Package.resolved"), "pins")?;
         keep(project.path(), "apple", input.path())?;
+        Ok(project)
+    }
+
+    #[test]
+    fn stages_nothing_for_an_update_or_a_family_without_locks() -> TestResult {
+        let project = project_with_apple_lock()?;
 
         let staged = tempfile::tempdir()?;
         stage(project.path(), "apple", staged.path(), true)?;
@@ -160,11 +166,7 @@ mod tests {
 
     #[test]
     fn removes_the_lock_when_no_family_has_lock_files() -> TestResult {
-        let project = tempfile::tempdir()?;
-        let input = tempfile::tempdir()?;
-        fs::create_dir(input.path().join("lock"))?;
-        fs::write(input.path().join("lock/Package.resolved"), "pins")?;
-        keep(project.path(), "apple", input.path())?;
+        let project = project_with_apple_lock()?;
         assert!(project.path().join("tokamak.lock").is_file());
 
         let empty = tempfile::tempdir()?;

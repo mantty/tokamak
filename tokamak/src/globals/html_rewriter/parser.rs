@@ -120,6 +120,19 @@ impl Port {
         }
     }
 
+    /// Writes the chunks of the stream `source` to `sink` until it ends.
+    fn write_input(
+        &self,
+        source: usize,
+        sink: &mut StreamingHandlerSink<'_>,
+        kind: ContentType,
+    ) -> Result {
+        while let Some(bytes) = self.input(source)? {
+            sink.write_utf8_chunk(&bytes, kind)?;
+        }
+        Ok(())
+    }
+
     fn call(
         &self,
         handler: usize,
@@ -248,11 +261,7 @@ impl Operation {
             let _registration = registration;
             match content {
                 Content::String(value) => sink.write_str(&value, kind),
-                Content::Stream { source } => {
-                    while let Some(bytes) = port.input(source)? {
-                        sink.write_utf8_chunk(&bytes, kind)?;
-                    }
-                }
+                Content::Stream { source } => port.write_input(source, sink, kind)?,
             }
             Ok(())
         }))
@@ -316,12 +325,14 @@ fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers
             port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
         });
     }
+    // jscpd:ignore-start: element and document handlers add text and comment handlers alike.
     if let Some(handler) = spec.text {
         handlers = handlers.text(text_handler(port, handler));
     }
     if let Some(handler) = spec.comments {
         handlers = handlers.comments(comment_handler(port, handler));
     }
+    // jscpd:ignore-end
     if let Some(handler) = spec.end {
         handlers = handlers.end(move |end: &mut DocumentEnd<'_>| {
             port.call(handler, json!({}), |operation| {

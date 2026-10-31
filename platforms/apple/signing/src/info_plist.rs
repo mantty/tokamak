@@ -50,13 +50,15 @@ impl Metadata {
     fn read(input: &Path) -> Result<Self> {
         let metadata = input.join("metadata");
         let version = read_optional(&metadata.join("version"))?;
-        let mut build_number = version.clone().unwrap_or_else(|| "1".into());
-        let version = version.unwrap_or_else(|| "1.0".into());
         let platform = read_required(&metadata.join("platform"))?;
-        if let Some(value) = environment_value(&pack_variable(&platform, "BUILD_NUMBER"))? {
-            build_number = value;
-        }
+        let variable = pack_variable(&platform, "BUILD_NUMBER");
+        let build_number = match env::var(&variable) {
+            Ok(value) => value,
+            Err(env::VarError::NotPresent) => version.clone().unwrap_or_else(|| "1".into()),
+            Err(env::VarError::NotUnicode(_)) => bail!("{variable} must contain valid UTF-8"),
+        };
         validate_build_number(&build_number)?;
+        let version = version.unwrap_or_else(|| "1.0".into());
 
         let development = match read_optional(&metadata.join("dev-endpoint"))? {
             Some(endpoint) => Some((
@@ -466,14 +468,6 @@ fn read_optional(path: &Path) -> Result<Option<String>> {
     path.is_file().then(|| read_required(path)).transpose()
 }
 
-fn environment_value(name: &str) -> Result<Option<String>> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
-    }
-}
-
 fn validate_build_number(value: &str) -> Result<()> {
     let valid = !value.is_empty()
         && value.split('.').count() <= 3
@@ -532,8 +526,7 @@ mod tests {
     fn user_values_overlay_generated_values_and_preserve_other_typed_values() -> anyhow::Result<()>
     {
         let temporary = tempfile::tempdir()?;
-        let input = input(temporary.path(), "ios")?;
-        let user_path = temporary.path().join("User.plist");
+        let (input, user_path) = ios_input_and_user_path(temporary.path())?;
         let mut transport = Dictionary::new();
         transport.insert("NSAllowsLocalNetworking".into(), Value::Boolean(false));
         transport.insert("NSAllowsArbitraryLoads".into(), Value::Boolean(true));
@@ -599,22 +592,46 @@ mod tests {
     ) -> anyhow::Result<()> {
         let directory = input.join("plugins").join(plugin);
         std::fs::create_dir_all(&directory)?;
-        let dictionary: Dictionary = values
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), value.clone()))
-            .collect();
-        Value::Dictionary(dictionary).to_file_xml(directory.join("plist"))?;
-        Ok(())
+        write_values(&directory.join("plist"), values)
     }
 
     fn user_plist(root: &std::path::Path, values: &[(&str, Value)]) -> anyhow::Result<PathBuf> {
         let path = root.join("User.plist");
+        write_values(&path, values)?;
+        Ok(path)
+    }
+
+    /// The iOS input of a new app and the path its `User.plist` takes.
+    fn ios_input_and_user_path(
+        root: &std::path::Path,
+    ) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+        Ok((input(root, "ios")?, root.join("User.plist")))
+    }
+
+    /// An iOS input whose plugins disagree about `NSFaceIDUsageDescription`.
+    fn conflicting_face_id_input(root: &std::path::Path) -> anyhow::Result<PathBuf> {
+        let input = input(root, "ios")?;
+        plugin_plist(
+            &input,
+            "local-authentication",
+            &[("NSFaceIDUsageDescription", string("One"))],
+        )?;
+        plugin_plist(
+            &input,
+            "secure-storage",
+            &[("NSFaceIDUsageDescription", string("Two"))],
+        )?;
+        Ok(input)
+    }
+
+    /// Write `values` to `path` as a dictionary plist.
+    fn write_values(path: &std::path::Path, values: &[(&str, Value)]) -> anyhow::Result<()> {
         let dictionary: Dictionary = values
             .iter()
             .map(|(key, value)| ((*key).to_owned(), value.clone()))
             .collect();
-        Value::Dictionary(dictionary).to_file_xml(&path)?;
-        Ok(path)
+        Value::Dictionary(dictionary).to_file_xml(path)?;
+        Ok(())
     }
 
     fn string(value: &str) -> Value {
@@ -760,17 +777,7 @@ mod tests {
     #[test]
     fn rejects_different_plugin_values_the_app_does_not_set() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
-        let input = input(temporary.path(), "ios")?;
-        plugin_plist(
-            &input,
-            "local-authentication",
-            &[("NSFaceIDUsageDescription", string("One"))],
-        )?;
-        plugin_plist(
-            &input,
-            "secure-storage",
-            &[("NSFaceIDUsageDescription", string("Two"))],
-        )?;
+        let input = conflicting_face_id_input(temporary.path())?;
 
         let Err(error) = build(&input, "iphoneos", None) else {
             anyhow::bail!("different plugin values were accepted");
@@ -809,17 +816,7 @@ mod tests {
     #[test]
     fn an_app_plist_without_the_key_does_not_resolve_a_conflict() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
-        let input = input(temporary.path(), "ios")?;
-        plugin_plist(
-            &input,
-            "local-authentication",
-            &[("NSFaceIDUsageDescription", string("One"))],
-        )?;
-        plugin_plist(
-            &input,
-            "secure-storage",
-            &[("NSFaceIDUsageDescription", string("Two"))],
-        )?;
+        let input = conflicting_face_id_input(temporary.path())?;
         let user = user_plist(temporary.path(), &[("OtherKey", string("App"))])?;
 
         assert!(build(&input, "iphoneos", Some(&user)).is_err());
@@ -1020,8 +1017,7 @@ mod tests {
     #[test]
     fn rejects_a_non_dictionary_user_plist() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
-        let input = input(temporary.path(), "ios")?;
-        let user_path = temporary.path().join("User.plist");
+        let (input, user_path) = ios_input_and_user_path(temporary.path())?;
         Value::Array(Vec::new()).to_file_xml(&user_path)?;
         let metadata = Metadata::read(&input)?;
         let error = build_info_plist(

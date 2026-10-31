@@ -245,25 +245,33 @@ mod tests {
                 commands,
                 closed: closed.clone(),
             };
-            let producer = async {
-                let Command::Read(reply) = requests.recv_async().await? else {
-                    panic!("expected a read");
-                };
-                assert!(
-                    reply
-                        .send(Ok(Reply {
-                            failed,
-                            value: Message::undefined()
-                        }))
-                        .is_ok()
-                );
-                closed.cancel();
-                Ok::<_, flume::RecvError>(())
-            };
+            let producer = reply_and_close(&requests, &closed, failed);
             let (result, completion) = tokio::join!(request(&port, Command::Read), producer);
             completion?;
             assert_eq!(result?.failed, failed);
         }
+        Ok(())
+    }
+
+    /// Answers the first read on `requests` with a reply of `failed`, then
+    /// closes the port at once.
+    async fn reply_and_close(
+        requests: &flume::Receiver<Command>,
+        closed: &CancellationToken,
+        failed: bool,
+    ) -> Result<(), flume::RecvError> {
+        let Command::Read(reply) = requests.recv_async().await? else {
+            panic!("expected a read");
+        };
+        assert!(
+            reply
+                .send(Ok(Reply {
+                    failed,
+                    value: Message::undefined()
+                }))
+                .is_ok()
+        );
+        closed.cancel();
         Ok(())
     }
 }

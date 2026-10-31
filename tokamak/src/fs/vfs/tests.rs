@@ -288,6 +288,18 @@ fn resolves_paths_as_workerd_does() -> TestResult {
         Some(ErrorKind::NotFound)
     );
 
+    Ok(())
+}
+
+#[test]
+fn creates_parents_as_workerd_does() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let mut vfs = vfs(directory.path());
+    vfs.write_file("/tmp/file", b"x", false, false)?;
+    vfs.mkdir("/tmp/full/sub", true)?;
+    vfs.symlink("/tmp/full", "/tmp/link")?;
+    vfs.symlink("/tmp/missing", "/tmp/dangling")?;
+
     assert_eq!(vfs.mkdir("/tmp/a/b/c", true)?.as_deref(), Some("/tmp/a"));
     assert_eq!(vfs.mkdir("/tmp/a/d", true)?, None);
     assert_eq!(

@@ -104,8 +104,14 @@ pub(super) enum KeyMaterial {
 impl KeyMaterial {
     pub(super) fn kind(&self) -> Kind {
         match self {
-            Self::Private(key) => key.kind(),
-            Self::Public(key) => key.kind(),
+            Self::Private(PrivateKey::Rsa(_)) | Self::Public(PublicKey::Rsa(_)) => Kind::Rsa,
+            Self::Private(PrivateKey::Ec(_)) | Self::Public(PublicKey::Ec(_)) => Kind::Ec,
+            Self::Private(PrivateKey::Ed25519(_)) | Self::Public(PublicKey::Ed25519(_)) => {
+                Kind::Ed25519
+            }
+            Self::Private(PrivateKey::X25519(_)) | Self::Public(PublicKey::X25519(_)) => {
+                Kind::X25519
+            }
         }
     }
 
@@ -118,15 +124,6 @@ impl KeyMaterial {
 }
 
 impl PrivateKey {
-    pub(super) fn kind(&self) -> Kind {
-        match self {
-            Self::Rsa(_) => Kind::Rsa,
-            Self::Ec(_) => Kind::Ec,
-            Self::Ed25519(_) => Kind::Ed25519,
-            Self::X25519(_) => Kind::X25519,
-        }
-    }
-
     pub(super) fn public(&self) -> PublicKey {
         match self {
             Self::Rsa(key) => PublicKey::Rsa(key.to_public_key()),
@@ -186,15 +183,6 @@ impl PrivateKey {
 }
 
 impl PublicKey {
-    pub(super) fn kind(&self) -> Kind {
-        match self {
-            Self::Rsa(_) => Kind::Rsa,
-            Self::Ec(_) => Kind::Ec,
-            Self::Ed25519(_) => Kind::Ed25519,
-            Self::X25519(_) => Kind::X25519,
-        }
-    }
-
     pub(super) fn from_spki(der: &[u8]) -> Result<Self> {
         let info = SubjectPublicKeyInfoRef::try_from(der)?;
         let raw = || {

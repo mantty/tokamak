@@ -70,12 +70,7 @@ fn assert_publishable_plugin(
     assert_eq!(package["type"], "module");
     assert_eq!(package["scripts"]["prepack"], "npm run check");
     assert_eq!(manifest["schemaVersion"], 2);
-    for module in [&manifest["api"]["module"], &manifest["web"]["module"]] {
-        assert!(
-            path.join(module.as_str().ok_or("missing module")?)
-                .is_file()
-        );
-    }
+    assert_plugin_modules_exist(path, &manifest)?;
     let native = !families.is_empty();
     assert_eq!(
         package["exports"]["./events"].as_str(),
@@ -92,6 +87,17 @@ fn assert_publishable_plugin(
     );
     for family in families {
         assert_native_package(path, &package, &manifest, family)?;
+    }
+    Ok(())
+}
+
+/// Asserts that the manifest's API and web modules exist in the plugin at `path`.
+fn assert_plugin_modules_exist(path: &std::path::Path, manifest: &serde_json::Value) -> TestResult {
+    for module in [&manifest["api"]["module"], &manifest["web"]["module"]] {
+        assert!(
+            path.join(module.as_str().ok_or("missing module")?)
+                .is_file()
+        );
     }
     Ok(())
 }

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "projects": {
+    "tokamak": {
+      "language": "rust",
+      "required_sections": {
+        "lint": ["lint", "cognitive_complexity", "function_length", "nesting", "pedantic-checks", "duplication"],
+        "format": ["format"],
+        "typecheck": ["typecheck"],
+        "test": ["test"]
+      }
+    }
+  }
+}

@@ -14,6 +14,7 @@ use tokamak_apple_signing::{
     inventory, sign_ios_bundle, sign_macos_bundle, write_info_plist, write_simulator_entitlements,
 };
 
+// jscpd:ignore-start: each binary reports a failed run as tok does.
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -23,6 +24,7 @@ fn main() -> ExitCode {
         }
     }
 }
+// jscpd:ignore-end
 
 fn run() -> Result<()> {
     let mut arguments = std::env::args_os().skip(1);

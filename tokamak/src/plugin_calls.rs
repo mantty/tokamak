@@ -399,14 +399,12 @@ impl Results {
     async fn next(&self) -> Option<PluginReply> {
         loop {
             let ready = self.ready.notified();
-            {
+            let (next, finished) = {
                 let mut queue = lock(&self.queue);
-                if let Some(result) = queue.0.pop_front() {
-                    return Some(result);
-                }
-                if queue.1 {
-                    return None;
-                }
+                (queue.0.pop_front(), queue.1)
+            };
+            if next.is_some() || finished {
+                return next;
             }
             ready.await;
         }

@@ -102,27 +102,29 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         });
-        let order = executor.block_on(async {
-            let runtime = AsyncRuntime::new()?;
-            let context = AsyncContext::full(&runtime).await?;
-            context
-                .async_with(async |ctx| {
-                    ctx.eval::<(), _>("globalThis.order = []")?;
-                    let callback: Function = ctx.eval("() => order.push('timeout')")?;
-                    let queue = std::rc::Rc::new(super::TimerQueue::default());
-                    let clear = super::schedule(ctx.clone(), &queue, callback, 0)?;
-                    ctx.globals().set("clear", clear)?;
-                    ctx.eval::<(), _>(format!("Promise.resolve().then(() => {{ {microtask} }})"))?;
-                    std::thread::sleep(Duration::from_millis(5));
-                    // The timer leaves the queue once it has run or been cleared.
-                    while !queue.pending.borrow().is_empty() {
-                        tokio::time::sleep(Duration::from_millis(1)).await;
-                    }
-                    ctx.eval::<String, _>("order.join()")
-                })
-                .await
-        })?;
+        let order = executor.block_on(due_timer_order(microtask))?;
         Ok(order)
+    }
+
+    async fn due_timer_order(microtask: &str) -> rquickjs::Result<String> {
+        let runtime = AsyncRuntime::new()?;
+        let context = AsyncContext::full(&runtime).await?;
+        context
+            .async_with(async |ctx| {
+                ctx.eval::<(), _>("globalThis.order = []")?;
+                let callback: Function = ctx.eval("() => order.push('timeout')")?;
+                let queue = std::rc::Rc::new(super::TimerQueue::default());
+                let clear = super::schedule(ctx.clone(), &queue, callback, 0)?;
+                ctx.globals().set("clear", clear)?;
+                ctx.eval::<(), _>(format!("Promise.resolve().then(() => {{ {microtask} }})"))?;
+                std::thread::sleep(Duration::from_millis(5));
+                // The timer leaves the queue once it has run or been cleared.
+                while !queue.pending.borrow().is_empty() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                ctx.eval::<String, _>("order.join()")
+            })
+            .await
     }
 
     #[test]
@@ -153,34 +155,42 @@ mod tests {
             .build()?;
         for cancel in [false, true] {
             let drops = Arc::new(AtomicUsize::new(0));
-            executor.block_on(async {
-                let runtime = AsyncRuntime::new()?;
-                let context = AsyncContext::full(&runtime).await?;
-                context
-                    .async_with(async |ctx| {
-                        let capture = Capture(Arc::clone(&drops));
-                        let callback = Function::new(ctx.clone(), move || {
-                            std::hint::black_box(&capture);
-                        })?;
-                        let queue = std::rc::Rc::new(super::TimerQueue::default());
-                        let clear = super::schedule(ctx.clone(), &queue, callback, 3_600_000)?;
-                        if cancel {
-                            clear.call::<_, ()>(())?;
-                        }
-                        ctx.globals().set("clear", clear)?;
-                        Ok::<_, rquickjs::Error>(())
-                    })
-                    .await?;
-                assert_eq!(drops.load(Ordering::Relaxed), 0);
+            executor.block_on(schedule_hour_timer(&drops, cancel))?;
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+        }
+        Ok(())
+    }
+
+    /// Schedules an hour-long timer whose callback counts its drop in `drops`,
+    /// and checks that only clearing it, when `cancel` is set, releases the
+    /// callback before the runtime ends.
+    async fn schedule_hour_timer(
+        drops: &Arc<AtomicUsize>,
+        cancel: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = AsyncRuntime::new()?;
+        let context = AsyncContext::full(&runtime).await?;
+        context
+            .async_with(async |ctx| {
+                let capture = Capture(Arc::clone(drops));
+                let callback = Function::new(ctx.clone(), move || {
+                    std::hint::black_box(&capture);
+                })?;
+                let queue = std::rc::Rc::new(super::TimerQueue::default());
+                let clear = super::schedule(ctx.clone(), &queue, callback, 3_600_000)?;
                 if cancel {
-                    runtime
-                        .execute_pending_job()
-                        .await
-                        .map_err(|_| "timer cancellation job failed")?;
-                    assert_eq!(drops.load(Ordering::Relaxed), 1);
+                    clear.call::<_, ()>(())?;
                 }
-                Ok::<_, Box<dyn std::error::Error>>(())
-            })?;
+                ctx.globals().set("clear", clear)?;
+                Ok::<_, rquickjs::Error>(())
+            })
+            .await?;
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        if cancel {
+            runtime
+                .execute_pending_job()
+                .await
+                .map_err(|_| "timer cancellation job failed")?;
             assert_eq!(drops.load(Ordering::Relaxed), 1);
         }
         Ok(())
