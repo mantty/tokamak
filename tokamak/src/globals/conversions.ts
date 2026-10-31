@@ -10,6 +10,12 @@ export function fieldTypeError(field: string, struct: string, type: string): Typ
   return new TypeError(`Incorrect type for the '${field}' field on '${struct}': the provided value is not of type '${type}'.`);
 }
 
+// ToNumber, which refuses a BigInt where Number() would convert one.
+export function toNumber(value: unknown): number {
+  if (typeof value === "bigint") throw new TypeError("Cannot convert a BigInt value to a number");
+  return Number(value);
+}
+
 // ToString, refusing a Symbol as WebIDL does.
 export function string(value: unknown): string {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
@@ -19,6 +25,11 @@ export function string(value: unknown): string {
 // ToString with lone surrogates replaced, as WebIDL's USVString does.
 export function usvString(value: unknown): string {
   return string(value).toWellFormed();
+}
+
+// The code points of `text`'s characters, each of which has one.
+export function codePoints(text: string): number[] {
+  return Array.from(text, character => character.codePointAt(0) ?? 0);
 }
 
 // The bytes a view covers, without a copy.

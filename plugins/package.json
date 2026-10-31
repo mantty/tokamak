@@ -4,10 +4,11 @@
   "packageManager": "pnpm@9.9.0",
   "type": "module",
   "scripts": {
-    "lint:ts": "eslint \"**/*.ts\" --max-warnings 0 && tsc --project tsconfig.json",
+    "lint:ts": "eslint \"**/*.ts\" --max-warnings 0 && tsc --project tsconfig.json && tsc --project core/tsconfig.json",
     "test:ts": "node --import tsx --test \"**/*.test.ts\" \"**/*.test.mjs\""
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20261023.1",
     "@eslint/js": "^9.39.2",
     "@types/node": "^22.19.15",
     "eslint": "^9.39.2",

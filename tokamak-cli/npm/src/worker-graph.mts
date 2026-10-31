@@ -56,7 +56,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   const types = path.join(root, "tokamak-env.d.ts");
   const contracts = new WorkerTypes(root, entry);
   contracts.discover();
-  const events = corePath("./entrypoint.js");
+  const events = corePath("./entrypoint.ts");
   let mainName: string;
   let nativeName: string;
   let appName: string;
@@ -67,7 +67,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   let configuredEntrypoints: string;
   const entrypoints = () => Object.keys(contracts.named).join();
   const signatures = new Map<string, string>();
-  const development = corePath("./rpc/binding.mjs");
+  const development = corePath("./rpc/binding.ts");
   let relay: DeviceRelay | undefined;
   const serviceModule = (role: string) => `virtual:tokamak/service/${role}`;
   const bindingsModule = (role: string) => `\0tokamak:bindings:${role}`;
@@ -299,7 +299,7 @@ function availability(plugins: PluginContract[]): Availability {
 
 function serviceEntrypoint(entry: string | undefined, services: NativeService[]): string {
   const sdk = normalizePath(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker")));
-  const rpc = corePath("./rpc/endpoint.mjs");
+  const rpc = corePath("./rpc/endpoint.ts");
   const plugins = services.flatMap(service => service.plugin ? [service.plugin] : []);
   const imports = services.map((service, index) => {
     if (service.plugin) {

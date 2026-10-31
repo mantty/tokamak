@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { takeStream, receiveStream } from '../../src/rpc/streams.mjs';
+import { takeStream, receiveStream } from '../../src/rpc/streams.ts';
 
 test('stream transfer moves ownership and only reads when the receiver demands bytes', async () => {
   let pulls = 0;

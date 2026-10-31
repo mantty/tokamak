@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, stripTypeScriptTypes } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { WebSocketServer } from 'ws';
-import { createClient } from '../../plugins/core/src/rpc/client.mjs';
-import { serveRpc } from '../../plugins/core/src/rpc/endpoint.mjs';
+import { createClient } from '../../plugins/core/src/rpc/client.ts';
+import { serveRpc } from '../../plugins/core/src/rpc/endpoint.ts';
 
 async function service(t, worker, methods) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -103,14 +103,14 @@ test('a worker HTTP endpoint accepts same-origin RPC and rejects unrelated origi
   const { Miniflare, convertV4MiniflareOptions } = await import(pathToFileURL(require.resolve('miniflare')).href);
   const files = ['endpoint', 'channel', 'frames', 'values', 'streams'];
   const modules = files.map(name => ({
-    type: 'ESModule', path: `/rpc/${name}.mjs`,
-    contents: fs.readFileSync(new URL(`../../plugins/core/src/rpc/${name}.mjs`, import.meta.url), 'utf8'),
+    type: 'ESModule', path: `/rpc/${name}.ts`,
+    contents: stripTypeScriptTypes(fs.readFileSync(new URL(`../../plugins/core/src/rpc/${name}.ts`, import.meta.url), 'utf8')),
   }));
   const miniflare = new Miniflare(convertV4MiniflareOptions({
     modulesRoot: '/',
     modules: [{
       type: 'ESModule', path: '/worker.mjs',
-      contents: `import { rpcResponse } from './rpc/endpoint.mjs';
+      contents: `import { rpcResponse } from './rpc/endpoint.ts';
         export default { fetch(request, env, ctx) {
           return rpcResponse(request, () => ({
             echo(value) { return value; },

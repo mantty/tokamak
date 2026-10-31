@@ -163,7 +163,7 @@ export class Performance extends EventTarget {
   get nodeTiming() { return new PerformanceNodeTiming(); }
   markResourceTiming() {}
   setResourceTimingBufferSize(_size: unknown): void {}
-  timerify(callback: unknown): Function { if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function"); return callback; }
+  timerify<F>(callback: F): F { if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function"); return callback; }
   toJSON() { return json({ timeOrigin: 0 }); }
 }
 

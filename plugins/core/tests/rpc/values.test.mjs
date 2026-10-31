@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { encode, decode } from '../../src/rpc/values.mjs';
+import { encode, decode } from '../../src/rpc/values.ts';
 
 function transfer(value) {
   const message = encode(value);

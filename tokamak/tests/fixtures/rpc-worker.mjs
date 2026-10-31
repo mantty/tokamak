@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { rpcResponse } from './endpoint.mjs';
+import { rpcResponse } from './endpoint.ts';
 
 class Native extends WorkerEntrypoint {
   echo(value) { return value; }

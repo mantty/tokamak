@@ -1,7 +1,7 @@
 import { serviceStreamCodec, failure, replyValue } from './streams.ts';
-import { decodeRequest, encodeResponse } from '../rpc/http.mjs';
+import { decodeRequest, encodeResponse } from '../rpc/http.ts';
 import { fetchService } from './http.ts';
-import { encode, decode } from '../rpc/values.mjs';
+import { encode, decode } from '../rpc/values.ts';
 import { WorkerEntrypoint, ServiceStub } from '../builtins/cloudflare-workers.ts';
 
 export function installServices(names, dispatch) {

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
 import tls from 'node:tls';
-import { createClient } from '../../../plugins/core/src/rpc/client.mjs';
+import { createClient } from '../../../plugins/core/src/rpc/client.ts';
 
 const require = createRequire(new URL('../../../tokamak-cli/npm/package.json', import.meta.url));
 const WebSocket = require('ws');

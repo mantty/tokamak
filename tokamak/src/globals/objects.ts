@@ -36,10 +36,22 @@ export function isIterable(value: unknown): value is Iterable<unknown> {
   return value != null && typeof Object(value)[Symbol.iterator] === "function";
 }
 
+// Whether `value`, which may be a primitive, has a `Symbol.asyncIterator` method.
+export function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return value != null && typeof Object(value)[Symbol.asyncIterator] === "function";
+}
+
 // `value` as an object: itself, or a primitive's wrapper object, whose
 // properties read as the primitive's do.
 export function objectOf(value: {}): Record<PropertyKey, unknown> {
   return Object(value);
+}
+
+// Calls `value(...args)` with `thisArg` as its receiver, with a TypeError
+// when `value` is not a function, as calling it in JavaScript would.
+export function callFunction(value: unknown, thisArg: unknown, ...args: unknown[]): unknown {
+  if (!isFunction(value)) throw new TypeError("not a function");
+  return Reflect.apply(value, thisArg, args);
 }
 
 // Calls `target[name](...args)` as JavaScript does, with a TypeError when

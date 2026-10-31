@@ -1,13 +1,20 @@
+import { hasMethod, isAsyncIterable, isIterable, type AnyFunction } from "../globals/objects.ts";
 import { TextDecoder } from "../streams/text.ts";
 import { Blob, Buffer } from "./buffer.ts";
 
-function nodeIterator(stream) {
-  const queue = [];
-  let ended = false;
-  let failure;
-  let wake;
+// A Node stream, which its `on` method identifies.
+interface NodeStream {
+  on(name: string, listener: AnyFunction): unknown;
+  removeListener?(name: string, listener: AnyFunction): unknown;
+}
 
-  const remove = (name, listener) => {
+function nodeIterator(stream: NodeStream): AsyncIterableIterator<unknown> {
+  const queue: unknown[] = [];
+  let ended = false;
+  let failure: unknown;
+  let wake: (() => void) | undefined;
+
+  const remove = (name: string, listener: AnyFunction) => {
     stream.removeListener?.(name, listener);
   };
   const cleanup = () => {
@@ -21,9 +28,9 @@ function nodeIterator(stream) {
     wake = undefined;
     resolve?.();
   };
-  const onData = chunk => { queue.push(chunk); notify(); };
+  const onData = (chunk: unknown) => { queue.push(chunk); notify(); };
   const onEnd = () => { ended = true; notify(); };
-  const onError = error => { failure = error; ended = true; notify(); };
+  const onError = (error: unknown) => { failure = error; ended = true; notify(); };
   const onClose = () => {
     if (!ended) {
       failure = Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" });
@@ -39,7 +46,7 @@ function nodeIterator(stream) {
 
   return {
     async next() {
-      while (queue.length === 0 && !ended) await new Promise(resolve => { wake = resolve; });
+      while (queue.length === 0 && !ended) await new Promise<void>(resolve => { wake = resolve; });
       if (queue.length > 0) return { done: false, value: queue.shift() };
       cleanup();
       if (failure) throw failure;
@@ -53,7 +60,12 @@ function nodeIterator(stream) {
   };
 }
 
-function webIterator(stream) {
+// Whether `value` is a ReadableStream, which its `getReader` method identifies.
+function isReadableStream(value: unknown): value is ReadableStream<unknown> {
+  return hasMethod(value, "getReader");
+}
+
+function webIterator(stream: ReadableStream<unknown>): AsyncIterable<unknown> {
   return {
     async *[Symbol.asyncIterator]() {
       const reader = stream.getReader();
@@ -71,47 +83,55 @@ function webIterator(stream) {
   };
 }
 
-function iterable(stream) {
-  if (stream !== null && stream !== undefined) {
-    if (typeof stream.getReader === "function") return webIterator(stream);
-    if (typeof stream[Symbol.asyncIterator] === "function") return stream;
-    if (typeof stream.on === "function") return nodeIterator(stream);
+// The chunks of `stream`, undefined when it has none to iterate.
+function chunks(stream: unknown): AsyncIterable<unknown> | Iterable<unknown> | undefined {
+  if (stream === null || stream === undefined) return undefined;
+  if (isReadableStream(stream)) return webIterator(stream);
+  if (isAsyncIterable(stream)) return stream;
+  if (hasMethod(stream, "on")) return nodeIterator(stream);
+  if (isIterable(stream)) return stream;
+  return undefined;
+}
+
+function notIterable(stream: unknown): TypeError {
+  return new TypeError(`${String(stream)} is not async iterable`);
+}
+
+async function collect(stream: unknown): Promise<unknown[]> {
+  const source = chunks(stream);
+  if (source === undefined) {
+    if (stream === null || stream === undefined) throw notIterable(stream);
+    return [];
   }
-  return stream;
+  const values: unknown[] = [];
+  for await (const chunk of source) values.push(chunk);
+  return values;
 }
 
-async function collect(stream) {
-  const source = iterable(stream);
-  if (source != null
-    && typeof source[Symbol.asyncIterator] !== "function"
-    && typeof source[Symbol.iterator] !== "function") return [];
-  const chunks = [];
-  for await (const chunk of source) chunks.push(chunk);
-  return chunks;
-}
-
-export async function text(stream) {
+export async function text(stream: unknown): Promise<string> {
+  const source = chunks(stream);
+  if (source === undefined) throw notIterable(stream);
   const decoder = new TextDecoder();
   let value = "";
-  for await (const chunk of iterable(stream)) {
+  for await (const chunk of source) {
     value += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
   }
   return value + decoder.decode();
 }
 
-export async function blob(stream) {
+export async function blob(stream: unknown): Promise<Blob> {
   return new Blob(await collect(stream));
 }
 
-export async function arrayBuffer(stream) {
+export async function arrayBuffer(stream: unknown): Promise<ArrayBuffer> {
   return (await blob(stream)).arrayBuffer();
 }
 
-export async function buffer(stream) {
+export async function buffer(stream: unknown): Promise<Buffer> {
   return Buffer.from(await arrayBuffer(stream));
 }
 
-export async function json(stream) {
+export async function json(stream: unknown): Promise<unknown> {
   return JSON.parse(await text(stream));
 }
 

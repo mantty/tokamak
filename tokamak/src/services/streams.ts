@@ -1,5 +1,5 @@
-import { encode, decode, dataCloneError } from '../rpc/values.mjs';
-import { takeStream, receiveStream } from '../rpc/streams.mjs';
+import { encode, decode, dataCloneError } from '../rpc/values.ts';
+import { takeStream, receiveStream } from '../rpc/streams.ts';
 
 export function failure(error) {
   try { return { failed: true, value: encode(error) }; }

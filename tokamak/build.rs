@@ -17,9 +17,9 @@ const PLUGIN_SOURCE: &str = "../plugins/core/src";
 
 /// The runtime modules shared with `@tokamakdev/plugin`, under `PLUGIN_SOURCE`.
 const PLUGIN_MODULES: [&str; 4] = [
-    "rpc/values.mjs",
-    "rpc/streams.mjs",
-    "rpc/http.mjs",
+    "rpc/values.ts",
+    "rpc/streams.ts",
+    "rpc/http.ts",
     "native-protocol.mjs",
 ];
 

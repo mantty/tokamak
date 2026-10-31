@@ -1,5 +1,5 @@
-import { encode } from '../rpc/values.mjs';
-import { encodeRequest, decodeResponse } from '../rpc/http.mjs';
+import { encode } from '../rpc/values.ts';
+import { encodeRequest, decodeResponse } from '../rpc/http.ts';
 import { replyValue } from './streams.ts';
 
 export async function fetchService(call, name, input, init) {

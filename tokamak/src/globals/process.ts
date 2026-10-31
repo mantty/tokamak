@@ -2,17 +2,14 @@ import { builtinNamespace, isNodeBuiltin, processChdir, processCwd } from "tokam
 import EventEmitter from "../events/events.ts";
 import { setWarningProcess } from "../events/process-warnings.ts";
 import { usvString } from "./conversions.ts";
-import { isFunction, objectOf } from "./objects.ts";
+import { callFunction, objectOf } from "./objects.ts";
 
 const builtinModules = new Map<string, unknown>();
 const processImpl = { getCwd: () => processCwd() };
 
 const process = Object.assign(new EventEmitter(), {
   env: Object.fromEntries(Object.entries(globalThis.__tokamak_env ?? {}).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)])),
-  nextTick: (callback: unknown, ...args: unknown[]) => queueMicrotask(() => {
-    if (!isFunction(callback)) throw new TypeError("The \"callback\" argument must be of type function");
-    callback(...args);
-  }),
+  nextTick: (callback: unknown, ...args: unknown[]) => queueMicrotask(() => callFunction(callback, undefined, ...args)),
   // A Node module's default export, or another builtin's namespace, kept once found.
   getBuiltinModule: (specifier: unknown): unknown => {
     const name = usvString(specifier);

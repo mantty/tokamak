@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { openChannel } from '../../src/rpc/channel.mjs';
-import { packFrame } from '../../src/rpc/frames.mjs';
+import { Channel } from '../../src/rpc/channel.ts';
+import { packFrame } from '../../src/rpc/frames.ts';
 
 function sockets() {
   const pair = [new EventTarget(), new EventTarget()];
@@ -24,7 +24,7 @@ function sockets() {
 function channels(t) {
   const pair = sockets();
   t.after(() => pair[0].close());
-  return pair.map(openChannel);
+  return pair.map(socket => new Channel(socket));
 }
 
 test('a channel transfers structured graphs and binary data without sharing state', async t => {
@@ -163,7 +163,7 @@ test('a call snapshots its arguments while waiting for the socket to connect', a
   const pair = sockets();
   pair[0].readyState = 0;
   t.after(() => pair[0].close());
-  const [sender, receiver] = pair.map(openChannel);
+  const [sender, receiver] = pair.map(socket => new Channel(socket));
   const bytes = new Uint8Array([1, 2, 3]);
   const sending = sender.send(bytes);
   bytes[0] = 9;
@@ -199,7 +199,7 @@ test('simultaneous streams keep their reads and cancellation independent', async
 test('malformed frames close the channel and release its owned streams', async t => {
   const pair = sockets();
   t.after(() => pair[0].close());
-  const sender = openChannel(pair[0]);
+  const sender = new Channel(pair[0]);
   let cancelled;
   await sender.send(new ReadableStream({ type: 'bytes', cancel: reason => { cancelled = reason; } }));
   const response = assert.rejects(sender.receive);
@@ -237,7 +237,7 @@ test('cancellation crossing a final read settles without a connection error', as
     send(data);
     if (reader && !cancellation) cancellation = reader.cancel('finished');
   };
-  const [sender, receiver] = pair.map(openChannel);
+  const [sender, receiver] = pair.map(socket => new Channel(socket));
   await sender.send(new ReadableStream({ type: 'bytes', start(controller) { controller.close(); } }));
   reader = (await receiver.receive).getReader();
   sender.complete();
@@ -258,7 +258,7 @@ test('cancellation crossing a terminal error preserves its transferred stream fi
   const error = Object.assign(new Error('Stream failed'), {
     details: new ReadableStream({ type: 'bytes', cancel() { cancelled = true; } }),
   });
-  const [sender, receiver] = pair.map(openChannel);
+  const [sender, receiver] = pair.map(socket => new Channel(socket));
   await sender.send(new ReadableStream({ type: 'bytes', pull(controller) { controller.error(error); } }));
   reader = (await receiver.receive).getReader();
   sender.complete();

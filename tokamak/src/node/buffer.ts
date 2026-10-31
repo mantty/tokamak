@@ -1,5 +1,5 @@
 import { atob as globalAtob, btoa as globalBtoa } from "../globals/base64.ts";
-import { bufferBytes } from "../globals/conversions.ts";
+import { bufferBytes, toNumber } from "../globals/conversions.ts";
 import { isObject, isTypedArray, objectOf, type TypedArray } from "../globals/objects.ts";
 import { Blob, File } from "../network/fetch.ts";
 import { TextDecoder, TextEncoder } from "../streams/text.ts";
@@ -29,12 +29,6 @@ function isArrayBufferLike(value: unknown): value is ArrayBufferLike {
 // array-like object's bytes.
 function isArrayLike(value: unknown): value is ArrayLike<unknown> {
   return Array.isArray(value) || (Boolean(value) && typeof objectOf(Object(value)).length === "number");
-}
-
-// ToNumber, which refuses a BigInt as assigning a typed array element does.
-function toNumber(value: unknown): number {
-  if (typeof value === "bigint") throw new TypeError("Cannot convert a BigInt value to a number");
-  return Number(value);
 }
 
 // A copy of an array-like object's elements, each converted to a byte.

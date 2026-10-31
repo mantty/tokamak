@@ -1,6 +1,6 @@
 import { isObject, markHostObject } from "../globals/objects.ts";
 import { createDecoder, type TextDecoderState } from "tokamak:host";
-import { sharedBufferSourceBytes, string } from "../globals/conversions.ts";
+import { codePoints, sharedBufferSourceBytes, string } from "../globals/conversions.ts";
 
 function utf8(code: number): number[] {
   if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
@@ -10,25 +10,20 @@ function utf8(code: number): number[] {
   return [0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)];
 }
 
-// The code point of a one-character string from iterating a string.
-function codePoint(character: string): number {
-  return character.codePointAt(0) ?? 0;
-}
-
 export class TextEncoder {
   constructor() { markHostObject(this); }
   get encoding() { return "utf-8"; }
-  encode(value: unknown = ""): Uint8Array { return new Uint8Array([...string(value)].flatMap(character => utf8(codePoint(character)))); }
+  encode(value: unknown = ""): Uint8Array { return new Uint8Array(codePoints(string(value)).flatMap(code => utf8(code))); }
   encodeInto(source: unknown, destination: unknown): { read: number; written: number } {
     const text = string(source);
     if (!(destination instanceof Uint8Array)) throw new TypeError("Destination must be a Uint8Array");
     let read = 0, written = 0;
-    for (const character of text) {
-      const bytes = utf8(codePoint(character));
+    for (const code of codePoints(text)) {
+      const bytes = utf8(code);
       if (written + bytes.length > destination.byteLength) break;
       destination.set(bytes, written);
       written += bytes.length;
-      read += character.length;
+      read += code > 0xffff ? 2 : 1;
     }
     return { read, written };
   }

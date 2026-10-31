@@ -1,3 +1,6 @@
+import { codePoints, toNumber } from "../globals/conversions.ts";
+import { isIterable } from "../globals/objects.ts";
+
 const base = 36;
 const tMin = 1;
 const tMax = 26;
@@ -7,11 +10,11 @@ const initialBias = 72;
 const initialN = 128;
 const delimiter = "-";
 
-function digit(value) { return value < 26 ? String.fromCharCode(97 + value) : String.fromCharCode(22 + value); }
-function value(character) { const code = character.toLowerCase().charCodeAt(0); return code >= 97 ? code - 97 : code - 22; }
-function threshold(k, bias) { return k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias; }
+function digit(value: number): string { return value < 26 ? String.fromCharCode(97 + value) : String.fromCharCode(22 + value); }
+function value(character: string): number { const code = character.toLowerCase().charCodeAt(0); return code >= 97 ? code - 97 : code - 22; }
+function threshold(k: number, bias: number): number { return k <= bias ? tMin : k >= bias + tMax ? tMax : k - bias; }
 
-function adapt(delta, points, first) {
+function adapt(delta: number, points: number, first: boolean): number {
   delta = first ? Math.floor(delta / damp) : Math.floor(delta / 2);
   delta += Math.floor(delta / points);
   let k = 0;
@@ -19,20 +22,20 @@ function adapt(delta, points, first) {
   return k + Math.floor(((base - tMin + 1) * delta) / (delta + skew));
 }
 
-export function encode(input) {
-  const codePoints = [...String(input)].map(character => character.codePointAt(0));
-  let output = codePoints.filter(point => point < initialN).map(point => String.fromCodePoint(point)).join("");
+export function encode(input: unknown): string {
+  const points = codePoints(String(input));
+  let output = points.filter(point => point < initialN).map(point => String.fromCodePoint(point)).join("");
   let basic = output.length;
   let handled = basic;
   if (basic > 0) output += delimiter;
   let n = initialN;
   let delta = 0;
   let bias = initialBias;
-  while (handled < codePoints.length) {
-    const next = Math.min(...codePoints.filter(point => point >= n));
+  while (handled < points.length) {
+    const next = Math.min(...points.filter(point => point >= n));
     delta += (next - n) * (handled + 1);
     n = next;
-    for (const point of codePoints) {
+    for (const point of points) {
       if (point < n) delta += 1;
       if (point !== n) continue;
       let number = delta;
@@ -53,7 +56,7 @@ export function encode(input) {
   return output.replace(/-$/, "");
 }
 
-export function decode(input) {
+export function decode(input: unknown): string {
   const valueInput = String(input);
   const delimiterIndex = valueInput.lastIndexOf(delimiter);
   const output = delimiterIndex < 0 ? [] : [...valueInput.slice(0, delimiterIndex)].map(character => character.charCodeAt(0));
@@ -83,9 +86,15 @@ export function decode(input) {
   return String.fromCodePoint(...output);
 }
 
-function mapLabels(value, transform) { return String(value).split(".").map(transform).join("."); }
-export function toASCII(value) { return mapLabels(value, label => { const lower = label.toLowerCase(); return [...lower].some(character => character.codePointAt(0) >= 128) ? `xn--${encode(lower)}` : lower; }); }
-export function toUnicode(value) { return mapLabels(value, label => label.toLowerCase().startsWith("xn--") ? decode(label.slice(4)) : label.toLowerCase()); }
-export const ucs2 = { decode: value => [...String(value)].map(character => character.codePointAt(0)), encode: value => String.fromCodePoint(...value) };
+function mapLabels(value: unknown, transform: (label: string) => string): string { return String(value).split(".").map(label => transform(label)).join("."); }
+export function toASCII(value: unknown): string { return mapLabels(value, label => { const lower = label.toLowerCase(); return codePoints(lower).some(point => point >= 128) ? `xn--${encode(lower)}` : lower; }); }
+export function toUnicode(value: unknown): string { return mapLabels(value, label => label.toLowerCase().startsWith("xn--") ? decode(label.slice(4)) : label.toLowerCase()); }
+export const ucs2 = {
+  decode: (value: unknown) => codePoints(String(value)),
+  encode: (value: unknown) => {
+    if (!isIterable(value)) throw new TypeError("value is not iterable");
+    return String.fromCodePoint(...Array.from(value, toNumber));
+  },
+};
 export const version = "5.1.1";
 export default { encode, decode, toASCII, toUnicode, ucs2, version };

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { build as viteBuild } from "vite";
 import WebSocket from "ws";
-import { createClient } from "../../plugins/core/src/rpc/client.mjs";
+import { createClient } from "../../plugins/core/src/rpc/client.ts";
 import { createClientPlugin } from "./dist/client.mjs";
 import { project, readOutput, serve, withEnvironment } from "./vite-fixtures.mjs";
 

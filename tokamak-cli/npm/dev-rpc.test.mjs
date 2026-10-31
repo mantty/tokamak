@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, stripTypeScriptTypes } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
@@ -14,8 +14,8 @@ async function createRuntime(t, workers) {
 
 function rpcModules() {
   return ['binding', 'client', 'endpoint', 'channel', 'frames', 'values', 'streams'].map(name => ({
-    type: 'ESModule', path: `/rpc/${name}.mjs`,
-    contents: fs.readFileSync(new URL(`../../plugins/core/src/rpc/${name}.mjs`, import.meta.url), 'utf8'),
+    type: 'ESModule', path: `/rpc/${name}.ts`,
+    contents: stripTypeScriptTypes(fs.readFileSync(new URL(`../../plugins/core/src/rpc/${name}.ts`, import.meta.url), 'utf8')),
   }));
 }
 
@@ -27,7 +27,7 @@ async function service(t, caller) {
     serviceBindings: { NATIVE: 'native' },
     modules: [{
       type: 'ESModule', path: '/main.mjs',
-      contents: `import { createBinding, createRpcPort } from './rpc/binding.mjs';
+      contents: `import { createBinding, createRpcPort } from './rpc/binding.ts';
         import { WorkerEntrypoint, RpcTarget } from 'cloudflare:workers';
         export default class extends WorkerEntrypoint {
           __tokamakRpc(peer) {
@@ -43,7 +43,7 @@ async function service(t, caller) {
     name: 'native', compatibilityDate: '2025-01-01', modulesRoot: '/', serviceBindings: { MAIN: 'main' },
     modules: [{
       type: 'ESModule', path: '/native.mjs',
-      contents: `import { createBinding, createRpcPort } from './rpc/binding.mjs';
+      contents: `import { createBinding, createRpcPort } from './rpc/binding.ts';
         import { WorkerEntrypoint, RpcTarget } from 'cloudflare:workers';
         let invocations = 0, consumed, producerCancelled = false;
         export default class extends WorkerEntrypoint {
@@ -109,7 +109,7 @@ for (const [name, handler] of Object.entries({
       modules: [{
         type: 'ESModule', path: '/main.mjs',
         contents: `import { WorkerEntrypoint } from 'cloudflare:workers';
-          import { developmentEntrypoint } from './rpc/binding.mjs';
+          import { developmentEntrypoint } from './rpc/binding.ts';
           const records = [];
           function later(value) { return new Promise(resolve => setTimeout(resolve, 5)).then(() => records.push(value)); }
           ${handler}

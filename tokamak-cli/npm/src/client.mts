@@ -6,7 +6,7 @@ import { CAPABILITIES, corePath } from "./worker-graph.mjs";
 import { WorkerTypes, type BindingConfiguration } from "./worker-types.mjs";
 
 const MODULE = "virtual:tokamak/client";
-const TRANSPORT = corePath("./rpc/client.mjs");
+const TRANSPORT = corePath("./rpc/client.ts");
 
 /** The app's public methods, without its native implementation. */
 export function createClientPlugin(module: string | undefined, native: boolean, shared?: () => WorkerTypes): Plugin & {
