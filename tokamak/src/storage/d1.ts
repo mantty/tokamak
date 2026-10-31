@@ -7,13 +7,13 @@ const BOOKMARK_HEADER = "x-cf-d1-session-commit-token";
 
 // The D1 service a binding sends its queries to, answered on the device.
 class D1Service {
-  #binding;
+  #binding: string;
 
-  constructor(binding) {
+  constructor(binding: string) {
     this.#binding = binding;
   }
 
-  async fetch(input, init = {}) {
+  async fetch(input: string, init: RequestInit = {}): Promise<Response> {
     const url = new URL(String(input));
     if (url.pathname !== "/query" && url.pathname !== "/execute") return new Response(null, { status: 404 });
     const format = url.searchParams.get("resultsFormat") ?? "";
@@ -22,6 +22,6 @@ class D1Service {
   }
 }
 
-export function createD1Database(binding) {
+export function createD1Database(binding: string): D1Database {
   return makeBinding({ fetcher: new D1Service(binding) });
 }

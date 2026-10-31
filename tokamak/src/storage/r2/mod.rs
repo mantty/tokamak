@@ -21,12 +21,15 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
+use tokamak_macros::JsType;
 
 use super::{Location, Open, remove_entries, sqlite, text};
 use crate::lock;
 pub(crate) use body::{Body, BodyReader, BodyWriter, Checksum};
 use conditional::Conditional;
 pub(crate) use failure::Failure;
+pub(crate) use list::{ListRequest, Listing};
+pub(crate) use multipart::UploadedPart;
 use range::{Bounds, Range, header_range};
 
 /// Objects by key, uploads in progress or finished, and the parts uploaded
@@ -62,7 +65,7 @@ CREATE TABLE IF NOT EXISTS parts (
 );
 ";
 
-/// An object row's columns, in the order `Object::from_row` reads them.
+/// An object row's columns, in the order `R2Object::from_row` reads them.
 macro_rules! object_columns {
     () => {
         "key, version, size, etag, uploaded, checksums, http_metadata, custom_metadata, storage_class"
@@ -106,6 +109,14 @@ impl Serialize for Json {
     }
 }
 
+/// JSON the JavaScript binding wrote, whose shape Rust does not read.
+#[cfg(test)]
+impl crate::typescript::JsType for Json {
+    fn typescript(_: &mut crate::typescript::Types) -> String {
+        "unknown".to_owned()
+    }
+}
+
 impl Json {
     fn empty_object() -> Self {
         Self("{}".to_owned())
@@ -119,9 +130,9 @@ impl<'de> Deserialize<'de> for Json {
 }
 
 /// An object's metadata, and the range of its body a read returns.
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, JsType)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Object {
+pub(crate) struct R2Object {
     pub(crate) key: String,
     pub(crate) version: String,
     pub(crate) size: u64,
@@ -139,7 +150,7 @@ pub(crate) struct Object {
 }
 
 /// The metadata a write gives an object.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ObjectMetadata {
     #[serde(default = "Json::empty_object")]
@@ -152,7 +163,7 @@ pub(crate) struct ObjectMetadata {
 
 /// What a read asks for: conditions, and a range as bounds or as a `Range`
 /// header's value.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GetRequest {
     only_if: Option<Conditional>,
@@ -161,7 +172,7 @@ pub(crate) struct GetRequest {
 }
 
 /// How a write records an object: with conditions, and its metadata.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PutRequest {
     only_if: Option<Conditional>,
@@ -172,9 +183,9 @@ pub(crate) struct PutRequest {
 #[derive(Debug)]
 pub(crate) enum Read {
     /// The object, whose metadata fails the read's conditions.
-    Unmet(Object),
+    Unmet(R2Object),
     /// The object, and its body in the range read.
-    Body(Object, BodyReader),
+    Body(R2Object, BodyReader),
 }
 
 impl Open for R2Bucket {
@@ -207,10 +218,10 @@ impl R2Bucket {
     }
 
     /// The metadata of the object `key`.
-    pub(crate) fn head(&self, key: &str) -> Result<Option<Object>, Failure> {
+    pub(crate) fn head(&self, key: &str) -> Result<Option<R2Object>, Failure> {
         validate_key(key)?;
         let object = find(&lock(&self.connection), key)?;
-        Ok(object.map(Object::whole))
+        Ok(object.map(R2Object::whole))
     }
 
     /// The object `key`, with its body in the requested range unless its
@@ -250,10 +261,10 @@ impl R2Bucket {
         body: Body,
         request: &PutRequest,
         now: i64,
-    ) -> Result<Option<Object>, Failure> {
+    ) -> Result<Option<R2Object>, Failure> {
         validate_key(key)?;
         validate_metadata(&request.metadata.custom_metadata)?;
-        let object = Object::written(
+        let object = R2Object::written(
             key,
             Written {
                 version: body.name.clone(),
@@ -316,7 +327,7 @@ struct Written {
     checksums: String,
 }
 
-impl Object {
+impl R2Object {
     /// The object `key` with `body`, uploaded at `now` milliseconds since
     /// the epoch.
     fn written(key: &str, body: Written, metadata: ObjectMetadata, now: i64) -> Self {
@@ -379,20 +390,20 @@ impl GetRequest {
 
 /// Whether `object`, or the absence of one, meets the conditions of
 /// `only_if`.
-fn meets(only_if: Option<&Conditional>, object: Option<&Object>) -> bool {
+fn meets(only_if: Option<&Conditional>, object: Option<&R2Object>) -> bool {
     let current = object.map(|object| (object.etag.as_str(), object.uploaded));
     only_if.is_none_or(|only_if| only_if.holds(current))
 }
 
-fn find(connection: &Connection, key: &str) -> rusqlite::Result<Option<Object>> {
+fn find(connection: &Connection, key: &str) -> rusqlite::Result<Option<R2Object>> {
     connection
         .prepare(FIND_OBJECT)?
-        .query_row([key], |row| Object::from_row(row, true, true))
+        .query_row([key], |row| R2Object::from_row(row, true, true))
         .optional()
 }
 
 /// Store `object`, which carries its metadata, replacing any with its key.
-fn record(connection: &Connection, object: &Object) -> rusqlite::Result<()> {
+fn record(connection: &Connection, object: &R2Object) -> rusqlite::Result<()> {
     connection.prepare(RECORD_OBJECT)?.execute(params![
         object.key,
         object.version,

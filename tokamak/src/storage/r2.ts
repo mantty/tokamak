@@ -1,8 +1,11 @@
 import {
   r2AbortUpload, r2CloseBody, r2CompleteUpload, r2CreateUpload, r2Delete, r2Get, r2Head, r2List,
   r2ObjectWriter, r2PartWriter, r2Put, r2Read, r2UploadPart, r2Write,
+  type Algorithm, type Bounds, type Checksum, type Conditional, type Etag, type GetRequest, type ListRequest,
+  type ObjectBody, type ObjectMetadata, type R2Object, type Reader, type Writer,
 } from "tokamak:storage";
 import { bufferSourceBytes, fieldTypeError, parameterTypeError, sharedBufferSourceBytes } from "../globals/conversions.ts";
+import { objectOf, propertyOf } from "../globals/objects.ts";
 import { Blob, Headers, bytes, consumeStream, exactBlob } from "../network/fetch.ts";
 import { TextDecoder } from "../streams/text.ts";
 import { ReadableStream, isDisturbed, nativeReadableStream, setStreamLength, streamLength } from "../streams/web.ts";
@@ -17,9 +20,9 @@ const PUT_CANCELLED = "Stream cancelled because the associated put operation enc
 const NOT_BYTES = "This ReadableStream did not return bytes.";
 const NO_ETAG = "Comma was expected to separate etags.";
 // Checksum fields, their lengths in bytes, and their names in messages.
-const HASHES = [["md5", 16, "MD5"], ["sha1", 20, "SHA-1"], ["sha256", 32, "SHA-256"], ["sha384", 48, "SHA-384"], ["sha512", 64, "SHA-512"]];
+const HASHES: [Algorithm, number, string][] = [["md5", 16, "MD5"], ["sha1", 20, "SHA-1"], ["sha256", 32, "SHA-256"], ["sha384", 48, "SHA-384"], ["sha512", 64, "SHA-512"]];
 // HTTP metadata fields, and the headers that carry them.
-const HTTP_FIELDS = [
+const HTTP_FIELDS: [string, string][] = [
   ["contentType", "content-type"],
   ["contentLanguage", "content-language"],
   ["contentDisposition", "content-disposition"],
@@ -27,38 +30,47 @@ const HTTP_FIELDS = [
   ["cacheControl", "cache-control"],
 ];
 
+// The options of a binding method, as an object whose fields are read.
+type Settings = Record<PropertyKey, unknown>;
+
+// A value to write: its bytes when in memory, or its stream.
+type Payload = { bytes: Uint8Array; stream?: undefined } | { bytes?: undefined; stream: ReadableStream };
+
+// HTTP metadata as reads report it.
+type HttpMetadata = { [field: string]: unknown; cacheExpiry: Date | undefined };
+
 // Run the native work of `action`, reporting its failure as the binding does.
-async function native(action, work) {
+async function native<T>(action: string, work: () => Promise<T>): Promise<T> {
   try {
     return await work();
   } catch (error) {
-    throw new Error(`${action}: ${error?.message ?? error}`);
+    throw new Error(`${action}: ${propertyOf(error, "message") ?? error}`);
   }
 }
 
 // A string parameter, converted as the runtime converts one.
-function stringParameter(value, method, owner, index) {
+function stringParameter(value: unknown, method: string, owner: string, index: number): string {
   if (value === undefined) throw parameterTypeError(method, owner, index, "string");
   return String(value);
 }
 
 // Options of `method`, or none when absent.
-function options(value, method, index, type) {
+function options(value: unknown, method: string, index: number, type: string): Settings {
   if (value == null) return {};
   if (typeof value !== "object") throw parameterTypeError(method, "R2Bucket", index, type);
-  return value;
+  return objectOf(value);
 }
 
 // An optional object field, or none when absent.
-function objectField(settings, field, struct, type) {
+function objectField(settings: Settings, field: string, struct: string, type: string): Settings | undefined {
   const value = settings[field];
   if (value == null) return undefined;
   if (typeof value !== "object") throw fieldTypeError(field, struct, type);
-  return value;
+  return objectOf(value);
 }
 
 // An optional field that must already be a string.
-function stringField(settings, field, struct) {
+function stringField(settings: Settings, field: string, struct: string): string | undefined {
   const value = settings[field];
   if (value === undefined) return undefined;
   if (typeof value !== "string") throw fieldTypeError(field, struct, "string");
@@ -66,7 +78,7 @@ function stringField(settings, field, struct) {
 }
 
 // An optional date field, as milliseconds since the epoch.
-function dateField(settings, field, struct) {
+function dateField(settings: Settings, field: string, struct: string): number | undefined {
   const value = settings[field];
   if (value === undefined) return undefined;
   if (value instanceof Date) return value.getTime();
@@ -75,7 +87,7 @@ function dateField(settings, field, struct) {
 }
 
 // A number converted to a 32-bit integer, as the runtime converts one.
-function int32(value) {
+function int32(value: unknown): number {
   const number = Number(value);
   if (Number.isNaN(number)) return 0;
   const integer = Math.trunc(number);
@@ -85,17 +97,17 @@ function int32(value) {
   return integer;
 }
 
-function rejectEncryptionKey(settings) {
-  if (settings.ssecKey !== undefined) throw new TypeError(ENCRYPTION_KEYS);
+function rejectEncryptionKey(settings: unknown): void {
+  if (propertyOf(settings, "ssecKey") !== undefined) throw new TypeError(ENCRYPTION_KEYS);
 }
 
-function hex(data) {
+function hex(data: Uint8Array): string {
   return Array.from(data, byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 // The etags a conditional header lists: all of them, or a wildcard alone.
-function headerEtags(header) {
-  const etags = [];
+function headerEtags(header: string): Etag[] {
+  const etags: Etag[] = [];
   let rest = header;
   let separated = true;
   while (true) {
@@ -129,15 +141,15 @@ function headerEtags(header) {
   }
 }
 
-function headerConditional(headers) {
-  const etags = name => {
+function headerConditional(headers: Headers): Conditional {
+  const etags = (name: string): Etag[] | undefined => {
     const header = headers.get(name);
     if (header === null) return undefined;
     const list = headerEtags(header);
     if (list.length === 0) throw new Error(`Invalid ETag in ${name} header`);
     return list;
   };
-  const date = name => {
+  const date = (name: string): number | undefined => {
     const header = headers.get(name);
     return header === null ? undefined : Date.parse(header);
   };
@@ -151,11 +163,11 @@ function headerConditional(headers) {
 }
 
 // The conditions of `onlyIf`, an object or conditional headers.
-function conditional(settings, struct) {
+function conditional(settings: Settings, struct: string): Conditional | undefined {
   const onlyIf = objectField(settings, "onlyIf", struct, "Conditional or Headers");
   if (onlyIf === undefined) return undefined;
   if (onlyIf instanceof Headers) return headerConditional(onlyIf);
-  const etag = field => {
+  const etag = (field: string): Etag[] | undefined => {
     const value = stringField(onlyIf, field, "Conditional");
     if (value === undefined) return undefined;
     if (value.startsWith("\"") && value.endsWith("\"")) throw new TypeError(`Conditional ETag should not be wrapped in quotes (${value}).`);
@@ -170,7 +182,7 @@ function conditional(settings, struct) {
   };
 }
 
-function rangeNumber(value, label, name) {
+function rangeNumber(value: unknown, label: string, name: string): number | undefined {
   if (value === undefined) return undefined;
   const number = Number(value);
   if (!(number >= 0)) throw new RangeError(`${label} (${number}) must be greater than or equal to 0.`);
@@ -180,14 +192,14 @@ function rangeNumber(value, label, name) {
 
 // The range a read asks for, as an offset and length, a suffix, or a
 // `Range` header.
-function range(settings) {
+function range(settings: Settings): Pick<GetRequest, "range" | "rangeHeader"> {
   const value = objectField(settings, "range", "GetOptions", "Range or Headers");
   if (value === undefined) return {};
   if (value instanceof Headers) {
     const header = value.get("range");
     return header === null ? {} : { rangeHeader: header };
   }
-  const bounds = {
+  const bounds: Bounds = {
     offset: rangeNumber(value.offset, "Invalid range. Starting offset", "Starting offset"),
     length: rangeNumber(value.length, "Invalid range. Length", "Length"),
   };
@@ -200,9 +212,9 @@ function range(settings) {
 }
 
 // HTTP metadata from an object of fields, or from request headers.
-function httpFields(settings, struct) {
+function httpFields(settings: Settings, struct: string): Record<string, string | number> {
   const value = objectField(settings, "httpMetadata", struct, "HttpMetadata or Headers");
-  const fields = {};
+  const fields: Record<string, string | number> = {};
   if (value === undefined) return fields;
   if (value instanceof Headers) {
     for (const [field, header] of HTTP_FIELDS) {
@@ -214,14 +226,15 @@ function httpFields(settings, struct) {
     return fields;
   }
   for (const [field] of HTTP_FIELDS) {
-    if (value[field] !== undefined) fields[field] = String(value[field]);
+    const text = value[field];
+    if (text !== undefined) fields[field] = String(text);
   }
   const expiry = dateField(value, "cacheExpiry", "HttpMetadata");
   if (expiry !== undefined) fields.cacheExpiry = expiry;
   return fields;
 }
 
-function customFields(settings, struct) {
+function customFields(settings: Settings, struct: string): Record<string, string> {
   const value = settings.customMetadata;
   if (value === undefined) return {};
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw fieldTypeError("customMetadata", struct, "object");
@@ -229,16 +242,17 @@ function customFields(settings, struct) {
 }
 
 // The metadata a write of `struct` options gives an object.
-function metadata(settings, struct) {
-  const fields = { customMetadata: customFields(settings, struct), httpMetadata: httpFields(settings, struct) };
-  if (settings.storageClass !== undefined) fields.storageClass = String(settings.storageClass);
+function metadata(settings: Settings, struct: string): ObjectMetadata {
+  const fields: ObjectMetadata = { customMetadata: customFields(settings, struct), httpMetadata: httpFields(settings, struct) };
+  const storageClass = settings.storageClass;
+  if (storageClass !== undefined) fields.storageClass = String(storageClass);
   rejectEncryptionKey(settings);
   return fields;
 }
 
 // The one checksum `settings` provides, in lower-case hex.
-function checksum(settings) {
-  let provided;
+function checksum(settings: Settings): Checksum | undefined {
+  let provided: Checksum | undefined;
   for (const [field, length, name] of HASHES) {
     const value = settings[field];
     if (value === undefined) continue;
@@ -248,7 +262,7 @@ function checksum(settings) {
   return provided;
 }
 
-function checksumValue(value, field, length, name) {
+function checksumValue(value: unknown, field: string, length: number, name: string): string {
   if (typeof value === "string") {
     if (value.length !== length * 2) throw new TypeError(`${name} is ${length * 2} hex characters, not ${value.length}`);
     if (!/^[0-9a-fA-F]*$/.test(value)) throw new TypeError(`Provided ${name} wasn't a valid hex string`);
@@ -261,7 +275,7 @@ function checksumValue(value, field, length, name) {
 }
 
 // A value to write: a copy of its bytes when in memory, or its stream.
-function body(value, method, owner, optional) {
+function body(value: unknown, method: string, owner: string, optional: boolean): Payload {
   if (optional && value == null) return { bytes: new Uint8Array(0) };
   if (value instanceof ReadableStream) return { stream: value };
   const buffer = sharedBufferSourceBytes(value);
@@ -271,7 +285,7 @@ function body(value, method, owner, optional) {
 }
 
 // The length of a value to write, which a stream must know.
-function bodyLength(value) {
+function bodyLength(value: Payload): number {
   if (value.bytes !== undefined) return value.bytes.byteLength;
   const length = streamLength(value.stream);
   if (length === undefined) throw new TypeError(UNKNOWN_LENGTH);
@@ -279,8 +293,8 @@ function bodyLength(value) {
 }
 
 // Write `value` to the native `writer`, `WRITE_SIZE` bytes at a time.
-async function writeBody(action, writer, value) {
-  const write = chunk => native(action, () => r2Write(writer, chunk));
+async function writeBody(action: string, writer: Writer, value: Payload): Promise<void> {
+  const write = (chunk: Uint8Array) => native(action, () => r2Write(writer, chunk));
   if (value.stream !== undefined) return writeStream(write, value.stream);
   for (let offset = 0; offset < value.bytes.byteLength; offset += WRITE_SIZE) {
     await write(value.bytes.subarray(offset, offset + WRITE_SIZE));
@@ -289,7 +303,7 @@ async function writeBody(action, writer, value) {
 
 // Write the chunks of `stream`, gathered into `WRITE_SIZE` bytes. `write`
 // copies its chunk before it returns, so the buffer is reused.
-async function writeStream(write, stream) {
+async function writeStream(write: (chunk: Uint8Array) => Promise<void>, stream: ReadableStream): Promise<void> {
   const buffer = new Uint8Array(WRITE_SIZE);
   let filled = 0;
   const reader = stream.getReader();
@@ -317,7 +331,7 @@ async function writeStream(write, stream) {
 }
 
 // A stream of the body `reader` reads, which delivers `length` bytes.
-function bodyStream(reader, length) {
+function bodyStream(reader: Reader, length: number): ReadableStream<Uint8Array> {
   const stream = nativeReadableStream({
     type: "bytes",
     async pull(controller) {
@@ -334,39 +348,45 @@ function bodyStream(reader, length) {
   return setStreamLength(stream, length);
 }
 
-function readonly(object, values) {
+function readonly(object: object, values: Record<string, unknown>): void {
   for (const [name, value] of Object.entries(values)) {
     Object.defineProperty(object, name, { value, writable: false, enumerable: true, configurable: true });
   }
 }
 
-function tag(constructor, name) {
+function tag(constructor: { prototype: object }, name: string): void {
   Object.defineProperty(constructor.prototype, Symbol.toStringTag, { value: name, configurable: true });
 }
 
 class Checksums {
-  #hex;
+  #hex: unknown;
 
-  constructor(hexes) {
+  constructor(hexes: unknown) {
     this.#hex = hexes;
-    const buffer = value => (value === undefined ? undefined : Uint8Array.from(value.match(/../g) ?? [], byte => parseInt(byte, 16)).buffer);
-    readonly(this, Object.fromEntries(HASHES.map(([field]) => [field, buffer(hexes[field])]).reverse()));
+    const buffer = (value: unknown) => (value === undefined ? undefined : Uint8Array.from(String(value).match(/../g) ?? [], byte => parseInt(byte, 16)).buffer);
+    readonly(this, Object.fromEntries(HASHES.map(([field]) => [field, buffer(propertyOf(hexes, field))]).reverse()));
   }
 
-  toJSON() {
-    return Object.fromEntries(HASHES.map(([field]) => [field, this.#hex[field]]));
+  toJSON(): Record<string, unknown> {
+    return Object.fromEntries(HASHES.map(([field]) => [field, propertyOf(this.#hex, field)]));
   }
 }
 tag(Checksums, "Checksums");
 
 // An object's metadata, from the fields the store reports.
 class HeadResult {
-  constructor(fields) {
-    let httpMetadata;
-    if (fields.httpMetadata !== undefined) {
-      httpMetadata = Object.fromEntries(HTTP_FIELDS.map(([field]) => [field, fields.httpMetadata[field]]));
-      const expiry = fields.httpMetadata.cacheExpiry;
-      httpMetadata.cacheExpiry = expiry === undefined ? undefined : new Date(expiry);
+  declare readonly httpMetadata: HttpMetadata | undefined;
+  declare readonly key: string;
+
+  constructor(fields: R2Object) {
+    let httpMetadata: HttpMetadata | undefined;
+    const stored = fields.httpMetadata;
+    if (stored !== undefined) {
+      const expiry = propertyOf(stored, "cacheExpiry");
+      httpMetadata = {
+        ...Object.fromEntries(HTTP_FIELDS.map(([field]) => [field, propertyOf(stored, field)])),
+        cacheExpiry: expiry === undefined ? undefined : new Date(Number(expiry)),
+      };
     }
     readonly(this, {
       ssecKeyMd5: undefined,
@@ -384,14 +404,15 @@ class HeadResult {
     });
   }
 
-  writeHttpMetadata(headers) {
+  writeHttpMetadata(headers: unknown): void {
     if (!(headers instanceof Headers)) throw parameterTypeError("writeHttpMetadata", "HeadResult", 1, "Headers");
     const metadata = this.httpMetadata;
     if (metadata === undefined) {
       throw new TypeError(`HTTP metadata unknown for key \`${this.key}\`. Did you forget to add 'httpMetadata' to \`include\` when listing?`);
     }
     for (const [field, header] of HTTP_FIELDS) {
-      if (metadata[field] !== undefined) headers.set(header, metadata[field]);
+      const text = metadata[field];
+      if (text !== undefined) headers.set(header, text);
     }
     if (metadata.cacheExpiry !== undefined) headers.set("expires", metadata.cacheExpiry.toUTCString());
   }
@@ -400,23 +421,23 @@ tag(HeadResult, "HeadResult");
 
 // An object's metadata and body.
 class GetResult extends HeadResult {
-  #body;
+  #body: ReadableStream<Uint8Array>;
 
-  constructor(fields, reader) {
+  constructor(fields: R2Object, body: ObjectBody) {
     super(fields);
-    this.#body = bodyStream(reader, fields.range.length);
+    this.#body = bodyStream(body.reader, body.length);
   }
 
-  get body() { return this.#body; }
-  get bodyUsed() { return isDisturbed(this.#body); }
+  get body(): ReadableStream<Uint8Array> { return this.#body; }
+  get bodyUsed(): boolean { return isDisturbed(this.#body); }
 
-  async arrayBuffer() { return (await this.#read()).buffer; }
-  async bytes() { return this.#read(); }
-  async text() { return new TextDecoder().decode(await this.#read()); }
-  async json() { return JSON.parse(await this.text()); }
-  async blob() { return exactBlob(await this.#read(), this.httpMetadata.contentType ?? ""); }
+  async arrayBuffer(): Promise<ArrayBuffer> { return (await this.#read()).buffer; }
+  async bytes(): Promise<Uint8Array> { return this.#read(); }
+  async text(): Promise<string> { return new TextDecoder().decode(await this.#read()); }
+  async json(): Promise<unknown> { return JSON.parse(await this.text()); }
+  async blob(): Promise<Blob> { return exactBlob(await this.#read(), String(propertyOf(this.httpMetadata, "contentType") ?? "")); }
 
-  async #read() {
+  async #read(): Promise<Uint8Array<ArrayBuffer>> {
     if (isDisturbed(this.#body) || this.#body.locked) throw new TypeError(BODY_USED);
     return consumeStream(this.#body);
   }
@@ -427,18 +448,20 @@ for (const name of ["body", "bodyUsed"]) {
 tag(GetResult, "GetResult");
 
 export class R2MultipartUpload {
-  #binding;
+  declare readonly uploadId: string;
+  declare readonly key: string;
+  #binding: string;
 
-  constructor(binding, key, uploadId) {
+  constructor(binding: string, key: string, uploadId: string) {
     this.#binding = binding;
     readonly(this, { uploadId, key });
   }
 
-  async uploadPart(partNumber, value, partOptions) {
+  async uploadPart(partNumber: unknown, value: unknown, partOptions?: unknown): Promise<{ partNumber: number; etag: string }> {
     const number = int32(partNumber);
     const part = body(value, "uploadPart", "R2MultipartUpload", false);
     validatePartNumber(number);
-    rejectEncryptionKey(partOptions ?? {});
+    rejectEncryptionKey(partOptions);
     const length = bodyLength(part);
     const writer = await native("uploadPart", () => r2PartWriter(this.#binding, length));
     await writeBody("uploadPart", writer, part);
@@ -446,88 +469,89 @@ export class R2MultipartUpload {
     return { partNumber: number, etag };
   }
 
-  async abort() {
+  async abort(): Promise<void> {
     await native("abortMultipartUpload", () => r2AbortUpload(this.#binding, this.key, this.uploadId));
   }
 
-  async complete(uploadedParts) {
+  async complete(uploadedParts: unknown): Promise<HeadResult> {
     if (!Array.isArray(uploadedParts)) throw parameterTypeError("complete", "R2MultipartUpload", 1, "Array");
-    const parts = uploadedParts.map(part => ({ partNumber: int32(part?.partNumber), etag: String(part?.etag) }));
+    const parts = uploadedParts.map((part: unknown) => ({ partNumber: int32(propertyOf(part, "partNumber")), etag: String(propertyOf(part, "etag")) }));
     for (const part of parts) validatePartNumber(part.partNumber);
-    const object = await native("completeMultipartUpload", () => r2CompleteUpload(this.#binding, this.key, this.uploadId, JSON.stringify(parts)));
-    return new HeadResult(JSON.parse(object));
+    const object = await native("completeMultipartUpload", () => r2CompleteUpload(this.#binding, this.key, this.uploadId, parts));
+    return new HeadResult(object);
   }
 }
 tag(R2MultipartUpload, "R2MultipartUpload");
 
-function validatePartNumber(number) {
+function validatePartNumber(number: number): void {
   if (number < 1 || number > 10000) throw new TypeError(`Part number must be between 1 and 10000 (inclusive). Actual value was: ${number}`);
 }
 
 export class R2Bucket {
-  #binding;
+  #binding: string;
 
-  constructor(binding) {
+  constructor(binding: string) {
     this.#binding = binding;
   }
 
-  async head(key) {
-    key = stringParameter(key, "head", "R2Bucket", 1);
-    const object = await native("head", () => r2Head(this.#binding, key));
-    return object == null ? null : new HeadResult(JSON.parse(object));
+  async head(key: unknown): Promise<HeadResult | null> {
+    const name = stringParameter(key, "head", "R2Bucket", 1);
+    const object = await native("head", () => r2Head(this.#binding, name));
+    return object === undefined ? null : new HeadResult(object);
   }
 
-  async get(key, getOptions) {
-    key = stringParameter(key, "get", "R2Bucket", 1);
+  async get(key: unknown, getOptions?: unknown): Promise<HeadResult | null> {
+    const name = stringParameter(key, "get", "R2Bucket", 1);
     const settings = options(getOptions, "get", 2, "GetOptions");
-    const request = { onlyIf: conditional(settings, "GetOptions"), ...range(settings) };
+    const request: GetRequest = { onlyIf: conditional(settings, "GetOptions"), ...range(settings) };
     rejectEncryptionKey(settings);
-    const result = await native("get", () => r2Get(this.#binding, key, JSON.stringify(request)));
-    if (result == null) return null;
-    const fields = JSON.parse(result.object);
-    return result.body == null ? new HeadResult(fields) : new GetResult(fields, result.body);
+    const result = await native("get", () => r2Get(this.#binding, name, request));
+    if (result === undefined) return null;
+    return result.body === undefined ? new HeadResult(result.object) : new GetResult(result.object, result.body);
   }
 
-  async put(key, value, putOptions) {
-    key = stringParameter(key, "put", "R2Bucket", 1);
+  async put(key: unknown, value: unknown, putOptions?: unknown): Promise<HeadResult | null> {
+    const name = stringParameter(key, "put", "R2Bucket", 1);
     const object = body(value, "put", "R2Bucket", true);
     const settings = options(putOptions, "put", 3, "PutOptions");
     const onlyIf = conditional(settings, "PutOptions");
     const fields = metadata(settings, "PutOptions");
     const provided = checksum(settings);
     const length = bodyLength(object);
-    const writer = await native("put", () => r2ObjectWriter(this.#binding, length, provided === undefined ? undefined : JSON.stringify(provided)));
+    const writer = await native("put", () => r2ObjectWriter(this.#binding, length, provided));
     await writeBody("put", writer, object);
-    const stored = await native("put", () => r2Put(this.#binding, key, writer, JSON.stringify({ onlyIf, metadata: fields })));
-    return stored == null ? null : new HeadResult(JSON.parse(stored));
+    const stored = await native("put", () => r2Put(this.#binding, name, writer, { onlyIf, metadata: fields }));
+    return stored === undefined ? null : new HeadResult(stored);
   }
 
-  async delete(keys) {
+  async delete(keys: unknown): Promise<void> {
     if (keys === undefined) throw parameterTypeError("delete", "R2Bucket", 1, "string or Array");
     const list = Array.isArray(keys) ? keys.map(String) : [String(keys)];
     await native("delete", () => r2Delete(this.#binding, list));
   }
 
-  async list(listOptions) {
+  async list(listOptions?: unknown): Promise<{ objects: HeadResult[]; truncated: boolean; cursor: string | undefined; delimitedPrefixes: string[] }> {
     const settings = options(listOptions, "list", 1, "ListOptions");
-    const request = {};
-    if (settings.limit !== undefined) {
-      const limit = int32(settings.limit) >>> 0;
+    const request: ListRequest = {};
+    const limitOption = settings.limit;
+    if (limitOption !== undefined) {
+      const limit = int32(limitOption) >>> 0;
       if (limit !== 0xffffffff) request.limit = limit;
     }
-    for (const field of ["prefix", "cursor", "delimiter", "startAfter"]) {
+    for (const field of ["prefix", "cursor", "delimiter", "startAfter"] as const) {
       const value = stringField(settings, field, "ListOptions");
       if (value !== undefined) request[field] = value;
     }
-    if (settings.include !== undefined) {
-      if (!Array.isArray(settings.include)) throw fieldTypeError("include", "ListOptions", "Array");
-      request.include = settings.include.map((value, index) => {
+    const include = settings.include;
+    if (include !== undefined) {
+      if (!Array.isArray(include)) throw fieldTypeError("include", "ListOptions", "Array");
+      request.include = include.map((value: unknown, index) => {
         if (typeof value !== "string") throw new TypeError(`Incorrect type for array element ${index}: the provided value is not of type 'string'.`);
         if (value !== "httpMetadata" && value !== "customMetadata") throw new RangeError(`Unsupported include value ${value}`);
         return value;
       });
     }
-    const page = JSON.parse(await native("list", () => r2List(this.#binding, JSON.stringify(request))));
+    const page = await native("list", () => r2List(this.#binding, request));
     return {
       objects: page.objects.map(fields => new HeadResult(fields)),
       truncated: page.truncated,
@@ -536,14 +560,14 @@ export class R2Bucket {
     };
   }
 
-  async createMultipartUpload(key, uploadOptions) {
-    key = stringParameter(key, "createMultipartUpload", "R2Bucket", 1);
+  async createMultipartUpload(key: unknown, uploadOptions?: unknown): Promise<R2MultipartUpload> {
+    const name = stringParameter(key, "createMultipartUpload", "R2Bucket", 1);
     const fields = metadata(options(uploadOptions, "createMultipartUpload", 2, "MultipartOptions"), "MultipartOptions");
-    const uploadId = await native("createMultipartUpload", () => r2CreateUpload(this.#binding, key, JSON.stringify(fields)));
-    return new R2MultipartUpload(this.#binding, key, uploadId);
+    const uploadId = await native("createMultipartUpload", () => r2CreateUpload(this.#binding, name, fields));
+    return new R2MultipartUpload(this.#binding, name, uploadId);
   }
 
-  resumeMultipartUpload(key, uploadId) {
+  resumeMultipartUpload(key: unknown, uploadId: unknown): R2MultipartUpload {
     return new R2MultipartUpload(
       this.#binding,
       stringParameter(key, "resumeMultipartUpload", "R2Bucket", 1),

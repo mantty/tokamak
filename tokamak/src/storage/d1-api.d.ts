@@ -1,4 +1,5 @@
 // workerd's D1 binding, vendored from src/cloudflare/internal/d1-api.ts.
+import type { Response } from "../network/fetch.ts";
 
 /** The D1 service a binding sends its queries to. */
 export interface D1Fetcher {

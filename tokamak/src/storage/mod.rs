@@ -19,11 +19,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use rquickjs::{Ctx, Module};
 use serde::Serialize;
+use tokamak_macros::JsType;
 
 use crate::env_vars::{StorageBinding, store_id_problem};
 use crate::linked::{OpenedStorage, StorageCatalog, StorageEntry, StorageRuntime};
 use crate::lock;
 use crate::packaging::PackageLayout;
+use crate::typed::Serde;
 use d1::{D1Database, Migrations};
 use kv::KvNamespace;
 use r2::R2Bucket;
@@ -37,6 +39,9 @@ include!(concat!(env!("OUT_DIR"), "/storage_builtins.rs"));
 pub(crate) fn declarations(
     types: &mut crate::typescript::Types,
 ) -> Vec<(&'static str, crate::typescript::Signature)> {
+    use crate::typescript::JsType;
+    // The runtime bootstrap reads the bindings from `__tokamak_storage`.
+    InstalledBinding::typescript(types);
     host::host_declarations(types)
 }
 
@@ -53,11 +58,6 @@ fn open(
     Ok(Box::new(Catalog::open(directory, scratch, bindings)?))
 }
 
-/// Directory of each kind of store.
-const KV: &str = "kv";
-const D1: &str = "d1";
-const R2: &str = "r2";
-
 /// Files of a store kept in one SQLite database.
 const SQLITE_FILES: [&str; 4] = [".sqlite", ".sqlite-wal", ".sqlite-shm", ".sqlite-journal"];
 
@@ -65,8 +65,8 @@ const SQLITE_FILES: [&str; 4] = [".sqlite", ".sqlite-wal", ".sqlite-shm", ".sqli
 #[derive(Debug)]
 pub(crate) struct Storage {
     bindings: BTreeMap<String, Binding>,
-    /// The bindings for the Worker's `env`, as JSON for the bootstrap.
-    installed: String,
+    /// The bindings for the Worker's `env`, ordered by name.
+    installed: Vec<InstalledBinding>,
 }
 
 #[derive(Debug)]
@@ -108,11 +108,31 @@ struct Store<T> {
 }
 
 /// A binding the Worker's `env` receives.
-#[derive(Serialize)]
-struct Installed<'a> {
-    name: &'a str,
+#[derive(Clone, Debug, Serialize, JsType)]
+pub(crate) struct InstalledBinding {
+    name: String,
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: StoreKind,
+}
+
+/// The kind of store a binding names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsType)]
+#[serde(rename_all = "lowercase")]
+enum StoreKind {
+    Kv,
+    D1,
+    R2,
+}
+
+impl StoreKind {
+    /// The directory of the stores of this kind.
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Kv => "kv",
+            Self::D1 => "d1",
+            Self::R2 => "r2",
+        }
+    }
 }
 
 struct Catalog {
@@ -136,16 +156,16 @@ impl Catalog {
             }
         }
         Ok(Self {
-            namespaces: Stores::open(directory, scratch, KV, bindings)?,
-            databases: Stores::open(directory, scratch, D1, bindings)?,
-            buckets: Stores::open(directory, scratch, R2, bindings)?,
+            namespaces: Stores::open(directory, scratch, StoreKind::Kv, bindings)?,
+            databases: Stores::open(directory, scratch, StoreKind::D1, bindings)?,
+            buckets: Stores::open(directory, scratch, StoreKind::R2, bindings)?,
         })
     }
 }
 
 impl StorageCatalog for Catalog {
     fn bind(&mut self, app: &PackageLayout, bindings: &[StorageBinding]) -> OpenedStorage {
-        Ok(Arc::new(Storage::bind(self, app, bindings)?))
+        Ok(Arc::new(Storage::bind(self, app, bindings)))
     }
 }
 
@@ -157,18 +177,14 @@ impl Storage {
         app: &PackageLayout,
         bindings: &[StorageBinding],
     ) -> io::Result<Self> {
-        Self::bind(
+        Ok(Self::bind(
             &mut Catalog::open(directory, scratch, bindings)?,
             app,
             bindings,
-        )
+        ))
     }
 
-    fn bind(
-        catalog: &mut Catalog,
-        app: &PackageLayout,
-        bindings: &[StorageBinding],
-    ) -> io::Result<Self> {
+    fn bind(catalog: &mut Catalog, app: &PackageLayout, bindings: &[StorageBinding]) -> Self {
         let mut entries = BTreeMap::new();
         let mut kinds = BTreeMap::new();
         for binding in bindings {
@@ -193,15 +209,17 @@ impl Storage {
             entries.insert(binding.name().to_owned(), entry);
             kinds.insert(binding.name(), kind_of(binding));
         }
-        let installed: Vec<Installed<'_>> = kinds
+        let installed = kinds
             .into_iter()
-            .map(|(name, kind)| Installed { name, kind })
+            .map(|(name, kind)| InstalledBinding {
+                name: name.to_owned(),
+                kind,
+            })
             .collect();
-        let installed = serde_json::to_string(&installed).map_err(io::Error::other)?;
-        Ok(Self {
+        Self {
             bindings: entries,
             installed,
-        })
+        }
     }
 
     /// Answer a D1 service request for the binding `name`, returning the
@@ -251,8 +269,8 @@ impl Storage {
 
 impl StorageRuntime for Storage {
     fn attach(self: Arc<Self>, ctx: &Ctx<'_>) -> rquickjs::Result<()> {
-        let bindings = ctx.json_parse(self.installed.as_str())?;
-        ctx.globals().set("__tokamak_storage", bindings)?;
+        ctx.globals()
+            .set("__tokamak_storage", Serde(self.installed.clone()))?;
         ctx.store_userdata(StorageHandle(self))?;
         Ok(())
     }
@@ -280,12 +298,12 @@ impl<T: Open> Stores<T> {
     fn open(
         directory: &Path,
         scratch: &Path,
-        kind: &'static str,
+        kind: StoreKind,
         bindings: &[StorageBinding],
     ) -> io::Result<Self> {
         let stores = Self {
-            directory: directory.join(kind),
-            scratch: scratch.join(kind),
+            directory: directory.join(kind.directory()),
+            scratch: scratch.join(kind.directory()),
             by_id: BTreeMap::new(),
         };
         let named: BTreeSet<&str> = bindings
@@ -333,11 +351,11 @@ impl<T: Open> Store<T> {
     }
 }
 
-fn kind_of(binding: &StorageBinding) -> &'static str {
+fn kind_of(binding: &StorageBinding) -> StoreKind {
     match binding {
-        StorageBinding::Kv { .. } => KV,
-        StorageBinding::D1 { .. } => D1,
-        StorageBinding::R2 { .. } => R2,
+        StorageBinding::Kv { .. } => StoreKind::Kv,
+        StorageBinding::D1 { .. } => StoreKind::D1,
+        StorageBinding::R2 { .. } => StoreKind::R2,
     }
 }
 

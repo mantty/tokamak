@@ -436,17 +436,17 @@ declare module "tokamak:host" {
 declare module "tokamak:storage" {
   const classBrand: unique symbol;
 
-  export function d1Query(binding: string, format: string, body: string): Promise<object>;
+  export function d1Query(binding: string, format: string, body: string): Promise<D1Response>;
 
   export function kvDelete(binding: string, key: string): Promise<void>;
 
-  export function kvGet(binding: string, key: string, cacheTtl: number | undefined): Promise<object | undefined>;
+  export function kvGet(binding: string, key: string, cacheTtl: number | undefined): Promise<KvEntry | undefined>;
 
-  export function kvGetMany(binding: string, keys: string[], cacheTtl: number | undefined): Promise<Array<object | undefined>>;
+  export function kvGetMany(binding: string, keys: string[], cacheTtl: number | undefined): Promise<Array<KvEntry | undefined>>;
 
-  export function kvList(binding: string, prefix: string, cursor: string, limit: number): Promise<string>;
+  export function kvList(binding: string, prefix: string, cursor: string, limit: number): Promise<Page>;
 
-  export function kvPut(binding: string, key: string, writer: ValueWriter, options: string): Promise<void>;
+  export function kvPut(binding: string, key: string, writer: ValueWriter, options: PutOptions): Promise<void>;
 
   export function kvValue(): ValueWriter;
 
@@ -456,23 +456,23 @@ declare module "tokamak:storage" {
 
   export function r2CloseBody(reader: Reader): void;
 
-  export function r2CompleteUpload(binding: string, key: string, upload: string, parts: string): Promise<string>;
+  export function r2CompleteUpload(binding: string, key: string, upload: string, parts: UploadedPart[]): Promise<R2Object>;
 
-  export function r2CreateUpload(binding: string, key: string, metadata: string): Promise<string>;
+  export function r2CreateUpload(binding: string, key: string, metadata: ObjectMetadata): Promise<string>;
 
   export function r2Delete(binding: string, keys: string[]): Promise<void>;
 
-  export function r2Get(binding: string, key: string, request: string): Promise<object | undefined>;
+  export function r2Get(binding: string, key: string, request: GetRequest): Promise<ObjectRead | undefined>;
 
-  export function r2Head(binding: string, key: string): Promise<string | undefined>;
+  export function r2Head(binding: string, key: string): Promise<R2Object | undefined>;
 
-  export function r2List(binding: string, request: string): Promise<string>;
+  export function r2List(binding: string, request: ListRequest): Promise<Listing>;
 
-  export function r2ObjectWriter(binding: string, length: number, checksum: string | undefined): Promise<Writer>;
+  export function r2ObjectWriter(binding: string, length: number, checksum: Checksum | undefined): Promise<Writer>;
 
   export function r2PartWriter(binding: string, length: number): Promise<Writer>;
 
-  export function r2Put(binding: string, key: string, writer: Writer, request: string): Promise<string | undefined>;
+  export function r2Put(binding: string, key: string, writer: Writer, request: PutRequest): Promise<R2Object | undefined>;
 
   export function r2Read(reader: Reader): Promise<Uint8Array | undefined>;
 
@@ -480,8 +480,133 @@ declare module "tokamak:storage" {
 
   export function r2Write(writer: Writer, chunk: Uint8Array): Promise<void>;
 
+  export type Algorithm = "md5" | "sha1" | "sha256" | "sha384" | "sha512";
+
+  export interface Bounds {
+    offset?: number | undefined;
+    length?: number | undefined;
+    suffix?: number | undefined;
+  }
+
+  export interface Checksum {
+    algorithm: Algorithm;
+    value: string;
+  }
+
+  export interface Conditional {
+    etagMatches?: Etag[] | undefined;
+    etagDoesNotMatch?: Etag[] | undefined;
+    uploadedBefore?: number | undefined;
+    uploadedAfter?: number | undefined;
+    secondsGranularity?: boolean;
+  }
+
+  export interface D1Response {
+    body: string;
+    bookmark: string;
+  }
+
+  export type Etag = { type: "strong"; value: string } | { type: "weak"; value: string } | { type: "wildcard" };
+
+  export interface GetRequest {
+    onlyIf?: Conditional | undefined;
+    range?: Bounds | undefined;
+    rangeHeader?: string | undefined;
+  }
+
+  export type Include = "httpMetadata" | "customMetadata";
+
+  export interface InstalledBinding {
+    name: string;
+    type: StoreKind;
+  }
+
+  export interface Key {
+    name: string;
+    expiration?: number | undefined;
+    metadata?: string | undefined;
+  }
+
+  export interface KvEntry {
+    value: Uint8Array;
+    metadata?: string | undefined;
+  }
+
+  export interface ListRequest {
+    limit?: number | undefined;
+    prefix?: string;
+    cursor?: string | undefined;
+    delimiter?: string | undefined;
+    startAfter?: string | undefined;
+    include?: Include[];
+  }
+
+  export interface Listing {
+    objects: R2Object[];
+    truncated: boolean;
+    cursor?: string | undefined;
+    delimitedPrefixes: string[];
+  }
+
+  export interface ObjectBody {
+    reader: Reader;
+    length: number;
+  }
+
+  export interface ObjectMetadata {
+    httpMetadata?: unknown;
+    customMetadata?: unknown;
+    storageClass?: string;
+  }
+
+  export interface ObjectRead {
+    object: R2Object;
+    body?: ObjectBody | undefined;
+  }
+
+  export interface Page {
+    keys: Key[];
+    cursor?: string | undefined;
+  }
+
+  export interface PutOptions {
+    expirationTtl?: number | undefined;
+    expiration?: number | undefined;
+    metadata?: string | undefined;
+  }
+
+  export interface PutRequest {
+    onlyIf?: Conditional | undefined;
+    metadata: ObjectMetadata;
+  }
+
+  export interface R2Object {
+    key: string;
+    version: string;
+    size: number;
+    etag: string;
+    uploaded: number;
+    checksums: unknown;
+    httpMetadata?: unknown | undefined;
+    customMetadata?: unknown | undefined;
+    storageClass: string;
+    range?: Range | undefined;
+  }
+
+  export interface Range {
+    offset: number;
+    length: number;
+  }
+
   export interface Reader {
     readonly [classBrand]: "Reader";
+  }
+
+  export type StoreKind = "kv" | "d1" | "r2";
+
+  export interface UploadedPart {
+    partNumber: number;
+    etag: string;
   }
 
   export interface ValueWriter {

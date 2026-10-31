@@ -7,13 +7,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokamak_macros::host_function;
 
-use super::kv::{Entry, Value};
-use super::r2::{BodyReader, BodyWriter, Failure, R2Bucket, Read};
+use super::kv::{Entry, Page, PutOptions, Value};
+use super::r2::{
+    BodyReader, BodyWriter, Checksum, Failure, GetRequest, ListRequest, Listing, ObjectMetadata,
+    PutRequest, R2Bucket, R2Object, Read, UploadedPart,
+};
 use super::{Storage, text};
 use crate::lock;
+use crate::typed::Serde;
 use rquickjs::class::Trace;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
-use rquickjs::{Class, Ctx, Exception, JsLifetime, Object, TypedArray};
+use rquickjs::{Class, Ctx, Exception, IntoJs, JsLifetime, TypedArray};
+use tokamak_macros::JsType;
 
 /// A packaged app's storage, installed into each request's context.
 pub(crate) struct StorageHandle(pub(crate) Arc<Storage>);
@@ -91,47 +96,67 @@ pub(crate) struct ValueWriter {
     value: Value,
 }
 
-/// Resolve to `{ body, bookmark }`: a D1 service response for `binding`.
+/// A D1 service response: its JSON body, and the database's bookmark.
+#[derive(IntoJs, JsType)]
+pub(crate) struct D1Response {
+    body: String,
+    bookmark: String,
+}
+
+/// Resolve to a D1 service response for `binding`.
 #[host_function]
 async fn d1_query(
     ctx: Ctx<'_>,
     binding: String,
     format: String,
     body: String,
-) -> rquickjs::Result<Object<'_>> {
+) -> rquickjs::Result<D1Response> {
     let storage = storage(&ctx)?;
     let (body, bookmark) =
         blocking(&ctx, move || Ok(storage.d1_query(&binding, &body, &format))).await?;
-    let response = Object::new(ctx)?;
-    response.set("body", body)?;
-    response.set("bookmark", bookmark)?;
-    Ok(response)
+    Ok(D1Response { body, bookmark })
 }
 
-/// Resolve to `{ value, metadata }` for an unexpired key, or null.
+/// A KV value and the JSON metadata stored with it.
+#[derive(IntoJs, JsType)]
+pub(crate) struct KvEntry<'js> {
+    value: TypedArray<'js, u8>,
+    metadata: Option<String>,
+}
+
+impl<'js> KvEntry<'js> {
+    fn new(ctx: &Ctx<'js>, entry: Entry) -> rquickjs::Result<Self> {
+        Ok(Self {
+            value: TypedArray::new(ctx.clone(), entry.value)?,
+            metadata: entry.metadata,
+        })
+    }
+}
+
+/// Resolve to the entry of an unexpired key, or undefined.
 #[host_function]
 async fn kv_get(
     ctx: Ctx<'_>,
     binding: String,
     key: String,
     cache_ttl: Option<i64>,
-) -> rquickjs::Result<Option<Object<'_>>> {
+) -> rquickjs::Result<Option<KvEntry<'_>>> {
     let storage = storage(&ctx)?;
     let entry = blocking(&ctx, move || {
         storage.kv(&binding)?.get(&key, cache_ttl, now())
     })
     .await?;
-    entry.map(|entry| entry_object(&ctx, entry)).transpose()
+    entry.map(|entry| KvEntry::new(&ctx, entry)).transpose()
 }
 
-/// Resolve to the entry, or null, for each key.
+/// Resolve to the entry, or undefined, for each key.
 #[host_function]
 async fn kv_get_many(
     ctx: Ctx<'_>,
     binding: String,
     keys: Vec<String>,
     cache_ttl: Option<i64>,
-) -> rquickjs::Result<Vec<Option<Object<'_>>>> {
+) -> rquickjs::Result<Vec<Option<KvEntry<'_>>>> {
     let storage = storage(&ctx)?;
     let entries = blocking(&ctx, move || {
         storage.kv(&binding)?.get_many(&keys, cache_ttl, now())
@@ -139,7 +164,7 @@ async fn kv_get_many(
     .await?;
     entries
         .into_iter()
-        .map(|entry| entry.map(|entry| entry_object(&ctx, entry)).transpose())
+        .map(|entry| entry.map(|entry| KvEntry::new(&ctx, entry)).transpose())
         .collect()
 }
 
@@ -158,20 +183,19 @@ fn kv_write<'js>(writer: Class<'js, ValueWriter>, chunk: TypedArray<'js, u8>) {
     writer.borrow_mut().value.write(bytes);
 }
 
-/// Store the value `writer` wrote under `key`, as the JSON `options` ask.
+/// Store the value `writer` wrote under `key`, as `options` ask.
 #[host_function]
 async fn kv_put<'js>(
     ctx: Ctx<'js>,
     binding: String,
     key: String,
     writer: Class<'js, ValueWriter>,
-    options: String,
+    options: Serde<PutOptions>,
 ) -> rquickjs::Result<()> {
     let storage = storage(&ctx)?;
     let value = std::mem::take(&mut writer.borrow_mut().value);
     blocking(&ctx, move || {
-        let options = serde_json::from_str(&options).map_err(text)?;
-        storage.kv(&binding)?.put(&key, &value, &options, now())
+        storage.kv(&binding)?.put(&key, &value, &options.0, now())
     })
     .await
 }
@@ -182,7 +206,7 @@ async fn kv_delete(ctx: Ctx<'_>, binding: String, key: String) -> rquickjs::Resu
     blocking(&ctx, move || storage.kv(&binding)?.delete(&key, now())).await
 }
 
-/// Resolve to a page of keys as JSON: `{ keys, cursor? }`.
+/// Resolve to a page of keys.
 #[host_function]
 async fn kv_list(
     ctx: Ctx<'_>,
@@ -190,56 +214,79 @@ async fn kv_list(
     prefix: String,
     cursor: String,
     limit: i64,
-) -> rquickjs::Result<String> {
+) -> rquickjs::Result<Serde<Page>> {
     let storage = storage(&ctx)?;
     blocking(&ctx, move || {
-        let page = storage.kv(&binding)?.list(&prefix, &cursor, limit, now())?;
-        serde_json::to_string(&page).map_err(text)
+        storage
+            .kv(&binding)?
+            .list(&prefix, &cursor, limit, now())
+            .map(Serde)
     })
     .await
 }
 
-/// Resolve to the metadata of the object `key` as JSON, or null.
+/// Resolve to the metadata of the object `key`, or undefined.
 #[host_function]
-async fn r2_head(ctx: Ctx<'_>, binding: String, key: String) -> rquickjs::Result<Option<String>> {
+async fn r2_head(
+    ctx: Ctx<'_>,
+    binding: String,
+    key: String,
+) -> rquickjs::Result<Option<Serde<R2Object>>> {
     in_bucket(&ctx, binding, move |bucket| {
-        let object = bucket.head(&key)?;
-        Ok(object.as_ref().map(serde_json::to_string).transpose()?)
+        Ok(bucket.head(&key)?.map(Serde))
     })
     .await
 }
 
-/// Resolve to `{ object, body }` for the object `key`: its metadata as JSON,
-/// and a reader of the range `request` selects unless the object fails the
-/// request's conditions. Resolve to null when there is no object.
+/// An object a read finds: its metadata, and its body unless the object
+/// fails the read's conditions.
+#[derive(IntoJs, JsType)]
+pub(crate) struct ObjectRead<'js> {
+    object: Serde<R2Object>,
+    body: Option<ObjectBody<'js>>,
+}
+
+/// A reader of the range of an object's body that a read returns, and the
+/// range's length.
+#[derive(IntoJs, JsType)]
+pub(crate) struct ObjectBody<'js> {
+    reader: Class<'js, Reader>,
+    length: u64,
+}
+
+impl<'js> ObjectBody<'js> {
+    fn new(ctx: &Ctx<'js>, body: BodyReader) -> rquickjs::Result<Self> {
+        let length = body.remaining();
+        let body = Arc::new(Mutex::new(Some(body)));
+        Ok(Self {
+            reader: Class::instance(ctx.clone(), Reader { body })?,
+            length,
+        })
+    }
+}
+
+/// Resolve to the object `key` and the range of its body `request` selects,
+/// or to undefined when there is no object.
 #[host_function]
 async fn r2_get(
     ctx: Ctx<'_>,
     binding: String,
     key: String,
-    request: String,
-) -> rquickjs::Result<Option<Object<'_>>> {
-    let read = in_bucket(&ctx, binding, move |bucket| {
-        bucket.get(&key, &serde_json::from_str(&request)?)
-    })
-    .await?;
+    request: Serde<GetRequest>,
+) -> rquickjs::Result<Option<ObjectRead<'_>>> {
+    let read = in_bucket(&ctx, binding, move |bucket| bucket.get(&key, &request.0)).await?;
     let (object, body) = match read {
         None => return Ok(None),
         Some(Read::Unmet(object)) => (object, None),
-        Some(Read::Body(object, body)) => (object, Some(body)),
+        Some(Read::Body(object, body)) => (object, Some(ObjectBody::new(&ctx, body)?)),
     };
-    let result = Object::new(ctx.clone())?;
-    let object = serde_json::to_string(&object)
-        .map_err(|error| crate::errors::throw_message(&ctx, &error.to_string()))?;
-    result.set("object", object)?;
-    if let Some(body) = body {
-        let body = Arc::new(Mutex::new(Some(body)));
-        result.set("body", Class::instance(ctx.clone(), Reader { body })?)?;
-    }
-    Ok(Some(result))
+    Ok(Some(ObjectRead {
+        object: Serde(object),
+        body,
+    }))
 }
 
-/// Resolve to the next bytes `reader` reads, or null after the last.
+/// Resolve to the next bytes `reader` reads, or undefined after the last.
 #[host_function]
 async fn r2_read<'js>(
     ctx: Ctx<'js>,
@@ -268,17 +315,17 @@ fn r2_close_body(reader: Class<'_, Reader>) {
     lock(&reader.borrow().body).take();
 }
 
-/// Resolve to a writer of a `length`-byte object body, checked against the
-/// JSON `checksum` when there is one.
+/// Resolve to a writer of a `length`-byte object body, checked against
+/// `checksum` when there is one.
 #[host_function]
 async fn r2_object_writer(
     ctx: Ctx<'_>,
     binding: String,
     length: u64,
-    checksum: Option<String>,
+    checksum: Option<Serde<Checksum>>,
 ) -> rquickjs::Result<Class<'_, Writer>> {
+    let checksum = checksum.map(|checksum| checksum.0);
     let body = in_bucket(&ctx, binding, move |bucket| {
-        let checksum = checksum.as_deref().map(serde_json::from_str).transpose()?;
         bucket.object_writer(length, checksum)
     })
     .await?;
@@ -316,21 +363,20 @@ async fn r2_write<'js>(
 }
 
 /// Record the body `writer` wrote as the object `key`, resolving to the
-/// object's metadata as JSON, or to null when the object it would replace
-/// fails the JSON `request`'s conditions.
+/// object's metadata, or to undefined when the object it would replace fails
+/// `request`'s conditions.
 #[host_function]
 async fn r2_put<'js>(
     ctx: Ctx<'js>,
     binding: String,
     key: String,
     writer: Class<'js, Writer>,
-    request: String,
-) -> rquickjs::Result<Option<String>> {
+    request: Serde<PutRequest>,
+) -> rquickjs::Result<Option<Serde<R2Object>>> {
     let body = written(&ctx, &writer)?;
     in_bucket(&ctx, binding, move |bucket| {
-        let request = serde_json::from_str(&request)?;
-        let object = bucket.put(&key, body.finish()?, &request, now_milliseconds())?;
-        Ok(object.as_ref().map(serde_json::to_string).transpose()?)
+        let object = bucket.put(&key, body.finish()?, &request.0, now_milliseconds())?;
+        Ok(object.map(Serde))
     })
     .await
 }
@@ -340,27 +386,30 @@ async fn r2_delete(ctx: Ctx<'_>, binding: String, keys: Vec<String>) -> rquickjs
     in_bucket(&ctx, binding, move |bucket| bucket.delete(&keys)).await
 }
 
-/// Resolve to the page of the listing the JSON `request` asks for, as JSON.
+/// Resolve to the page of the listing `request` asks for.
 #[host_function]
-async fn r2_list(ctx: Ctx<'_>, binding: String, request: String) -> rquickjs::Result<String> {
+async fn r2_list(
+    ctx: Ctx<'_>,
+    binding: String,
+    request: Serde<ListRequest>,
+) -> rquickjs::Result<Serde<Listing>> {
     in_bucket(&ctx, binding, move |bucket| {
-        let listing = bucket.list(&serde_json::from_str(&request)?)?;
-        Ok(serde_json::to_string(&listing)?)
+        bucket.list(&request.0).map(Serde)
     })
     .await
 }
 
-/// Resolve to the ID of a new upload of the object `key`, which gets the
-/// JSON `metadata`.
+/// Resolve to the ID of a new upload of the object `key`, which gets
+/// `metadata`.
 #[host_function]
 async fn r2_create_upload(
     ctx: Ctx<'_>,
     binding: String,
     key: String,
-    metadata: String,
+    metadata: Serde<ObjectMetadata>,
 ) -> rquickjs::Result<String> {
     in_bucket(&ctx, binding, move |bucket| {
-        bucket.create_upload(&key, &serde_json::from_str(&metadata)?)
+        bucket.create_upload(&key, &metadata.0)
     })
     .await
 }
@@ -383,20 +432,20 @@ async fn r2_upload_part<'js>(
     .await
 }
 
-/// Join the JSON `parts` of an upload into the object `key`, resolving to
-/// the object's metadata as JSON.
+/// Join the `parts` of an upload into the object `key`, resolving to the
+/// object's metadata.
 #[host_function]
 async fn r2_complete_upload(
     ctx: Ctx<'_>,
     binding: String,
     key: String,
     upload: String,
-    parts: String,
-) -> rquickjs::Result<String> {
+    parts: Serde<Vec<UploadedPart>>,
+) -> rquickjs::Result<Serde<R2Object>> {
     in_bucket(&ctx, binding, move |bucket| {
-        let parts: Vec<_> = serde_json::from_str(&parts)?;
-        let object = bucket.complete_upload(&key, &upload, &parts, now_milliseconds())?;
-        Ok(serde_json::to_string(&object)?)
+        bucket
+            .complete_upload(&key, &upload, &parts.0, now_milliseconds())
+            .map(Serde)
     })
     .await
 }
@@ -446,13 +495,6 @@ fn owned_bytes(ctx: &Ctx<'_>, array: &TypedArray<'_, u8>) -> rquickjs::Result<Ve
         .as_bytes()
         .map(<[u8]>::to_vec)
         .ok_or_else(|| Exception::throw_type(ctx, "Detached buffer"))
-}
-
-fn entry_object<'js>(ctx: &Ctx<'js>, entry: Entry) -> rquickjs::Result<Object<'js>> {
-    let object = Object::new(ctx.clone())?;
-    object.set("value", TypedArray::new(ctx.clone(), entry.value)?)?;
-    object.set("metadata", entry.metadata)?;
-    Ok(object)
 }
 
 /// Run `work` on the blocking thread pool, rejecting with its error.

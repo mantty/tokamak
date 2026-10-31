@@ -11,13 +11,16 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::visit_mut::VisitMut;
 use syn::{
-    Attribute, Data, DeriveInput, Expr, Field, Fields, FnArg, GenericArgument, ItemFn, LitStr, Pat,
-    Path, PathArguments, ReturnType, Signature, Token, Type, TypeParamBound, Visibility,
+    Attribute, Data, DataEnum, DeriveInput, Expr, Fields, FieldsNamed, FnArg, GenericArgument,
+    ItemFn, LitStr, Pat, Path, PathArguments, ReturnType, Signature, Token, Type, TypeParamBound,
+    Visibility,
 };
 
-/// Implements `JsType` for a struct with named fields that rquickjs's
-/// `FromJs` and `IntoJs` derives convert: an interface of its fields, with the
-/// property names those derives use.
+/// Implements `JsType` for a type that rquickjs's `FromJs` and `IntoJs`
+/// derives, or serde through `Serde`, convert: for a struct with named fields,
+/// an interface of its fields, with the property names those derives use; for
+/// a serde enum, a union of its unit variants' names or, with
+/// `#[serde(tag = ...)]`, of objects whose tag names their variant.
 #[proc_macro_derive(JsType, attributes(qjs))]
 pub fn derive_js_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -27,31 +30,33 @@ pub fn derive_js_type(input: TokenStream) -> TokenStream {
 }
 
 fn js_type(input: &DeriveInput) -> syn::Result<Tokens> {
-    let Data::Struct(data) = &input.data else {
-        return Err(syn::Error::new_spanned(
-            input,
-            "JsType is derived for structs",
-        ));
-    };
-    let Fields::Named(fields) = &data.fields else {
-        return Err(syn::Error::new_spanned(
-            &data.fields,
-            "JsType is derived for structs with named fields",
-        ));
-    };
     if input.generics.type_params().next().is_some() {
-        let message = "JsType is derived for structs without type parameters";
+        let message = "JsType is derived for types without type parameters";
         return Err(syn::Error::new_spanned(&input.generics, message));
     }
     let name = &input.ident;
     let label = name.to_string();
-    let case = rename_all(&input.attrs)?;
-    let properties = fields
-        .named
-        .iter()
-        .map(|field| property(field, case))
-        .collect::<syn::Result<Vec<_>>>()?;
-    let declaration = quote!(crate::typescript::interface(#label, &[#(#properties),*]));
+    let rename = rename_all(&input.attrs)?;
+    let declaration = match &input.data {
+        Data::Struct(data) => {
+            let Fields::Named(fields) = &data.fields else {
+                return Err(syn::Error::new_spanned(
+                    &data.fields,
+                    "JsType is derived for structs with named fields",
+                ));
+            };
+            let properties = properties(fields, rename)?;
+            quote!(crate::typescript::interface(#label, &[#(#properties),*]))
+        }
+        Data::Enum(data) => {
+            let variants = variants(input, data, rename)?;
+            quote!(crate::typescript::alias(#label, &[#(#variants),*].join(" | ")))
+        }
+        Data::Union(_) => {
+            let message = "JsType is derived for structs and enums";
+            return Err(syn::Error::new_spanned(input, message));
+        }
+    };
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         #[cfg(test)]
@@ -63,40 +68,105 @@ fn js_type(input: &DeriveInput) -> syn::Result<Tokens> {
     })
 }
 
-/// A field's property: its name, whether it may be missing, and its type.
-fn property(field: &Field, case: Option<Case<'static>>) -> syn::Result<Tokens> {
-    let ident = field.ident.as_ref();
-    let ident = ident.ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?;
-    let name = js_name(&field.attrs, &ident.to_string(), case)?;
-    let field_type = &field.ty;
-    Ok(quote! {
-        (
-            #name,
-            <#field_type as crate::typescript::JsType>::OPTIONAL,
-            <#field_type as crate::typescript::JsType>::typescript(types),
-        )
-    })
+/// Each field's property: its name, whether it may be missing, and its type.
+/// A field serde defaults or skips may be missing.
+fn properties(fields: &FieldsNamed, rename: Option<Rename>) -> syn::Result<Vec<Tokens>> {
+    fields
+        .named
+        .iter()
+        .map(|field| {
+            let ident = field.ident.as_ref();
+            let ident = ident.ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?;
+            let name = js_name(&field.attrs, &ident.to_string(), rename)?;
+            let defaulted = attribute_option(&field.attrs, "serde", "default")?.is_some()
+                || attribute_option(&field.attrs, "serde", "skip_serializing_if")?.is_some();
+            let field_type = &field.ty;
+            Ok(quote! {
+                (
+                    #name,
+                    #defaulted || <#field_type as crate::typescript::JsType>::OPTIONAL,
+                    <#field_type as crate::typescript::JsType>::typescript(types),
+                )
+            })
+        })
+        .collect()
 }
 
-/// The JavaScript name of a field or method: its `#[qjs(rename = ...)]`, else
-/// its Rust name in `case`.
-fn js_name(
-    attributes: &[Attribute],
-    ident: &str,
-    case: Option<Case<'static>>,
-) -> syn::Result<String> {
-    if let Some(name) = qjs_value(attributes, "rename")? {
+/// Each variant's type in a serde enum: its name, or, with a tag, an object
+/// of its fields whose tag property is its name.
+fn variants(
+    input: &DeriveInput,
+    data: &DataEnum,
+    rename: Option<Rename>,
+) -> syn::Result<Vec<Tokens>> {
+    let tag = attribute_value(&input.attrs, "serde", "tag")?;
+    data.variants
+        .iter()
+        .map(|variant| {
+            let name = js_name(&variant.attrs, &variant.ident.to_string(), rename)?;
+            let literal = format!("{name:?}");
+            match (&tag, &variant.fields) {
+                (None, Fields::Unit) => Ok(quote!(#literal.to_owned())),
+                (Some(tag), Fields::Unit) => {
+                    Ok(quote!(crate::typescript::object(&[(#tag, false, #literal.to_owned())])))
+                }
+                (Some(tag), Fields::Named(fields)) => {
+                    let properties = properties(fields, None)?;
+                    Ok(quote! {
+                        crate::typescript::object(&[(#tag, false, #literal.to_owned()), #(#properties),*])
+                    })
+                }
+                _ => Err(syn::Error::new_spanned(
+                    variant,
+                    "JsType is derived for enums of unit variants, or tagged enums of unit and struct variants",
+                )),
+            }
+        })
+        .collect()
+}
+
+/// How a `rename_all` option renames fields and variants.
+#[derive(Clone, Copy)]
+enum Rename {
+    /// rquickjs converts every case, and serde every case but `lowercase`,
+    /// as `convert_case` does.
+    Case(Case<'static>),
+    /// serde's `lowercase` lowercases a whole name.
+    Lowercase,
+}
+
+impl Rename {
+    fn apply(self, name: &str) -> String {
+        match self {
+            Self::Case(case) => name.to_case(case),
+            Self::Lowercase => name.to_lowercase(),
+        }
+    }
+}
+
+/// The JavaScript name of a field, variant or method: its `rename` option,
+/// else its Rust name as `rename` renames it.
+fn js_name(attributes: &[Attribute], ident: &str, rename: Option<Rename>) -> syn::Result<String> {
+    if let Some(name) = attribute_value(attributes, "qjs", "rename")? {
         return Ok(name);
     }
-    Ok(case.map_or_else(|| ident.to_owned(), |case| ident.to_case(case)))
+    if let Some(name) = attribute_value(attributes, "serde", "rename")? {
+        return Ok(name);
+    }
+    Ok(rename.map_or_else(|| ident.to_owned(), |rename| rename.apply(ident)))
 }
 
-/// The case `#[qjs(rename_all = ...)]` names fields in, as rquickjs maps it.
-fn rename_all(attributes: &[Attribute]) -> syn::Result<Option<Case<'static>>> {
-    let Some(case) = qjs_value(attributes, "rename_all")? else {
-        return Ok(None);
-    };
-    named_case(&case, &attributes[0]).map(Some)
+/// How a type's `#[qjs(rename_all = ...)]` or `#[serde(rename_all = ...)]`
+/// renames its fields or variants.
+fn rename_all(attributes: &[Attribute]) -> syn::Result<Option<Rename>> {
+    if let Some(case) = attribute_value(attributes, "qjs", "rename_all")? {
+        return named_case(&case, &attributes[0]).map(|case| Some(Rename::Case(case)));
+    }
+    match attribute_value(attributes, "serde", "rename_all")? {
+        None => Ok(None),
+        Some(case) if case == "lowercase" => Ok(Some(Rename::Lowercase)),
+        Some(case) => named_case(&case, &attributes[0]).map(|case| Some(Rename::Case(case))),
+    }
 }
 
 /// The case an rquickjs `rename_all` option names.
@@ -115,26 +185,61 @@ fn named_case(case: &str, attribute: &Attribute) -> syn::Result<Case<'static>> {
     }
 }
 
-/// The string value of the `#[qjs(...)]` option `option`, if given.
-fn qjs_value(attributes: &[Attribute], option: &str) -> syn::Result<Option<String>> {
-    let mut value = None;
+/// An option of an attribute: a flag such as `skip`, or a string value such
+/// as `rename = "name"`.
+#[derive(PartialEq, Eq)]
+enum AttributeOption {
+    Flag,
+    Value(String),
+}
+
+impl AttributeOption {
+    /// An option given the expression `value`, or a flag.
+    fn new(value: Option<Expr>) -> syn::Result<Self> {
+        let Some(value) = value else {
+            return Ok(Self::Flag);
+        };
+        Ok(Self::Value(syn::parse2::<LitStr>(quote!(#value))?.value()))
+    }
+}
+
+/// The string value of the `#[path(...)]` attributes' option `option`, if
+/// given.
+fn attribute_value(
+    attributes: &[Attribute],
+    path: &str,
+    option: &str,
+) -> syn::Result<Option<String>> {
+    Ok(match attribute_option(attributes, path, option)? {
+        Some(AttributeOption::Value(value)) => Some(value),
+        Some(AttributeOption::Flag) | None => None,
+    })
+}
+
+/// The `#[path(...)]` attributes' option `option`, if given.
+fn attribute_option(
+    attributes: &[Attribute],
+    path: &str,
+    option: &str,
+) -> syn::Result<Option<AttributeOption>> {
+    let mut found = None;
     for attribute in attributes
         .iter()
-        .filter(|attribute| attribute.path().is_ident("qjs"))
+        .filter(|attribute| attribute.path().is_ident(path))
     {
         attribute.parse_nested_meta(|meta| {
-            if !meta.input.peek(Token![=]) {
-                return Ok(());
-            }
-            let given: Expr = meta.value()?.parse()?;
+            let given: Option<Expr> = if meta.input.peek(Token![=]) {
+                Some(meta.value()?.parse()?)
+            } else {
+                None
+            };
             if meta.path.is_ident(option) {
-                let text: LitStr = syn::parse2(quote!(#given))?;
-                value = Some(text.value());
+                found = Some(AttributeOption::new(given)?);
             }
             Ok(())
         })?;
     }
-    Ok(value)
+    Ok(found)
 }
 
 /// Declares a host function's TypeScript signature, from its parameters'
@@ -349,7 +454,7 @@ fn class_declaration(implementation: &syn::ItemImpl) -> syn::Result<Tokens> {
 }
 
 /// The case `#[rquickjs::methods(rename_all = ...)]` names methods in.
-fn methods_rename_all(attributes: &[Attribute]) -> syn::Result<Option<Case<'static>>> {
+fn methods_rename_all(attributes: &[Attribute]) -> syn::Result<Option<Rename>> {
     let methods = attributes.iter().find(|attribute| {
         attribute
             .path()
@@ -370,7 +475,8 @@ fn methods_rename_all(attributes: &[Attribute]) -> syn::Result<Option<Case<'stat
             Ok(())
         })?;
     }
-    case.map(|case| named_case(&case, methods)).transpose()
+    case.map(|case| named_case(&case, methods).map(Rename::Case))
+        .transpose()
 }
 
 /// Replaces `Self` with the type it names, for naming types outside the impl.
@@ -391,21 +497,7 @@ impl VisitMut for ReplaceSelf<'_> {
 
 /// Whether the `#[qjs(...)]` options include the flag `option`.
 fn qjs_flag(attributes: &[Attribute], option: &str) -> syn::Result<bool> {
-    let mut found = false;
-    for attribute in attributes
-        .iter()
-        .filter(|attribute| attribute.path().is_ident("qjs"))
-    {
-        attribute.parse_nested_meta(|meta| {
-            if meta.input.peek(Token![=]) {
-                let _: Expr = meta.value()?.parse()?;
-            } else if meta.path.is_ident(option) {
-                found = true;
-            }
-            Ok(())
-        })?;
-    }
-    Ok(found)
+    Ok(attribute_option(attributes, "qjs", option)? == Some(AttributeOption::Flag))
 }
 
 /// Defines `HOST_EXPORTS`, the names a host module declares,

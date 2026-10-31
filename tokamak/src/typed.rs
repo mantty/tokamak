@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use rquickjs::class::{Trace, Tracer};
 use rquickjs::function::IntoArgs;
 use rquickjs::prelude::List;
-use rquickjs::{Ctx, FromJs, Function, IntoJs, Object, Promise, Value};
+use rquickjs::{Ctx, Exception, FromJs, Function, IntoJs, Object, Promise, Value};
 
 /// A JavaScript function that Rust calls with the tuple `Args` and whose
 /// result it reads as `R`.
@@ -186,5 +186,38 @@ impl<'js> IntoJs<'js> for StringPairs {
 impl crate::typescript::JsType for StringPairs {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         Vec::<List<(String, String)>>::typescript(types)
+    }
+}
+
+/// A value that crosses between Rust and JavaScript as JSON, which serde
+/// reads and writes.
+pub(crate) struct Serde<T>(pub(crate) T);
+
+impl<'js, T: serde::de::DeserializeOwned> FromJs<'js> for Serde<T> {
+    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Self> {
+        let json = ctx
+            .json_stringify(value)?
+            .ok_or_else(|| Exception::throw_type(ctx, "The value has no JSON form"))?
+            .to_string()?;
+        serde_json::from_str(&json)
+            .map(Self)
+            .map_err(|error| Exception::throw_type(ctx, &error.to_string()))
+    }
+}
+
+impl<'js, T: serde::Serialize> IntoJs<'js> for Serde<T> {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        let json = serde_json::to_string(&self.0)
+            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+        ctx.json_parse(json)
+    }
+}
+
+#[cfg(test)]
+impl<T: crate::typescript::JsType> crate::typescript::JsType for Serde<T> {
+    const OPTIONAL: bool = T::OPTIONAL;
+
+    fn typescript(types: &mut crate::typescript::Types) -> String {
+        T::typescript(types)
     }
 }

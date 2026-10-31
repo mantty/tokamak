@@ -242,12 +242,23 @@ pub(crate) fn tuple(elements: &[String]) -> String {
 /// whether it is optional, and its type.
 pub(crate) fn interface(name: &str, properties: &[(&str, bool, String)]) -> String {
     let mut declaration = format!("export interface {name} {{\n");
-    for (property, optional, typescript) in properties {
-        let optional = if *optional { "?" } else { "" };
-        let _ = writeln!(declaration, "  {property}{optional}: {typescript};");
+    for property in properties {
+        let _ = writeln!(declaration, "  {};", member(property));
     }
     declaration.push('}');
     declaration
+}
+
+/// An object type with `properties`, given as `interface` takes them.
+pub(crate) fn object(properties: &[(&str, bool, String)]) -> String {
+    let members: Vec<_> = properties.iter().map(member).collect();
+    format!("{{ {} }}", members.join("; "))
+}
+
+/// A property's member declaration.
+fn member((property, optional, typescript): &(&str, bool, String)) -> String {
+    let optional = if *optional { "?" } else { "" };
+    format!("{property}{optional}: {typescript}")
 }
 
 /// A type alias declaration named `name` for `typescript`.

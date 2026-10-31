@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use rusqlite::blob::ZeroBlob;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
+use tokamak_macros::JsType;
 
 use super::keys::{cursor, cursor_key, prefix_end};
 use super::{Location, Open, SQLITE_FILES, sqlite, text};
@@ -46,7 +47,7 @@ impl Value {
 
 /// What `put` asks of a value besides its key and bytes: a TTL, or else an
 /// expiration in seconds since the epoch, and JSON metadata.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PutOptions {
     pub(crate) expiration_ttl: Option<i64>,
@@ -80,7 +81,7 @@ pub(crate) struct Entry {
 }
 
 /// One page of keys in key order, and the cursor to the next page.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, JsType)]
 pub(crate) struct Page {
     pub(crate) keys: Vec<Key>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,7 +89,7 @@ pub(crate) struct Page {
 }
 
 /// A key in a listing, with its expiration and JSON metadata.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, JsType)]
 pub(crate) struct Key {
     pub(crate) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

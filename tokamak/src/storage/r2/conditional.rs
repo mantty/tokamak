@@ -1,9 +1,10 @@
 //! Conditions on an object's etag and upload time, as R2 evaluates them.
 
 use serde::Deserialize;
+use tokamak_macros::JsType;
 
 /// The conditions a read or write carries in `onlyIf`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Conditional {
     etag_matches: Option<Vec<Etag>>,
@@ -17,7 +18,7 @@ pub(crate) struct Conditional {
 }
 
 /// An etag a condition names.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsType)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub(crate) enum Etag {
     Strong { value: String },
