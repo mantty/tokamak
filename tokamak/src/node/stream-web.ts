@@ -1,0 +1,20 @@
+import {
+  ByteLengthQueuingStrategy, CompressionStream, CountQueuingStrategy, DecompressionStream, ReadableByteStreamController,
+  ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController,
+  ReadableStreamDefaultReader, TextDecoderStream, TextEncoderStream, TransformStream, TransformStreamDefaultController,
+  WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
+} from "../streams/web.ts";
+
+export {
+  ByteLengthQueuingStrategy, CompressionStream, CountQueuingStrategy, DecompressionStream, ReadableByteStreamController,
+  ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController,
+  ReadableStreamDefaultReader, TextDecoderStream, TextEncoderStream, TransformStream, TransformStreamDefaultController,
+  WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
+};
+
+export default {
+  ByteLengthQueuingStrategy, CompressionStream, CountQueuingStrategy, DecompressionStream, ReadableByteStreamController,
+  ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController,
+  ReadableStreamDefaultReader, TextDecoderStream, TextEncoderStream, TransformStream, TransformStreamDefaultController,
+  WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter,
+};

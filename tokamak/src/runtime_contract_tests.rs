@@ -1284,7 +1284,7 @@ fn application_imports_cannot_access_runtime_internals() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in [
         "tokamak:host",
-        "./tokamak:globals/process.mjs",
+        "./tokamak:globals/process.ts",
         "node:unsupported",
     ] {
         let source = format!(

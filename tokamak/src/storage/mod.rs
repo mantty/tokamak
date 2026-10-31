@@ -2,7 +2,7 @@
 //! data directory.
 //!
 //! The rest of the runtime reaches it only through [`ENTRY`], and its
-//! JavaScript only through `bindings.mjs`.
+//! JavaScript only through `bindings.ts`.
 
 mod d1;
 mod host;

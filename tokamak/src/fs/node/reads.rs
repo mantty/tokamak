@@ -466,7 +466,7 @@ fn remaining_length<'js>(
 fn read_buffer<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
     cached(ctx, "__tokamak_node_fs_read_buffer", |ctx| {
         let buffer: Value =
-            crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:node/buffer.mjs")?
+            crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:node/buffer.ts")?
                 .get("Buffer")?;
         let target: Function = ctx.eval(
             "Buffer => (view, offset, length) => Buffer.from(view.buffer, view.byteOffset + offset, length)",

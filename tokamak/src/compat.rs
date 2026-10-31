@@ -1,6 +1,6 @@
 use rquickjs::{Ctx, Module, Object};
 
-pub(crate) const BOOTSTRAP: &str = "tokamak:builtins/runtime.mjs";
+pub(crate) const BOOTSTRAP: &str = "tokamak:builtins/runtime.ts";
 
 include!(concat!(env!("OUT_DIR"), "/builtins.rs"));
 

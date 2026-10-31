@@ -168,7 +168,7 @@ pub(super) struct FileHandleState {
 /// `FileHandle`, which extends `EventEmitter`.
 pub(super) fn file_handle_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
     let event_emitter: Object =
-        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:events/events.mjs")?
+        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:events/events.ts")?
             .get("EventEmitter")?;
     let function = Function::new(ctx.clone(), |ctx: Ctx<'_>| -> rquickjs::Result<()> {
         Err(Exception::throw_type(&ctx, "Illegal constructor"))
@@ -400,7 +400,7 @@ pub(super) fn file_handle_object<'js>(
 /// The namespace of the module of workerd's `ReadStream` and `WriteStream`.
 pub(super) fn streams_module<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>> {
     cached(ctx, "__tokamak_node_fs_streams", |ctx| {
-        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:fs/node/streams.mjs")
+        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:fs/node/streams.ts")
     })
 }
 
@@ -688,7 +688,7 @@ pub(super) fn blob_object<'js>(
 ) -> rquickjs::Result<Object<'js>> {
     // workerd's `openAsBlob` makes its own `Blob`, whatever `globalThis.Blob` is.
     let exact_blob: Function = cached(ctx, "__tokamak_node_fs_blob", |ctx| {
-        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:network/fetch.mjs")?
+        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:network/fetch.ts")?
             .get("exactBlob")
     })?;
     exact_blob.call((TypedArray::<u8>::new_copy(ctx.clone(), &bytes)?, mime_type))
