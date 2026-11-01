@@ -223,8 +223,7 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
   output.eventsDetails = await eventsContracts();
   output.asyncContextDetails = await asyncResult(async () => {
     const { AsyncLocalStorage } = await import("node:async_hooks");
-    // @ts-expect-error @types/node 22 declares no constructor options.
-    const storage = new AsyncLocalStorage({ name: "scope", defaultValue: "default" });
+    const storage = new AsyncLocalStorage<unknown>({ name: "scope", defaultValue: "default" });
     const defaults = [storage.name, storage.getStore(), storage.run(undefined, () => storage.getStore()), storage.run(null, () => storage.getStore()), storage.run("inside", () => storage.exit(() => storage.getStore()))];
     const bound = storage.run("bound", () => AsyncLocalStorage.bind(async function (this: { value: number } | undefined, ...args: number[]) {
       await Promise.resolve();
@@ -507,8 +506,7 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
     decoder.decode(new Uint8Array([0xef, 0xbb, 0xbf, 65])),
   ];
   output.bom = [false, true].map(ignoreBOM => {
-    // @ts-expect-error workers-types requires every TextDecoder option.
-    const decoder = new TextDecoder("utf8", { ignoreBOM });
+    const decoder = new TextDecoder("utf8", { fatal: false, ignoreBOM });
     return decoder.decode(new Uint8Array([0xef]), { stream: true }) + decoder.decode(new Uint8Array([0xbb, 0xbf, 65]));
   });
   const encodings: Record<string, unknown> = {};
@@ -520,8 +518,7 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
     });
   }
   output.decoderErrors = [
-    // @ts-expect-error workers-types requires every TextDecoder option.
-    result(() => new TextDecoder("utf8", { fatal: true }).decode(new Uint8Array([0xff]))),
+    result(() => new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(new Uint8Array([0xff]))),
     // @ts-expect-error An array is not bytes.
     result(() => new TextDecoder().decode([65])),
     // @ts-expect-error Null is not bytes.
@@ -537,8 +534,7 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
     // @ts-expect-error A symbol is not text.
     result(() => new TextEncoder().encode(Symbol())),
   ];
-  // @ts-expect-error workers-types requires every TextDecoder option.
-  const fatalDecoder = new TextDecoder("utf8", { fatal: true });
+  const fatalDecoder = new TextDecoder("utf8", { fatal: true, ignoreBOM: false });
   output.fatalStreaming = [
     result(() => fatalDecoder.decode(new Uint8Array([0xe2]), { stream: true })),
     result(() => fatalDecoder.decode(new Uint8Array([0xff]), { stream: true })),
@@ -552,8 +548,7 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
     ["utf-16le", [[255,254,65,0], [0,216,0,0], [255,254,66,0]]],
     ["iso-2022-jp", [[27,36,66,36,34], [255], [36,36]]],
   ] as const) {
-    // @ts-expect-error workers-types requires every TextDecoder option.
-    const decoder = new TextDecoder(label, { fatal: true });
+    const decoder = new TextDecoder(label, { fatal: true, ignoreBOM: false });
     fatalState[label] = chunks.map(bytes => result(() => decoder.decode(new Uint8Array(bytes), { stream: true })));
   }
   output.decoderArguments = [
@@ -638,7 +633,6 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
   ];
   output.randomTypes = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, BigUint64Array].map(Type => {
     const value = new Type(0);
-    // @ts-expect-error workers-types leaves Uint8ClampedArray out of getRandomValues.
     return crypto.getRandomValues(value) === value;
   });
   output.exceptionCodes = ["toString", "constructor", "InvalidCharacterError", "TypeMismatchError", "QuotaExceededError"].map(name => new DOMException("", name).code);
@@ -2936,7 +2930,6 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
       return { result, scope, subscriber: await subscriber, boundReceivers, staticBoundReceivers, outside: storage.getStore() ?? null };
     }),
     asyncHooks: (() => {
-      // @ts-expect-error @types/node 22 declares no constructor options.
       const storage = new nodeAsyncHooks.AsyncLocalStorage({ name: "scope" });
       const scoped = storage.run({ value: 1 }, () => ({ inside: storage.getStore(), nested: storage.run(2, () => storage.getStore()), afterNested: storage.getStore() }));
       const resource = new nodeAsyncHooks.AsyncResource("resource");
@@ -3105,11 +3098,9 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
           call: result(() => SocketAddress()),
           // @ts-expect-error The port is read-only.
           assign: result(() => { address.port = 1; }),
-          // @ts-expect-error @types/node requires the options, which Node does not.
           noArguments: new SocketAddress().toJSON(),
         };
         const inspected = [
-          // @ts-expect-error @types/node requires the options, which Node does not.
           nodeUtil.inspect(address), nodeUtil.inspect(new SocketAddress()), nodeUtil.inspect(address, { depth: 0 }), nodeUtil.inspect(address, { depth: null }),
           nodeUtil.format("%s", address), nodeUtil.format("%o", address), nodeUtil.format("%O", address), nodeUtil.format("%j", address), result(() => nodeUtil.inspect(SocketAddress.prototype).length > 0),
         ];
@@ -3140,7 +3131,6 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
       functions: [typeof nodeTls.connect, typeof nodeTls.createSecureContext, typeof nodeTls.createServer],
       context: result(() => ({ prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(nodeTls.createSecureContext())).sort() })),
       socket: result(() => {
-        // @ts-expect-error @types/node requires the socket, which Node does not.
         const socket = new nodeTls.TLSSocket();
         return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), encrypted: socket.encrypted };
       }),

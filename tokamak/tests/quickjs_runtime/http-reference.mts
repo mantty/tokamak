@@ -75,7 +75,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: "2026-08-25",
   compatibilityFlags: ["nodejs_compat"],
   bindings: { FLAG: port },
-  modules: [esModule(import.meta.dirname, "http.ts")],
+  modules: ["http.ts", "outcome.ts"].map(name => esModule(import.meta.dirname, name)),
 }));
 try {
   const response = await mf.dispatchFetch("http://localhost");

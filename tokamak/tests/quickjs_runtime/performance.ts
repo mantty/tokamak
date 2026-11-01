@@ -20,10 +20,11 @@ export async function performanceContracts() {
   p.mark("a", { startTime: 20 });
   const measures: [string, (string | PerformanceMeasureOptions)?, string?][] = [["m", "a", "b"], ["m", { start: 1, end: 5 }], ["m", { start: 1, duration: 4 }],
     ["m", { end: 5, duration: 4 }], ["m", { duration: 4 }], ["m", { start: 1, end: 5, duration: 2 }],
-    ["m", { start: -1, end: 2 }],
-    // @ts-expect-error workers-types declares start as a number, but it may name a mark.
-    ["m", { start: "missing", end: 5 }]];
-  result.measure = measures.map(args => outcome(() => p.measure(...args).toJSON()));
+    ["m", { start: -1, end: 2 }]];
+  result.measure = [
+    ...measures.map(args => outcome(() => p.measure(...args).toJSON())),
+    outcome(() => p.measure("m", { start: "missing", end: 5 }).toJSON()),
+  ];
   const detail = { value: 1 };
   const mark = p.mark("reference", { startTime: 3, detail }); detail.value = 2;
   result.detail = { same: mark.detail === detail, value: mark.detail, json: mark.toJSON(), nullPrototype: Object.getPrototypeOf(mark.toJSON()) === null };

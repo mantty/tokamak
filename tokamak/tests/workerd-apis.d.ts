@@ -15,6 +15,16 @@ interface RpcResultClass {
   readonly prototype: { then: Function; catch: Function; finally: Function; [Symbol.dispose]?: Function };
 }
 
+interface Crypto {
+  // Web Crypto fills a Uint8ClampedArray too.
+  getRandomValues<T extends Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array | BigInt64Array | BigUint64Array>(buffer: T): T;
+}
+
+interface Performance {
+  // A measure's start and end may name marks.
+  measure(measureName: string, measureOptions: { start?: number | string; end?: number | string; duration?: number; detail?: unknown }): PerformanceMeasure;
+}
+
 // The global scope is an EventTarget, which takes events of any type.
 declare function addEventListener(type: string, handler: EventListenerOrEventListenerObject, options?: EventTargetAddEventListenerOptions | boolean): void;
 declare function removeEventListener(type: string, handler: EventListenerOrEventListenerObject, options?: EventTargetEventListenerOptions | boolean): void;

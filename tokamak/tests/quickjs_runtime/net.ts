@@ -399,7 +399,8 @@ async function socketContracts() {
   const failedLookup = new net.Socket();
   failedLookup.on("error", error => socketEvents.push(["lookup error", failure(error)]));
   failedLookup.on("close", hadError => socketEvents.push(["lookup close", hadError]));
-  failedLookup.connect({ host: "example.test", port: 1, lookup: (host, options, callback) => callback(Object.assign(new Error("not found"), { code: "ENOTFOUND" })) });
+  // A failed lookup's address is ignored.
+  failedLookup.connect({ host: "example.test", port: 1, lookup: (host, options, callback) => callback(Object.assign(new Error("not found"), { code: "ENOTFOUND" }), "") });
   const badLookup = [
     attempt(() => new net.Socket().connect({ host: "example.test", port: 1, lookup: (host, options, callback) => callback(null, "nope", 4) })),
     attempt(() => new net.Socket().connect({ host: "example.test", port: 1, lookup: (host, options, callback) => callback(null, "127.0.0.1", 5) })),

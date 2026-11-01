@@ -49,6 +49,14 @@ declare module "async_hooks" {
   }
 }
 
+declare module "node:async_hooks" {
+  import type { AsyncLocalStorage as Storage } from "async_hooks";
+  // The constructor takes a name and a default store, which @types/node 22 does
+  // not declare. This module's own declaration replaces the one it re-exports.
+  export const AsyncLocalStorage: typeof Storage & (new <T>(options: { name?: string; defaultValue?: T }) => Storage<T>);
+  export type AsyncLocalStorage<T> = Storage<T>;
+}
+
 declare module "url" {
   // workerd exports this helper, which Node keeps internal.
   function toPathIfFileURL(fileURLOrPath: URL | string): string;
@@ -138,6 +146,22 @@ declare module "net" {
   const Stream: typeof Socket;
   // The options and listener that connect() or listen() arguments give.
   function _normalizeArgs(args: unknown[]): unknown[];
+}
+
+declare module "node:net" {
+  import type { SocketAddress as Address, SocketAddressInitOptions } from "net";
+  // The options are optional, which @types/node does not declare. This module's
+  // own declaration replaces the one it re-exports from "net".
+  export const SocketAddress: typeof Address & (new (options?: SocketAddressInitOptions) => Address);
+  export type SocketAddress = Address;
+}
+
+declare module "node:tls" {
+  import type { TLSSocket as Socket, TLSSocketOptions } from "tls";
+  // Without a socket, the TLSSocket creates its own, which @types/node does not
+  // declare. This module's own declaration replaces the one it re-exports.
+  export const TLSSocket: typeof Socket & (new (socket?: undefined, options?: TLSSocketOptions) => Socket);
+  export type TLSSocket = Socket;
 }
 
 declare module "http" {
