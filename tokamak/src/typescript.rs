@@ -190,6 +190,12 @@ impl<V: JsType> JsType for BTreeMap<String, V> {
     }
 }
 
+impl<V: JsType> JsType for BTreeMap<u32, V> {
+    fn typescript(types: &mut Types) -> String {
+        format!("Record<number, {}>", V::typescript(types))
+    }
+}
+
 impl<V: JsType, S> JsType for HashMap<String, V, S> {
     fn typescript(types: &mut Types) -> String {
         format!("Record<string, {}>", V::typescript(types))

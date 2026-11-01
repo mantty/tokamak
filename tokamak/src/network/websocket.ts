@@ -25,7 +25,7 @@ export class WebSocket extends EventTarget {
   get readyState() { return this.#readyState; }
   get protocol() { return ""; }
   get extensions() { return ""; }
-  get binaryType() { return this.#binaryType; }
+  get binaryType(): "blob" | "arraybuffer" { return this.#binaryType; }
   set binaryType(value: unknown) {
     const next = String(value);
     if (next !== "blob" && next !== "arraybuffer") throw new SyntaxError("Invalid binaryType");

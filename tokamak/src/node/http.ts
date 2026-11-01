@@ -1,5 +1,7 @@
 import { EventEmitter } from "../events/events.ts";
 import { CloseEvent, MessageEvent } from "../events/web.ts";
+import { string } from "../globals/conversions.ts";
+import { callFunction, objectOf, propertyOf } from "../globals/objects.ts";
 import { Blob, Headers, Response } from "../network/fetch.ts";
 import { URL } from "../network/url.ts";
 import { WebSocket } from "../network/websocket.ts";
@@ -10,14 +12,47 @@ import { _normalizeArgs } from "./net.ts";
 import { bindPort, tcpPorts, validatePort } from "./tcp-ports.ts";
 
 export class Agent {
-  constructor(options = {}) { this.options = { ...options }; this.protocol = options.protocol ?? "http:"; }
-  destroy() {}
+  declare options: Record<PropertyKey, unknown>;
+  declare protocol: unknown;
+
+  constructor(options: unknown = {}) {
+    this.options = { ...objectOf(options ?? {}) };
+    this.protocol = propertyOf(options, "protocol") ?? "http:";
+  }
+
+  destroy(): void {}
+}
+
+// The request or response an IncomingMessage reads.
+type MessageSource = {
+  readonly headers: Iterable<[string, string]>;
+  readonly body: ReadableStream<Uint8Array> | null;
+  readonly url: string;
+} & (
+  | { readonly status: number; readonly statusText: string }
+  | { readonly status?: undefined; readonly method: string }
+);
+
+// The socket an IncomingMessage reports.
+interface IncomingSocket {
+  encrypted: boolean;
+  remoteFamily: string;
+  remoteAddress: string;
+  remotePort: number;
+  localAddress: string;
+  localPort: number | null;
+  destroy(): void;
+}
+
+// Calls `callback` unless it is null or undefined.
+function callOptional(callback: unknown): void {
+  if (callback != null) callFunction(callback, undefined);
 }
 
 // Duplicate values comma-join into one entry; set-cookie combines in `headers` but is absent from `rawHeaders`.
-function incomingHeaders(webHeaders) {
-  const headers = {};
-  const rawHeaders = [];
+function incomingHeaders(webHeaders: Iterable<[string, string]>): { headers: Record<string, string>; rawHeaders: string[] } {
+  const headers: Record<string, string> = {};
+  const rawHeaders: string[] = [];
   for (const [name, value] of webHeaders) {
     headers[name] = headers[name] === undefined ? value : headers[name] + ", " + value;
     if (name !== "set-cookie") rawHeaders.push(name, value);
@@ -26,7 +61,23 @@ function incomingHeaders(webHeaders) {
 }
 
 export class IncomingMessage extends Readable {
-  constructor(source, localPort = 0) {
+  declare __reading: boolean;
+  declare headers: Record<string, string>;
+  declare statusCode: number | undefined;
+  declare statusMessage: string | undefined;
+  declare url: string;
+  declare method: string | undefined;
+  declare rawHeaders: string[];
+  declare rawTrailers: string[];
+  declare trailers: Record<string, string>;
+  declare httpVersion: string;
+  declare complete: boolean;
+  declare aborted: boolean;
+  declare cloudflare: { cf?: unknown; env: unknown; ctx: unknown };
+  declare socket: IncomingSocket;
+  declare __reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+
+  constructor(source: MessageSource, localPort: number | null = 0) {
     super();
     this.__reading = false;
     const { headers, rawHeaders } = incomingHeaders(source.headers);
@@ -52,7 +103,7 @@ export class IncomingMessage extends Readable {
     this.aborted = false;
     this.cloudflare = { cf: undefined, env: undefined, ctx: undefined };
     this.socket = {
-      encrypted: source.url?.startsWith("https:") ?? false,
+      encrypted: source.url.startsWith("https:"),
       remoteFamily: "IPv4",
       remoteAddress: "127.0.0.1",
       remotePort: 32768 + Math.floor(Math.random() * 32768),
@@ -70,20 +121,20 @@ export class IncomingMessage extends Readable {
   _read() {
     if (this.__reading || this.complete || !this.__reader) return;
     this.__reading = true;
-    void pumpIncomingBody(this);
+    void pumpIncomingBody(this, this.__reader);
   }
 
-  destroy(error) {
+  destroy(error?: unknown): this {
     this.aborted = !this.complete;
     this.__reader?.cancel(error).catch(() => {});
     return super.destroy(error);
   }
 }
 
-async function pumpIncomingBody(message) {
+async function pumpIncomingBody(message: IncomingMessage, reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
   try {
     while (true) {
-      const { done, value } = await message.__reader.read();
+      const { done, value } = await reader.read();
       if (done) break;
       if (!message.push(Buffer.from(value))) return;
     }
@@ -97,22 +148,32 @@ async function pumpIncomingBody(message) {
 }
 
 export class OutgoingMessage extends EventEmitter {
+  declare headers: Map<string, unknown>;
+  declare finished: boolean;
+  declare __finish: (() => void) | undefined;
+
   constructor() {
     super();
     this.headers = new Map();
     this.finished = false;
   }
 
-  setHeader(name, value) { validateHeaderName(name); validateHeaderValue(name, value); this.headers.set(String(name).toLowerCase(), value); return this; }
-  getHeader(name) { return this.headers.get(String(name).toLowerCase()); }
-  getHeaderNames() { return [...this.headers.keys()]; }
-  hasHeader(name) { return this.headers.has(String(name).toLowerCase()); }
-  removeHeader(name) { this.headers.delete(String(name).toLowerCase()); }
-  flushHeaders() {}
-  destroy(error) { if (!this.finished) { this.finished = true; this.__finish?.(); } if (error) this.emit("error", error); return this; }
+  setHeader(name: unknown, value: unknown): this { validateHeaderName(name); validateHeaderValue(name, value); this.headers.set(String(name).toLowerCase(), value); return this; }
+  getHeader(name: unknown): unknown { return this.headers.get(String(name).toLowerCase()); }
+  getHeaderNames(): string[] { return [...this.headers.keys()]; }
+  hasHeader(name: unknown): boolean { return this.headers.has(String(name).toLowerCase()); }
+  removeHeader(name: unknown): void { this.headers.delete(String(name).toLowerCase()); }
+  flushHeaders(): void {}
+  destroy(error?: unknown): this { if (!this.finished) { this.finished = true; this.__finish?.(); } if (error) this.emit("error", error); return this; }
 }
 
 export class ServerResponse extends OutgoingMessage {
+  declare statusCode: number;
+  declare statusMessage: string;
+  declare __chunks: Buffer[];
+  declare __finished: Promise<void>;
+  declare __finish: () => void;
+
   constructor() {
     super();
     this.statusCode = 200;
@@ -120,31 +181,31 @@ export class ServerResponse extends OutgoingMessage {
     this.__chunks = [];
     this.__finished = new Promise(resolve => { this.__finish = resolve; });
   }
-  writeHead(statusCode, statusMessage, headers) {
+  writeHead(statusCode: unknown, statusMessage?: unknown, headers?: unknown): this {
     if (typeof statusMessage === "object") { headers = statusMessage; statusMessage = undefined; }
     this.statusCode = Number(statusCode);
     if (statusMessage !== undefined) this.statusMessage = String(statusMessage);
     for (const [name, value] of Object.entries(headers ?? {})) this.setHeader(name, value);
     return this;
   }
-  write(chunk, encoding, callback) {
+  write(chunk: unknown, encoding?: unknown, callback?: unknown): boolean {
     if (this.finished) throw new Error("write after end");
     if (chunk !== undefined) this.__chunks.push(Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined));
-    callback?.();
+    callOptional(callback);
     return true;
   }
-  end(chunk, encoding, callback) {
+  end(chunk?: unknown, encoding?: unknown, callback?: unknown): this {
     if (typeof chunk === "function") callback = chunk;
     else if (chunk !== undefined) this.write(chunk, encoding);
     if (this.finished) return this;
     this.finished = true;
-    callback?.();
+    callOptional(callback);
     this.emit("finish");
     this.__finish();
     return this;
   }
 
-  __response() {
+  __response(): Response {
     const headers = new Headers();
     for (const [name, value] of this.headers) {
       if (Array.isArray(value)) for (const item of value) headers.append(name, item);
@@ -155,7 +216,15 @@ export class ServerResponse extends OutgoingMessage {
 }
 
 export class ClientRequest extends OutgoingMessage {
-  constructor(url, options = {}, callback) {
+  declare url: string;
+  declare method: string;
+  declare agent: unknown;
+  declare path: string;
+  declare _body: Buffer[];
+  declare _ended: boolean;
+  declare __destroyed: boolean;
+
+  constructor(url: string, options: Record<PropertyKey, unknown> = {}, callback?: unknown) {
     super();
     this.url = url;
     this.method = String(options.method ?? "GET").toUpperCase();
@@ -168,24 +237,24 @@ export class ClientRequest extends OutgoingMessage {
     for (const [name, value] of Object.entries(options.headers ?? {})) this.setHeader(name, value);
   }
 
-  write(chunk, encoding, callback) {
+  write(chunk: unknown, encoding?: unknown, callback?: unknown): boolean {
     if (this._ended) throw new Error("write after end");
     this._body.push(Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined));
-    callback?.();
+    callOptional(callback);
     return true;
   }
 
-  end(chunk, encoding, callback) {
+  end(chunk?: unknown, encoding?: unknown, callback?: unknown): this {
     if (this._ended) return this;
     if (typeof chunk === "function") callback = chunk;
     else if (chunk !== undefined) this.write(chunk, encoding);
     this._ended = true;
     queueMicrotask(() => {
       this.finished = true;
-      callback?.();
+      callOptional(callback);
       this.emit("finish");
     });
-    const headers = Object.fromEntries(this.headers);
+    const headers = Object.fromEntries([...this.headers].map(([name, value]) => [name, string(value)]));
     const body = this._body.length === 0 ? undefined : new Blob([Buffer.concat(this._body)]);
     fetch(this.url, { method: this.method, headers, body }).then(response => {
       const message = new IncomingMessage(response);
@@ -196,14 +265,15 @@ export class ClientRequest extends OutgoingMessage {
     return this;
   }
 
-  abort() { this.destroy(); }
-  destroy(error) { this.__destroyed = true; if (error) this.emit("error", error); this.emit("close"); return this; }
+  abort(): void { this.destroy(); }
+  destroy(error?: unknown): this { this.__destroyed = true; if (error) this.emit("error", error); this.emit("close"); return this; }
 }
 
 export class Server extends EventEmitter {
-  #port = null;
+  #port: number | null = null;
+  declare options: Record<PropertyKey, unknown>;
 
-  constructor(options, requestListener) {
+  constructor(options?: unknown, requestListener?: unknown) {
     super();
     if (typeof options === "function") requestListener = options;
     this.options = typeof options === "object" && options !== null ? { ...options } : {};
@@ -212,26 +282,27 @@ export class Server extends EventEmitter {
 
   // A server is reached through cloudflare:node's handlers by the port it
   // reserves in the isolate's port table.
-  listen(...args) {
+  listen(...args: unknown[]): this {
     const [options, callback] = _normalizeArgs(args);
     const port = typeof options.port === "number" || typeof options.port === "string" ? validatePort(options.port, "options.port") : 0;
     if (this.#port != null) throw codedError(Error, "Listen method has been called more than once without closing.", "ERR_SERVER_ALREADY_LISTEN");
     if (callback !== null) this.once("listening", callback);
-    this.#port = bindPort(typeof options.host === "string" ? options.host : "127.0.0.1", port);
-    tcpPorts.setHandler(this.#port, { fetch: (request, env, ctx) => this.#onRequest(request, env, ctx) });
+    const bound = bindPort(typeof options.host === "string" ? options.host : "127.0.0.1", port);
+    this.#port = bound;
+    tcpPorts.setHandler(bound, { fetch: (request, env, ctx) => this.#onRequest(request, env, ctx) });
     queueMicrotask(() => this.emit("listening"));
     return this;
   }
 
-  get listening() {
+  get listening(): boolean {
     return this.#port != null;
   }
 
-  address() {
+  address(): { port: number; family: string; address: string } | null {
     return this.#port == null ? null : { port: this.#port, family: "IPv4", address: "127.0.0.1" };
   }
 
-  close(callback) {
+  close(callback?: unknown): this {
     if (this.#port != null) {
       tcpPorts.release(this.#port);
       this.#port = null;
@@ -241,7 +312,7 @@ export class Server extends EventEmitter {
     return this;
   }
 
-  async #onRequest(request, env, ctx) {
+  async #onRequest(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
     const incoming = new IncomingMessage(request, this.#port);
     incoming.cloudflare = { env, ctx };
     if ("cf" in request) incoming.cloudflare.cf = request.cf;
@@ -257,36 +328,36 @@ export class Server extends EventEmitter {
   }
 }
 
-function requestUrl(input) {
+function requestUrl(input: unknown): string {
   if (input instanceof URL) return input.toString();
   if (typeof input === "string") return input;
-  const value = input ?? {};
-  const protocol = value.protocol ?? "http:";
-  const host = value.hostname ?? value.host ?? "localhost";
-  const port = value.port === undefined ? "" : `:${value.port}`;
-  const path = value.path ?? "/";
+  const protocol = propertyOf(input, "protocol") ?? "http:";
+  const host = propertyOf(input, "hostname") ?? propertyOf(input, "host") ?? "localhost";
+  const portNumber = propertyOf(input, "port");
+  const port = portNumber === undefined ? "" : `:${portNumber}`;
+  const path = propertyOf(input, "path") ?? "/";
   return `${protocol}//${host}${port}${path}`;
 }
 
-function requestOptions(input, options) {
+function requestOptions(input: unknown, options: unknown): Record<PropertyKey, unknown> {
   if (typeof input === "object" && !(input instanceof URL)) return { ...input };
   if (typeof options === "function") return {};
   return { ...(options ?? {}) };
 }
 
-export function request(input, options, callback) {
+export function request(input: unknown, options?: unknown, callback?: unknown): ClientRequest {
   if (typeof options === "function") callback = options;
   const settings = requestOptions(input, options);
   return new ClientRequest(requestUrl(input), settings, callback);
 }
 
-export function get(input, options, callback) {
+export function get(input: unknown, options?: unknown, callback?: unknown): ClientRequest {
   const requestObject = request(input, options, callback);
   requestObject.end();
   return requestObject;
 }
 
-export function createServer(options, requestListener) { return new Server(options, requestListener); }
+export function createServer(options?: unknown, requestListener?: unknown): Server { return new Server(options, requestListener); }
 
 export const METHODS = ["ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET", "HEAD", "LINK", "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL", "MOVE", "NOTIFY", "OPTIONS", "PATCH", "POST", "PRI", "PROPFIND", "PROPPATCH", "PURGE", "PUT", "QUERY", "REBIND", "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE", "TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE"];
 export const STATUS_CODES = {
@@ -295,12 +366,12 @@ export const STATUS_CODES = {
 export const globalAgent = new Agent();
 export const maxHeaderSize = 16 * 1024;
 export const _connectionListener = () => {};
-export function setMaxIdleHTTPParsers() {}
-export function validateHeaderName(name) {
+export function setMaxIdleHTTPParsers(): void {}
+export function validateHeaderName(name: unknown): unknown {
   if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(name))) throw new TypeError(`Invalid header name: ${name}`);
   return name;
 }
-export function validateHeaderValue(name, value) {
+export function validateHeaderValue(name: unknown, value: unknown): unknown {
   if (/\r|\n/.test(String(value))) throw new TypeError(`Invalid value for header ${name}`);
   return value;
 }

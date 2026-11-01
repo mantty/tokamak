@@ -1,3 +1,4 @@
+import type { Response } from "../network/fetch.ts";
 import { codedError } from "./errors.ts";
 
 const EPHEMERAL_PORT_MIN = 49152;

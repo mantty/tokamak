@@ -24,7 +24,7 @@ declare module "tokamak:host" {
 
   export function createDecoder(label: string, fatal: boolean, ignoreBom: boolean): TextDecoderState;
 
-  export function createNodeCompression(mode: number, options: string, dictionary: Uint8Array): object;
+  export function createNodeCompression(mode: number, options: CodecOptions, dictionary: Uint8Array): NodeCodec;
 
   export function cryptoAesGcm(encrypt: boolean, key: Uint8Array, iv: Uint8Array, input: Uint8Array, options: object): ArrayBuffer;
 
@@ -220,6 +220,21 @@ declare module "tokamak:host" {
     getAuthTag(): ArrayBuffer;
   }
 
+  export interface CodecOptions {
+    windowBits: number;
+    level: number;
+    memLevel: number;
+    strategy: number;
+    params: Record<number, number>;
+    pledgedSrcSize?: number | undefined;
+  }
+
+  export interface CodecStep {
+    consumed: number;
+    ended: boolean;
+    output: Uint8Array;
+  }
+
   export interface CompiledPattern {
     protocol: PatternComponent;
     username: PatternComponent;
@@ -366,6 +381,14 @@ declare module "tokamak:host" {
     disconnect: () => void;
     take: () => OutboxFrame[];
     listen: (arg0: SocketNotifier) => void;
+  }
+
+  export interface NodeCodec {
+    readonly [classBrand]: "NodeCodec";
+    step(input: Uint8Array, flush: number, capacity: number): CodecStep;
+    reset(): void;
+    params(level: number, strategy: number): Uint8Array;
+    close(): void;
   }
 
   export type OutboxFrame = { type: "message"; binary: true; data: ArrayBuffer } | { type: "message"; binary: false; data: string } | { type: "close"; code: number; reason: string };

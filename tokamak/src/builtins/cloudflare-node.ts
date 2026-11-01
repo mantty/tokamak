@@ -1,3 +1,4 @@
+import type { Response } from "../network/fetch.ts";
 import { codedError } from "../node/errors.ts";
 import { tcpPorts } from "../node/tcp-ports.ts";
 

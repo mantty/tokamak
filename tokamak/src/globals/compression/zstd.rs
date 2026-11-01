@@ -1,6 +1,6 @@
 use zstd::zstd_safe::{self as z, CParameter as C, DParameter, InBuffer, OutBuffer};
 
-use super::node::{CodecError, Options, Step};
+use super::node::{CodecError, CodecOptions, Step};
 
 pub(super) enum Zstd {
     Encoder(z::CCtx<'static>),
@@ -19,7 +19,7 @@ fn decompression_error(code: usize) -> CodecError {
 }
 
 impl Zstd {
-    pub(super) fn new(encode: bool, options: &Options) -> Result<Self, CodecError> {
+    pub(super) fn new(encode: bool, options: &CodecOptions) -> Result<Self, CodecError> {
         if !encode {
             let mut decoder = z::DCtx::create();
             for (&key, &value) in &options.params {
