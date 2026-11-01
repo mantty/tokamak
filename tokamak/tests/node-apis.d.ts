@@ -4,9 +4,19 @@ interface Performance {
   timerify<T extends (...args: never[]) => unknown>(fn: T): T;
 }
 
+interface Buffer<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike> {
+  // What util.inspect() shows of the buffer.
+  inspect(): string;
+}
+
 declare module "perf_hooks" {
   function timerify<T extends (...args: never[]) => unknown>(fn: T): T;
   function eventLoopUtilization(utilization1?: EventLoopUtilization, utilization2?: EventLoopUtilization): EventLoopUtilization;
+}
+
+declare module "crypto" {
+  // Node compares ArrayBuffers as well as views.
+  function timingSafeEqual(a: NodeJS.ArrayBufferView | ArrayBuffer, b: NodeJS.ArrayBufferView | ArrayBuffer): boolean;
 }
 
 declare module "fs" {
@@ -28,11 +38,49 @@ declare module "node:fs" {
   export function openAsBlob(path: PathLike, options?: OpenAsBlobOptions): Blob;
 }
 
+declare module "async_hooks" {
+  interface AsyncLocalStorage<T> {
+    // The name given in the constructor's options.
+    readonly name: string;
+  }
+  interface AsyncResource {
+    // The bound function runs with `thisArg` as its receiver.
+    bind<Func extends (...args: any[]) => any>(fn: Func, thisArg: unknown): Func;
+  }
+}
+
+declare module "url" {
+  // workerd exports this helper, which Node keeps internal.
+  function toPathIfFileURL(fileURLOrPath: URL | string): string;
+}
+
+declare module "querystring" {
+  // Undocumented exports, and the option to decode `+` as a space.
+  function unescape(str: string, decodeSpaces?: boolean): string;
+  function unescapeBuffer(str: string, decodeSpaces?: boolean): Buffer;
+}
+
+declare module "util" {
+  // Undocumented exports, which workerd declares and does not implement.
+  function _errnoException(err: number, syscall: string, original?: string): NodeJS.ErrnoException;
+  function _exceptionWithHostPort(err: number, syscall: string, address: string, port?: number, additional?: string): NodeJS.ErrnoException;
+}
+
+declare module "node:test" {
+  namespace test {
+    // workerd exports the mock classes, which Node does not.
+    const MockTracker: { new (): MockTracker; readonly prototype: MockTracker };
+    const MockFunctionContext: { new (): MockFunctionContext<Function>; readonly prototype: MockFunctionContext<Function> };
+  }
+}
+
 declare module "zlib" {
   // Zlib streams pass their options to the Transform constructor.
   interface ZlibOptions {
     highWaterMark?: number;
   }
+  // The result codes, by name and by number.
+  const codes: { readonly [name: string]: number | string };
   // Every zlib stream can be reset.
   interface BrotliCompress extends ZlibReset {}
   interface ZstdCompress extends ZlibReset {}
@@ -63,10 +111,29 @@ declare module "net" {
   }
   interface SocketConstructorOpts {
     handle?: BoundSocket;
+    // Sockets pass their options to the Duplex constructor.
+    highWaterMark?: number;
+    readableHighWaterMark?: number;
+    writableHighWaterMark?: number;
   }
   interface Socket {
     // The peer's address, or an empty object before the socket connects.
     _getpeername(): Partial<AddressInfo>;
+    // The socket's own address, or an empty object before the socket connects.
+    _getsockname(): Partial<AddressInfo>;
+  }
+  interface BlockList {
+    // Each address may be a string or a SocketAddress.
+    addAddress(address: string | SocketAddress, type?: IPVersion): void;
+    addRange(start: string | SocketAddress, end: string | SocketAddress, type?: IPVersion): void;
+    addSubnet(net: string | SocketAddress, prefix: number, type?: IPVersion): void;
+    check(address: string | SocketAddress, type?: IPVersion): boolean;
+  }
+  interface SocketAddress {
+    toJSON(): { address: string; port: number; family: IPVersion; flowlabel: number };
+  }
+  namespace SocketAddress {
+    function isSocketAddress(value: unknown): value is SocketAddress;
   }
   const Stream: typeof Socket;
   // The options and listener that connect() or listen() arguments give.

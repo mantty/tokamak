@@ -1,9 +1,13 @@
 import EventEmitter from "node:events";
 import streams from "node:stream";
+// The global ReadableStream, which @types/node declares apart from workers-types.
+import { ReadableStream as NodeReadableStream } from "node:stream/web";
+import type { Socket as NetSocket } from "node:net";
+import type { InspectOptions, InspectOptionsStylized } from "node:util";
 import processModule from "node:process";
 import { env, waitUntil } from "cloudflare:workers";
 import { streamContracts } from "./streams.ts";
-import { cryptoContracts } from "./crypto.ts";
+import { cryptoContracts, keyPair } from "./crypto.ts";
 import { htmlContracts } from "./html.ts";
 import { zlibContracts } from "./zlib.ts";
 import { cloneContracts } from "./clone.ts";
@@ -13,18 +17,19 @@ import { bytesContracts } from "./bytes.ts";
 import { filesystemContracts } from "./filesystem.ts";
 import { netContracts } from "./net.ts";
 import { eventsContracts } from "./events.ts";
+import { member, present } from "./outcome.ts";
 
-function errorResult(error) {
-  return { error: error.name, dom: error instanceof DOMException, code: error.code ?? null };
+function errorResult(error: unknown) {
+  return { error: member(error, "name"), dom: error instanceof DOMException, code: member(error, "code") ?? null };
 }
 
-function result(callback) {
+function result<T>(callback: () => T) {
   try { return callback(); }
   catch (error) { return errorResult(error); }
 }
 
 /** The shape of an RPC result class, which no Worker can construct. */
-function rpcResultContract(RpcResult) {
+function rpcResultContract(RpcResult: RpcResultClass) {
   const { prototype } = RpcResult;
   return {
     name: RpcResult.name,
@@ -32,102 +37,110 @@ function rpcResultContract(RpcResult) {
       && Object.getPrototypeOf(prototype) === Object.prototype,
     own: Object.getOwnPropertyNames(prototype).sort(),
     tag: Object.prototype.toString.call(prototype),
-    methods: ["then", "catch", "finally"].map(name => ({
-      enumerable: Object.getOwnPropertyDescriptor(prototype, name).enumerable,
+    methods: (["then", "catch", "finally"] as const).map(name => ({
+      enumerable: present(Object.getOwnPropertyDescriptor(prototype, name)).enumerable,
       length: prototype[name].length,
       call: detailedResult(() => prototype[name].call(Promise.resolve())),
     })),
     dispose: Object.hasOwn(prototype, Symbol.dispose) && {
-      enumerable: Object.getOwnPropertyDescriptor(prototype, Symbol.dispose).enumerable,
-      call: detailedResult(() => prototype[Symbol.dispose].call({})),
+      enumerable: present(Object.getOwnPropertyDescriptor(prototype, Symbol.dispose)).enumerable,
+      call: detailedResult(() => present(prototype[Symbol.dispose]).call({})),
     },
     construct: detailedResult(() => new RpcResult()),
     call: detailedResult(() => RpcResult()),
   };
 }
 
-async function asyncResult(callback) {
+async function asyncResult<T>(callback: () => T | Promise<T>) {
   try { return await callback(); }
   catch (error) { return errorResult(error); }
 }
 
-function detailedResult(callback) {
+function detailedResult<T>(callback: () => T) {
   try { return callback(); }
-  catch (error) { return { ...errorResult(error), message: error.message }; }
+  catch (error) { return { ...errorResult(error), message: member(error, "message") }; }
 }
 
-async function detailedAsyncResult(callback) {
+async function detailedAsyncResult<T>(callback: () => T | Promise<T>) {
   try { return await callback(); }
-  catch (error) { return { ...errorResult(error), message: error.message }; }
+  catch (error) { return { ...errorResult(error), message: member(error, "message") }; }
 }
 
 // U+202F (narrow no-break space) usage varies across CLDR builds; both runtimes
 // normalize to a plain space so date/time probes compare content, not spacing.
-function normalizeIntlSpaces(value) {
+function normalizeIntlSpaces(value: string) {
   return value.replace(/\u202F/g, " ");
 }
 
-function describeHtmlRewriterValue(value, fields = []) {
+function describeHtmlRewriterValue(value: object, fields: string[] = []) {
   return {
     type: typeof value,
     tag: Object.prototype.toString.call(value),
     own: Object.getOwnPropertyNames(value).sort(),
     prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(value)).sort(),
-    fields: Object.fromEntries(fields.map(name => [name, result(() => value[name])])),
+    fields: Object.fromEntries(fields.map(name => [name, result(() => member(value, name))])),
   };
 }
 
-function describeHtmlRewriterAttributes(attributes) {
+function describeHtmlRewriterAttributes(attributes: IterableIterator<string[]>) {
   return {
     type: typeof attributes,
     tag: Object.prototype.toString.call(attributes),
     own: Object.getOwnPropertyNames(attributes).sort(),
     prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(attributes)).sort(),
-    length: result(() => attributes.length),
+    length: result(() => member(attributes, "length")),
     entries: result(() => [...attributes]),
   };
 }
 
 // What a span's methods return and throw for each kind of argument.
-function spanCalls(span) {
+function spanCalls(span: Span) {
   return {
     spanContext: [span.spanContext(), span.spanContext() === span.spanContext()],
     setAttribute: [["key", "value"], ["key", 1], ["key", true], ["key", {}], [1n], ["key"], [], ["key", 1n], ["key", Symbol("value")], [Symbol("key"), "value"]]
+      // @ts-expect-error The argument lists include invalid ones.
       .map(args => detailedResult(() => span.setAttribute(...args) === span)),
     setAttributes: [{ a: 1, b: undefined, c: {} }, () => {}, [], null, "abc", undefined, { a: 1n, b: Symbol("value") }, { a: Symbol("value") }]
+      // @ts-expect-error The attributes include invalid ones.
       .map(attributes => detailedResult(() => span.setAttributes(attributes) === span)),
     recordException: [["boom"], [new Error("boom")], [{}], [undefined], []]
+      // @ts-expect-error The argument lists include invalid ones.
       .map(args => detailedResult(() => typeof span.recordException(...args))),
     updateName: [["renamed"], [5], [undefined], [], [Symbol("name")]]
+      // @ts-expect-error The argument lists include invalid ones.
       .map(args => detailedResult(() => span.updateName(...args) === span)),
     setStatus: [[{ code: "ok" }], [{ code: "error", message: "failed" }], [{ code: "unset", message: null }], [{ code: "OK" }], [{}], [[]], [{ code: "bad", message: Symbol("message") }], ["ok"], [null], [undefined], []]
+      // @ts-expect-error The argument lists include invalid ones.
       .map(args => detailedResult(() => span.setStatus(...args) === span)),
   };
 }
 
 // The tracing API's spans before and after they end, its argument checks, and
 // which span is active inside callbacks, timers and promises.
-async function tracingContracts(tracing) {
+async function tracingContracts(tracing: Tracing) {
   const span = tracing.startSpan("contract");
   const live = spanCalls(span);
   const end = [typeof span.end(), typeof span.end()];
   const ended = spanCalls(span);
-  const root = tracing.getActiveSpan();
-  const order = [];
+  const root = present(tracing.getActiveSpan());
+  const order: string[] = [];
   const resolved = Promise.resolve("value");
   tracing.enterSpan("order", () => resolved).then(value => order.push(`entered ${value}`));
   resolved.then(() => order.push("job 1")).then(() => order.push("job 2")).then(() => order.push("job 3"));
   const rejection = new Error("rejected");
-  const thenable = { then(resolve) { resolve("thenable"); } };
-  const activeCall = function (active, ...args) { return [tracing.getActiveSpan() === active, this === globalThis, args]; };
-  const callbackCalls = method => [[], ["name"], [Symbol("name")], ["name", "callback"], [5, () => "value"], [undefined, () => "value"]]
+  const thenable = { then(resolve: (value: string) => void) { resolve("thenable"); } };
+  const activeCall = function (this: unknown, active: Span, ...args: number[]) { return [tracing.getActiveSpan() === active, this === globalThis, args]; };
+  const callbackCalls = (method: "enterSpan" | "startActiveSpan") => [[], ["name"], [Symbol("name")], ["name", "callback"], [5, () => "value"], [undefined, () => "value"]]
+    // @ts-expect-error The argument lists include invalid ones.
     .map(args => detailedResult(() => tracing[method](...args)));
   return {
     tags: [Object.prototype.toString.call(tracing), Object.prototype.toString.call(span)],
+    // @ts-expect-error Span is abstract, so constructing it throws.
     constructors: [() => new tracing.Span(), () => new (Object.getPrototypeOf(tracing).constructor)()].map(detailedResult),
     live,
     end,
     ended,
+    // @ts-expect-error The argument lists include invalid ones.
     startSpan: [[], ["name"], [5], [undefined], [Symbol("name")]].map(args => detailedResult(() => tracing.startSpan(...args) instanceof tracing.Span)),
     enterSpan: callbackCalls("enterSpan"),
     startActiveSpan: callbackCalls("startActiveSpan"),
@@ -150,7 +163,7 @@ async function tracingContracts(tracing) {
       started: tracing.startActiveSpan("promise", () => resolved) === resolved,
       thenable: tracing.enterSpan("thenable", () => thenable) === thenable,
       thrown: detailedResult(() => tracing.enterSpan("thrown", () => { throw new RangeError("thrown"); })),
-      rejected: await tracing.enterSpan("rejected", () => Promise.reject(rejection)).catch(reason => reason === rejection),
+      rejected: await tracing.enterSpan("rejected", () => Promise.reject(rejection)).catch((reason: unknown) => reason === rejection),
       order,
     },
   };
@@ -160,7 +173,7 @@ async function tracingContracts(tracing) {
 // a body's, a form field's, and a clone's. A body's type is parsed as a MIME
 // type, which the later cases cover.
 async function blobTypeContracts() {
-  const result = {};
+  const result: Record<string, unknown> = {};
   for (const [name, type] of [
     ["mixedCase", "Text/Plain; Charset=UTF-8"],
     ["nonAscii", "text/pl\u00e4in"],
@@ -170,8 +183,8 @@ async function blobTypeContracts() {
     ["spacing", "text/plain ;x =1; y= 2 ;z=3"],
     ["boundary", "multipart/form-data;boundary=x"],
     ["invalid", "text/"],
-  ]) {
-    const headers = type === undefined ? {} : { "content-type": type };
+  ] as const) {
+    const headers: Record<string, string> = type === undefined ? {} : { "content-type": type };
     const response = await new Response("blob", { headers }).blob();
     const request = await new Request("https://example.test/", { method: "POST", body: "blob", headers }).blob();
     const form = new FormData();
@@ -182,20 +195,20 @@ async function blobTypeContracts() {
     }).formData();
     const file = multipart.get("file");
     let cloned;
-    try { cloned = structuredClone(response).type; } catch (error) { cloned = error.name; }
+    try { cloned = structuredClone(response).type; } catch (error) { cloned = member(error, "name"); }
     result[name] = {
       response: response.type,
       request: request.type,
-      appended: form.get("file").type,
-      multipart: { type: file.type, name: file.name },
+      appended: member(form.get("file"), "type"),
+      multipart: { type: member(file, "type"), name: member(file, "name") },
       cloned,
     };
   }
   return result;
 }
 
-export async function run(handlerEnv, ctx, constructors) {
-  const output = {};
+export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, constructors: unknown[]) {
+  const output: Record<string, unknown> = {};
   const consoleBeforeNodeConsole = Object.getOwnPropertyNames(console).sort();
   output.streamDetails = await streamContracts();
   output.cryptoDetails = await cryptoContracts();
@@ -210,9 +223,10 @@ export async function run(handlerEnv, ctx, constructors) {
   output.eventsDetails = await eventsContracts();
   output.asyncContextDetails = await asyncResult(async () => {
     const { AsyncLocalStorage } = await import("node:async_hooks");
+    // @ts-expect-error @types/node 22 declares no constructor options.
     const storage = new AsyncLocalStorage({ name: "scope", defaultValue: "default" });
     const defaults = [storage.name, storage.getStore(), storage.run(undefined, () => storage.getStore()), storage.run(null, () => storage.getStore()), storage.run("inside", () => storage.exit(() => storage.getStore()))];
-    const bound = storage.run("bound", () => AsyncLocalStorage.bind(async function (...args) {
+    const bound = storage.run("bound", () => AsyncLocalStorage.bind(async function (this: { value: number } | undefined, ...args: number[]) {
       await Promise.resolve();
       return { store: storage.getStore(), receiver: this?.value ?? null, args };
     }));
@@ -222,6 +236,7 @@ export async function run(handlerEnv, ctx, constructors) {
       return { store: storage.getStore(), args };
     }, 3, 4));
     return { defaults, bound: await bound.call({ value: 7 }, 1, 2), snapshot, restored: storage.getStore(),
+      // @ts-expect-error A number is not a function.
       invalidBind: result(() => AsyncLocalStorage.bind(3)), invalidSnapshot: result(() => captured(3)) };
   });
   output.streamTransfers = await asyncResult(async () => {
@@ -233,27 +248,26 @@ export async function run(handlerEnv, ctx, constructors) {
     const read = reader.read(destination);
     const suppliedBufferLength = destination.buffer.byteLength;
     const value = await read;
-    return { queuedBufferLength, suppliedBufferLength, bytes: [...value.value] };
+    return { queuedBufferLength, suppliedBufferLength, bytes: [...present(value.value)] };
   });
   output.erroredPipeLocks = await asyncResult(async () => {
     const source = new ReadableStream({ start(controller) { controller.error(new Error("source")); } });
-    let release;
-    let started;
-    const aborting = new Promise(resolve => { started = resolve; });
-    const target = new WritableStream({ abort() { started(); return new Promise(resolve => { release = resolve; }); } });
-    const completion = source.pipeTo(target).catch(error => error.message);
+    const aborting = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const target = new WritableStream({ abort() { aborting.resolve(); return released.promise; } });
+    const completion = source.pipeTo(target).catch(error => member(error, "message"));
     const before = [source.locked, target.locked];
-    await aborting;
+    await aborting.promise;
     const during = [source.locked, target.locked];
-    release();
+    released.resolve();
     const error = await completion;
     return { before, during, after: [source.locked, target.locked], error };
   });
   output.webStreamAdapters = {
     fromReadable: await asyncResult(async () => {
-      const web = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
+      const web = new NodeReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
       const node = streams.Readable.fromWeb(web);
-      const result = [];
+      const result: number[] = [];
       for await (const chunk of node) result.push(...chunk);
       return result;
     }),
@@ -262,14 +276,14 @@ export async function run(handlerEnv, ctx, constructors) {
       return [...await new Response(web).bytes()];
     }),
     fromWritable: await asyncResult(async () => {
-      const chunks = [];
+      const chunks: number[][] = [];
       const web = new WritableStream({ write(chunk) { chunks.push([...chunk]); } });
       const node = streams.Writable.fromWeb(web);
-      await new Promise((resolve, reject) => { node.on("error", reject); node.end(new Uint8Array([5, 6]), resolve); });
+      await new Promise<void>((resolve, reject) => { node.on("error", reject); node.end(new Uint8Array([5, 6]), resolve); });
       return chunks;
     }),
     toWritable: await asyncResult(async () => {
-      const chunks = [];
+      const chunks: number[][] = [];
       const node = new streams.Writable({ write(chunk, encoding, callback) { chunks.push([...chunk]); callback(); } });
       const writer = streams.Writable.toWeb(node).getWriter();
       await writer.write(new Uint8Array([7, 8]));
@@ -283,27 +297,29 @@ export async function run(handlerEnv, ctx, constructors) {
     }),
   };
   output.writableAbortSignal = await asyncResult(async () => {
-    let controller;
-    let release;
-    const events = [];
+    let controller: WritableStreamDefaultController | undefined;
+    const released = Promise.withResolvers<void>();
+    const events: unknown[] = [];
     const stream = new WritableStream({
       start(value) { controller = value; },
-      write() { events.push("write"); return new Promise(resolve => { release = resolve; }); },
+      write() { events.push("write"); return released.promise; },
       abort(reason) { events.push(reason); },
     });
     const writer = stream.getWriter();
     const write = writer.write("chunk");
     await Promise.resolve();
     const abort = writer.abort("aborted");
-    const signal = [controller.signal.aborted, controller.signal.reason];
+    const { signal: abortSignal } = present(controller);
+    const signal = [abortSignal.aborted, abortSignal.reason];
     const before = [...events];
-    release();
+    released.resolve();
     const writeResult = await write.then(() => "fulfilled", error => String(error));
     await abort;
     return { signal, before, after: events, writeResult };
   });
   output.eventEmitterInitialization = {
     eventTargetMethods: ["addEventListener", "removeEventListener", "dispatchEvent"].map(name => name in EventEmitter.prototype),
+    // @ts-expect-error EventEmitter is called without new.
     bare: result(() => EventEmitter()),
     reinitialize: result(() => {
       const emitter = new EventEmitter();
@@ -318,8 +334,8 @@ export async function run(handlerEnv, ctx, constructors) {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response("unread");
     try {
-      const events = [];
-      await new Promise((resolve, reject) => {
+      const events: string[] = [];
+      await new Promise<void>((resolve, reject) => {
         const request = http.request("http://example.test", response => {
           events.push("response");
           response.destroy();
@@ -334,8 +350,8 @@ export async function run(handlerEnv, ctx, constructors) {
       globalThis.fetch = originalFetch;
     }
   });
-  const globalSurface = new Set();
-  for (let object = globalThis; object; object = Object.getPrototypeOf(object)) {
+  const globalSurface = new Set<string>();
+  for (let object: object | null = globalThis; object; object = Object.getPrototypeOf(object)) {
     for (const name of Object.getOwnPropertyNames(object)) {
       if (!name.startsWith("__tokamak") && name !== "WebAssembly") globalSurface.add(name);
     }
@@ -354,15 +370,15 @@ export async function run(handlerEnv, ctx, constructors) {
     "WritableStream", "WritableStreamDefaultController", "WritableStreamDefaultWriter",
   ];
   output.globalClassSurfaces = Object.fromEntries(globalClasses.map(name => {
-    const value = globalThis[name];
+    const value = member(globalThis, name);
     return [name, {
       type: typeof value,
-      proto: value && Object.getOwnPropertyNames(value.prototype ?? {}).sort(),
+      proto: value && Object.getOwnPropertyNames(member(value, "prototype") ?? {}).sort(),
       static: value && Object.getOwnPropertyNames(value).sort(),
     }];
   }));
   const builtinNames = [...process.getBuiltinModule("node:module").builtinModules, "sqlite", "test"];
-  const builtinRequirements = {
+  const builtinRequirements: Record<string, string[]> = {
     "assert": ["ok", "strictEqual", "deepStrictEqual"],
     "assert/strict": ["ok", "strictEqual", "deepStrictEqual"],
     "async_hooks": ["AsyncLocalStorage", "AsyncResource"],
@@ -423,17 +439,18 @@ export async function run(handlerEnv, ctx, constructors) {
     }];
   }));
   output.builtinSurfaces = Object.fromEntries(builtinNames.filter(name => name.startsWith("_") || name === "tty")
-    .map(name => [name, Object.keys(process.getBuiltinModule("node:" + name)).sort()]));
+    .map(name => [name, Object.keys(present(process.getBuiltinModule("node:" + name))).sort()]));
   output.nodeBuiltinSurfaces = Object.fromEntries(builtinNames.map(name => [
     name,
-    Object.keys(process.getBuiltinModule("node:" + name)).sort(),
+    Object.keys(present(process.getBuiltinModule("node:" + name))).sort(),
   ]));
-  output.cloudflareModules = {};
+  const cloudflareModules: Record<string, string[]> = {};
+  output.cloudflareModules = cloudflareModules;
   for (const [name, module] of Object.entries({
     workers: await import("cloudflare:workers"),
     sockets: await import("cloudflare:sockets"),
     node: await import("cloudflare:node"),
-  })) output.cloudflareModules[name] = Object.keys(module).sort();
+  })) cloudflareModules[name] = Object.keys(module).sort();
   output.identity = {
     events: process.getBuiltinModule("node:events") === EventEmitter,
     streams: process.getBuiltinModule("node:stream") === streams,
@@ -443,7 +460,7 @@ export async function run(handlerEnv, ctx, constructors) {
     env: env.FLAG === handlerEnv.FLAG,
     repeatedImport: (await import("node:events")).default === EventEmitter,
     globals: constructors.every((value, index) => value === [TextDecoder, TextEncoder, Response, ReadableStream, process][index]),
-    timers: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"].every(name => process.getBuiltinModule("node:timers")[name] === globalThis[name]),
+    timers: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"].every(name => member(process.getBuiltinModule("node:timers"), name) === member(globalThis, name)),
   };
   output.nodeEventsExports = Object.keys(await import("node:events")).sort();
   const nodeModuleApi = process.getBuiltinModule("node:module");
@@ -452,30 +469,35 @@ export async function run(handlerEnv, ctx, constructors) {
   output.builtinRegistry = {
     consoleBeforeNodeConsole,
     builtinModules: nodeModuleApi.builtinModules,
-    replBuiltinModules: [nodeRepl.builtinModules, nodeRepl._builtinLibs],
+    replBuiltinModules: [member(nodeRepl, "builtinModules"), member(nodeRepl, "_builtinLibs")],
+    // @ts-expect-error A number is not a module name.
     isBuiltin: ["fs", "node:fs", "node:nope", "nope", "test", "node:test", "sqlite", "cloudflare:sockets", 1].map(name => nodeModuleApi.isBuiltin(name)),
     bareImports: await Promise.all(["test", "sqlite", "fs"].map(name => import(name).then(() => true, () => false))),
+    // @ts-expect-error The names include ones that are not strings.
     getBuiltinModule: ["cloudflare:sockets", "cloudflare:workers", "test", "sqlite", "node:nope", 1, null, undefined].map(name => typeof process.getBuiltinModule(name)),
     namespaces: process.getBuiltinModule("cloudflare:sockets") === await import("cloudflare:sockets"),
+    // @ts-expect-error A symbol is not a module name.
     symbol: detailedResult(() => process.getBuiltinModule(Symbol("name"))),
     require: ["fs", "node:test", "test", "cloudflare:sockets"].map(name => detailedResult(() => typeof nodeModuleApi.createRequire("/")(name))),
     requireProperties: Object.getOwnPropertyNames(nodeModuleApi.createRequire("/")).sort(),
     httpGlobals: Object.getOwnPropertyNames(globalThis).filter(name => /http/i.test(name)),
   };
   nodeHttpServer.close();
+  // @ts-expect-error Body is abstract, so constructing it throws.
   output.bodyConstructor = result(() => new Body());
-  const ownKeys = value => Reflect.ownKeys(value).map(String).sort();
+  const ownKeys = (value: object) => Reflect.ownKeys(value).map(String).sort();
   output.ownProperties = {
     events: [new Event("x"), new CustomEvent("x", { detail: 1 }), new ErrorEvent("error"), new MessageEvent("message", { data: 1 }), new CloseEvent("close"), new EventTarget()].map(ownKeys),
     abort: [new AbortController(), AbortSignal.abort()].map(ownKeys),
     fetch: [new Request("https://example.test", { method: "POST", body: "body" }), new Response("body"), new Blob(["body"]), new File(["body"], "name"), new Headers({ a: "b" }), new FormData()].map(ownKeys),
-    sockets: [new WebSocketPair(), new WebSocketPair()[0], new WebSocketRequestResponsePair(new Request("https://example.test"), new Response(null))].map(ownKeys),
+    sockets: [new WebSocketPair(), new WebSocketPair()[0], new WebSocketRequestResponsePair("request", "response")].map(ownKeys),
     messaging: [new MessageChannel(), new MessageChannel().port1].map(ownKeys),
     others: [caches, crypto.subtle, EventSource.from(new ReadableStream()), new TextDecoderStream(), new TextEncoderStream()].map(ownKeys),
   };
-  output.decode = {};
+  const decode: Record<string, string> = {};
+  output.decode = decode;
   for (const bytes of [[0xff], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80], [0xf4, 0x90, 0x80, 0x80], [0xc0, 0xaf], [0xe2, 0x82]]) {
-    output.decode[bytes.join(",")] = new TextDecoder().decode(new Uint8Array(bytes));
+    decode[bytes.join(",")] = new TextDecoder().decode(new Uint8Array(bytes));
   }
   const decoder = new TextDecoder();
   output.streaming = [
@@ -485,26 +507,37 @@ export async function run(handlerEnv, ctx, constructors) {
     decoder.decode(new Uint8Array([0xef, 0xbb, 0xbf, 65])),
   ];
   output.bom = [false, true].map(ignoreBOM => {
+    // @ts-expect-error workers-types requires every TextDecoder option.
     const decoder = new TextDecoder("utf8", { ignoreBOM });
     return decoder.decode(new Uint8Array([0xef]), { stream: true }) + decoder.decode(new Uint8Array([0xbb, 0xbf, 65]));
   });
-  output.encodings = {};
+  const encodings: Record<string, unknown> = {};
+  output.encodings = encodings;
   for (const label of ["UTF8", " ascii ", "latin1", "windows-1252", "utf-16le", "utf-16be", "shift_jis", "x-user-defined", "replacement", "unknown"]) {
-    output.encodings[label] = result(() => {
+    encodings[label] = result(() => {
       const decoder = new TextDecoder(label);
       return [decoder.encoding, decoder.fatal, decoder.ignoreBOM, decoder.decode(new Uint8Array([0x80, 0xff]))];
     });
   }
   output.decoderErrors = [
+    // @ts-expect-error workers-types requires every TextDecoder option.
     result(() => new TextDecoder("utf8", { fatal: true }).decode(new Uint8Array([0xff]))),
+    // @ts-expect-error An array is not bytes.
     result(() => new TextDecoder().decode([65])),
+    // @ts-expect-error Null is not bytes.
     result(() => new TextDecoder().decode(null)),
+    // @ts-expect-error The options are null.
     result(() => new TextDecoder("utf8", null)),
+    // @ts-expect-error The options are not an object.
     result(() => new TextDecoder("utf8", true)),
+    // @ts-expect-error The options are null.
     result(() => new TextDecoder().decode(undefined, null)),
+    // @ts-expect-error The options are not an object.
     result(() => new TextDecoder().decode(undefined, true)),
+    // @ts-expect-error A symbol is not text.
     result(() => new TextEncoder().encode(Symbol())),
   ];
+  // @ts-expect-error workers-types requires every TextDecoder option.
   const fatalDecoder = new TextDecoder("utf8", { fatal: true });
   output.fatalStreaming = [
     result(() => fatalDecoder.decode(new Uint8Array([0xe2]), { stream: true })),
@@ -512,72 +545,100 @@ export async function run(handlerEnv, ctx, constructors) {
     result(() => fatalDecoder.decode(new Uint8Array([65]))),
     result(() => fatalDecoder.decode(new Uint8Array([66]))),
   ];
-  output.fatalState = {};
+  const fatalState: Record<string, unknown> = {};
+  output.fatalState = fatalState;
   for (const [label, chunks] of [
     ["utf8", [[239,187,191,65], [255], [239,187,191,66]]],
     ["utf-16le", [[255,254,65,0], [0,216,0,0], [255,254,66,0]]],
     ["iso-2022-jp", [[27,36,66,36,34], [255], [36,36]]],
-  ]) {
+  ] as const) {
+    // @ts-expect-error workers-types requires every TextDecoder option.
     const decoder = new TextDecoder(label, { fatal: true });
-    output.fatalState[label] = chunks.map(bytes => result(() => decoder.decode(new Uint8Array(bytes), { stream: true })));
+    fatalState[label] = chunks.map(bytes => result(() => decoder.decode(new Uint8Array(bytes), { stream: true })));
   }
   output.decoderArguments = [
+    // @ts-expect-error A function is not options.
     result(() => new TextDecoder("utf8", () => {}).encoding),
+    // @ts-expect-error A function is not options.
     result(() => new TextDecoder().decode(new Uint8Array([65]), () => {})),
     result(() => { const buffer = new ArrayBuffer(8); buffer.transfer(); return new TextDecoder().decode(buffer); }),
     result(() => { const buffer = new ArrayBuffer(8); const view = new Uint8Array(buffer); buffer.transfer(); return new TextDecoder().decode(view); }),
   ];
-  const conversions = [];
+  const conversions: string[] = [];
+  // @ts-expect-error The label is an object that converts to a string.
   new TextDecoder({ toString() { conversions.push("label"); return "utf8"; } }, {
     get fatal() { conversions.push("fatal"); return false; },
     get ignoreBOM() { conversions.push("ignoreBOM"); return false; },
   });
   output.conversions = conversions;
   const symbol = Symbol("name");
-  const symbolConversions = {
+  const symbolConversions: Record<string, () => unknown> = {
+    // @ts-expect-error A symbol is not a URL.
     url: () => new URL(symbol),
+    // @ts-expect-error A symbol is not text.
     encode: () => new TextEncoder().encode(symbol),
+    // @ts-expect-error A symbol is not an event type.
     event: () => new Event(symbol),
+    // @ts-expect-error A symbol is not a mark name.
     mark: () => performance.mark(symbol),
+    // @ts-expect-error A symbol is not text.
     atob: () => atob(symbol),
+    // @ts-expect-error A symbol is not text.
     localeCompare: () => "a".localeCompare(symbol),
     localeCompareNull: () => String.prototype.localeCompare.call(null, "a"),
+    // @ts-expect-error A symbol is not a header value.
     header: () => new Headers().append("name", symbol),
+    // @ts-expect-error A symbol is not a field name.
     formData: () => new FormData().append(symbol, "value"),
+    // @ts-expect-error A symbol is not a blob part.
     blob: () => new Blob([symbol]),
+    // @ts-expect-error A symbol is not text.
     escape: () => process.getBuiltinModule("node:querystring").escape(symbol),
   };
   output.symbolConversions = Object.fromEntries(Object.entries(symbolConversions).map(([name, convert]) => [name, detailedResult(convert)]));
-  output.symbolChunks = await Promise.all([
+  const symbolChunks: (() => unknown)[] = [
+    // @ts-expect-error A symbol is not text.
     () => { const stream = new TextEncoderStream(); stream.readable.getReader().read().catch(() => {}); return stream.writable.getWriter().write(symbol); },
+    // @ts-expect-error A symbol is not content.
     () => new HTMLRewriter().on("p", { element(element) { element.append(symbol); } }).transform(new Response("<p></p>")).text(),
-  ].map(detailedAsyncResult));
+  ];
+  output.symbolChunks = await Promise.all(symbolChunks.map(detailedAsyncResult));
   output.view = new TextDecoder().decode(new DataView(new Uint8Array([0, 65, 66, 0]).buffer, 1, 2));
   output.encode = ["", "hello", "€", "😀", "\ud800", "\udc00", "\ud800A"].map(value => [...new TextEncoder().encode(value)]);
-  output.encodeInto = [];
+  const encodeInto: object[] = [];
+  output.encodeInto = encodeInto;
   for (const source of ["€", "😀a", "a\ud800b"]) {
     for (const size of [0, 1, 2, 3, 4, 5]) {
       const backing = new Uint8Array(size + 2).fill(99);
       const destination = backing.subarray(1, size + 1);
-      output.encodeInto.push({ size, ...new TextEncoder().encodeInto(source, destination), bytes: [...backing] });
+      encodeInto.push({ size, ...new TextEncoder().encodeInto(source, destination), bytes: [...backing] });
     }
   }
-  output.encodeErrors = [Uint8ClampedArray, Int8Array, DataView].map(Type => result(() => new TextEncoder().encodeInto("", new Type(new ArrayBuffer(0)))));
-  output.base64 = {};
+  const otherViews: (new (buffer: ArrayBuffer) => ArrayBufferView)[] = [Uint8ClampedArray, Int8Array, DataView];
+  // @ts-expect-error Only a Uint8Array is a destination.
+  output.encodeErrors = otherViews.map(Type => result(() => new TextEncoder().encodeInto("", new Type(new ArrayBuffer(0)))));
+  const base64: Record<string, unknown> = {};
+  output.base64 = base64;
   for (const value of ["", "aGVsbG8=", " aG\tVs\nbG8=\r", "AB", "/w==", "A", "A===", "ab=c", "aGVsbG8===", "é", "\fYQ=="]) {
-    output.base64[value] = result(() => atob(value));
+    base64[value] = result(() => atob(value));
   }
   output.btoa = ["", "hello", "\x00\xff", "€", "😀", "\ud800"].map(value => result(() => btoa(value)));
+  // @ts-expect-error Each needs an argument.
   output.base64Missing = [result(() => atob()), result(() => btoa())];
   output.randomErrors = [
+    // @ts-expect-error Float arrays are not integer arrays.
     result(() => crypto.getRandomValues(new Float16Array(1))),
+    // @ts-expect-error Float arrays are not integer arrays.
     result(() => crypto.getRandomValues(new Float32Array(1))),
+    // @ts-expect-error A DataView is not an integer array.
     result(() => crypto.getRandomValues(new DataView(new ArrayBuffer(1)))),
     result(() => crypto.getRandomValues(new Uint8Array(65537))),
+    // @ts-expect-error Null is not an integer array.
     result(() => crypto.getRandomValues(null)),
   ];
   output.randomTypes = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, BigUint64Array].map(Type => {
     const value = new Type(0);
+    // @ts-expect-error workers-types leaves Uint8ClampedArray out of getRandomValues.
     return crypto.getRandomValues(value) === value;
   });
   output.exceptionCodes = ["toString", "constructor", "InvalidCharacterError", "TypeMismatchError", "QuotaExceededError"].map(name => new DOMException("", name).code);
@@ -621,8 +682,7 @@ export async function run(handlerEnv, ctx, constructors) {
     }),
     structuredCloneEdges: {
       error: result(() => {
-        const source = new TypeError("boom", { cause: { value: 1 } });
-        source.code = "ERR_TEST";
+        const source = Object.assign(new TypeError("boom", { cause: { value: 1 } }), { code: "ERR_TEST" });
         const clone = structuredClone(source);
         return {
           tag: Object.prototype.toString.call(clone),
@@ -634,7 +694,7 @@ export async function run(handlerEnv, ctx, constructors) {
         };
       }),
       cycles: result(() => {
-        const source = { value: 1, array: [] };
+        const source: { value: number; array: unknown[]; self?: unknown } = { value: 1, array: [] };
         source.self = source;
         source.array.push(source);
         const clone = structuredClone(source);
@@ -653,6 +713,7 @@ export async function run(handlerEnv, ctx, constructors) {
         return { value: clone.value, detached: buffer.byteLength };
       }),
       invalidTransfer: [
+        // @ts-expect-error The transfer list is null.
         result(() => structuredClone({}, { transfer: null })),
         result(() => structuredClone({}, { transfer: [new Uint8Array()] })),
         result(() => { const buffer = new ArrayBuffer(1); return structuredClone({}, { transfer: [buffer, buffer] }); }),
@@ -701,8 +762,8 @@ export async function run(handlerEnv, ctx, constructors) {
       })(),
       listener: (() => {
         const controller = new AbortController();
-        const events = [];
-        controller.signal.onabort = event => events.push([event.type, event.target === controller.signal]);
+        const events: unknown[] = [];
+        controller.signal.onabort = (event: Event) => events.push([event.type, event.target === controller.signal]);
         controller.abort("reason");
         controller.signal.onabort = null;
         return { events, reason: controller.signal.reason };
@@ -710,7 +771,7 @@ export async function run(handlerEnv, ctx, constructors) {
     },
     events: result(() => {
       const target = new EventTarget();
-      const events = [];
+      const events: unknown[] = [];
       target.addEventListener("ready", () => events.push("first"), { once: true });
       target.addEventListener("ready", () => events.push("second"));
       target.dispatchEvent(new CustomEvent("ready", { detail: 42, cancelable: true }));
@@ -720,7 +781,7 @@ export async function run(handlerEnv, ctx, constructors) {
     eventEdges: {
       objectAndSignal: result(() => {
         const target = new EventTarget();
-        const events = [];
+        const events: unknown[] = [];
         const controller = new AbortController();
         return {
           add: result(() => { target.addEventListener("ready", event => events.push(["function", event.type]), { signal: controller.signal }); return true; }),
@@ -771,7 +832,7 @@ export async function run(handlerEnv, ctx, constructors) {
           invalid: await crypto.subtle.verify("HMAC", key, signature.subarray(1), data),
         };
       } catch (error) {
-        return { error: error.name, message: error.message, stack: String(error.stack) };
+        return { error: member(error, "name"), message: member(error, "message"), stack: String(member(error, "stack")) };
       }
     }),
     cryptoAesGcm: await asyncResult(async () => {
@@ -835,10 +896,10 @@ export async function run(handlerEnv, ctx, constructors) {
     cache: {
       default: typeof caches.default,
       open: typeof caches.open,
-      match: typeof caches.match,
-      has: typeof caches.has,
-      delete: typeof caches.delete,
-      keys: typeof caches.keys,
+      match: typeof member(caches, "match"),
+      has: typeof member(caches, "has"),
+      delete: typeof member(caches, "delete"),
+      keys: typeof member(caches, "keys"),
     },
     htmlRewriter: await asyncResult(async () => {
       const response = new HTMLRewriter()
@@ -847,7 +908,7 @@ export async function run(handlerEnv, ctx, constructors) {
       return await response.text();
     }),
     htmlRewriterProbe: await asyncResult(async () => {
-      const events = [];
+      const events: unknown[] = [];
       const source = "<!doctype html>before<div ID='x'>Hello<!--comment--><span>world</span></div>after";
       const response = new HTMLRewriter()
         .onDocument({
@@ -859,30 +920,30 @@ export async function run(handlerEnv, ctx, constructors) {
         .on("div", {
           element(value) {
             const descriptor = describeHtmlRewriterValue(value, ["tagName", "tagNamePreserveCase", "namespaceURI", "isSelfClosing", "canHaveContent"]);
-            descriptor.attributes = describeHtmlRewriterAttributes(value.attributes);
-            events.push({ type: "element", value: descriptor });
+            events.push({ type: "element", value: { ...descriptor, attributes: describeHtmlRewriterAttributes(value.attributes) } });
           },
           comments(value) { events.push({ type: "element-comment", value: describeHtmlRewriterValue(value, ["text"])}); },
           text(value) { events.push({ type: "element-text", value: describeHtmlRewriterValue(value, ["text", "lastInTextNode"])}); },
-          end(value) { events.push({ type: "element-end", value: describeHtmlRewriterValue(value, ["name", "namePreserveCase"])}); },
+          // @ts-expect-error Element handlers declare no end handler.
+          end(value: object) { events.push({ type: "element-end", value: describeHtmlRewriterValue(value, ["name", "namePreserveCase"])}); },
         })
         .transform(new Response(source));
       return { output: await response.text(), events };
     }),
     htmlRewriterMutationProbe: await asyncResult(async () => {
-      function describeReturn(value) {
+      function describeReturn(value: unknown) {
         if (value === undefined) return "undefined";
         if (value === null || typeof value !== "object") return value;
         return Object.prototype.toString.call(value);
       }
 
-      function record(returns, ...values) {
+      function record(returns: unknown[], ...values: unknown[]) {
         returns.push(...values.map(describeReturn));
       }
 
-      async function elementCase(callback, source = "<div id='x'>body</div>") {
+      async function elementCase(callback: (element: Element, returns: unknown[]) => void, source = "<div id='x'>body</div>") {
         try {
-          const returns = [];
+          const returns: unknown[] = [];
           const response = new HTMLRewriter().on("div", {
             element(element) { callback(element, returns); },
           }).transform(new Response(source));
@@ -914,6 +975,7 @@ export async function run(handlerEnv, ctx, constructors) {
           record(returns, element.setInnerContent("<b>text</b>", { html: false }));
         }),
         contentTypesNull: await elementCase((element, returns) => {
+          // @ts-expect-error The options are null.
           record(returns, element.setInnerContent("<b>null</b>", null));
         }),
         removed: await elementCase((element, returns) => {
@@ -929,7 +991,7 @@ export async function run(handlerEnv, ctx, constructors) {
           return await response.text();
         }),
         text: await asyncResult(async () => {
-          const returns = [];
+          const returns: unknown[] = [];
           const response = new HTMLRewriter().on("div", {
             text(value) {
               record(returns, value.text, value.lastInTextNode, value.removed);
@@ -941,12 +1003,13 @@ export async function run(handlerEnv, ctx, constructors) {
         }),
         textProperty: await asyncResult(async () => {
           const response = new HTMLRewriter().on("div", {
+            // @ts-expect-error The text is read-only.
             text(value) { value.text = "changed"; },
           }).transform(new Response("<div>body</div>"));
           return await response.text();
         }),
         comment: await asyncResult(async () => {
-          const returns = [];
+          const returns: unknown[] = [];
           const response = new HTMLRewriter().on("div", {
             comments(value) {
               record(returns, value.text, value.removed);
@@ -965,11 +1028,11 @@ export async function run(handlerEnv, ctx, constructors) {
         endTag: await elementCase((element, returns) => {
           record(returns, element.onEndTag(end => {
             returns.push(describeHtmlRewriterValue(end, ["name", "namePreserveCase", "removed"]));
-            record(returns, end.name, end.namePreserveCase);
+            record(returns, end.name, member(end, "namePreserveCase"));
           }));
         }),
         endTagMutation: await elementCase((element, returns) => {
-          record(returns, element.onEndTag(end => end.before("before")));
+          record(returns, element.onEndTag(end => { end.before("before"); }));
         }),
         endTagChaining: await elementCase((element, returns) => {
           record(returns, element.onEndTag(end => {
@@ -977,7 +1040,7 @@ export async function run(handlerEnv, ctx, constructors) {
           }));
         }),
         document: await asyncResult(async () => {
-          const returns = [];
+          const returns: unknown[] = [];
           const response = new HTMLRewriter().onDocument({
             text(value) { record(returns, value.replace("document")); },
             comments(value) { record(returns, value.replace("comment")); },
@@ -1004,8 +1067,8 @@ export async function run(handlerEnv, ctx, constructors) {
       const transformed = new HTMLRewriter().on("div", {
         element(element) { element.setInnerContent("changed"); },
       }).transform(input);
-      const chunks = [];
-      const reader = transformed.body.getReader();
+      const chunks: string[] = [];
+      const reader = present(transformed.body).getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1027,18 +1090,23 @@ export async function run(handlerEnv, ctx, constructors) {
         const writer = new HTMLRewriter();
         return writer.on("div", {}) === writer;
       }),
+      // @ts-expect-error The handlers are missing.
       missingHandlers: result(() => new HTMLRewriter().on("div")),
       documentReturn: result(() => {
         const writer = new HTMLRewriter();
         return writer.onDocument({}) === writer;
       }),
+      // @ts-expect-error Null is not a selector.
       invalidSelector: result(() => new HTMLRewriter().on(null, {})),
+      // @ts-expect-error The handlers are null.
       invalidHandlers: result(() => new HTMLRewriter().on("div", null)),
+      // @ts-expect-error The handlers are null.
       invalidDocument: result(() => new HTMLRewriter().onDocument(null)),
+      // @ts-expect-error A string is not a response.
       invalidTransform: result(() => new HTMLRewriter().transform("html")),
     },
     htmlRewriterRegistrationProbe: await asyncResult(async () => {
-      const calls = [];
+      const calls: unknown[] = [];
       const writer = new HTMLRewriter()
         .onDocument({ end() { calls.push("first"); } })
         .onDocument({ end() { calls.push("second"); } })
@@ -1049,7 +1117,7 @@ export async function run(handlerEnv, ctx, constructors) {
       return calls;
     }),
     htmlRewriterCallbackCaptureProbe: await asyncResult(async () => {
-      const calls = [];
+      const calls: unknown[] = [];
       const handlers = { element() { calls.push("original"); } };
       const writer = new HTMLRewriter().on("div", handlers);
       handlers.element = () => calls.push("changed");
@@ -1107,9 +1175,9 @@ export async function run(handlerEnv, ctx, constructors) {
         const locale = new Intl.Locale("en-US", { calendar: "gregory", hourCycle: "h12", numeric: true });
         return {
           string: locale.toString(), language: locale.language, region: locale.region, script: locale.script,
-          baseName: locale.baseName, calendar: locale.calendar, calendars: locale.calendars,
-          hourCycle: locale.hourCycle, hourCycles: locale.hourCycles, numberingSystem: locale.numberingSystem,
-          numberingSystems: locale.numberingSystems, textInfo: locale.getTextInfo(), weekInfo: locale.getWeekInfo(),
+          baseName: locale.baseName, calendar: locale.calendar, calendars: member(locale, "calendars"),
+          hourCycle: locale.hourCycle, hourCycles: member(locale, "hourCycles"), numberingSystem: locale.numberingSystem,
+          numberingSystems: member(locale, "numberingSystems"), textInfo: locale.getTextInfo(), weekInfo: locale.getWeekInfo(),
           maximize: locale.maximize().toString(), minimize: locale.minimize().toString(),
         };
       }),
@@ -1148,11 +1216,13 @@ export async function run(handlerEnv, ctx, constructors) {
           ordinal: new Intl.PluralRules("en", { type: "ordinal" }).resolvedOptions(),
           categories: new Intl.PluralRules("ru").selectRange(1, 2),
           invalidType: (() => {
+            // @ts-expect-error The type is invalid.
             try { return new Intl.PluralRules("en", { type: "nominal" }).resolvedOptions().type; }
-            catch (error) { return error.name; }
+            catch (error) { return member(error, "name"); }
           })(),
         },
         list: [
+          // @ts-expect-error The list is undefined.
           new Intl.ListFormat("en", { type: "conjunction" }).format(undefined),
           new Intl.ListFormat("en", { type: "conjunction" }).format([]),
           new Intl.ListFormat("en", { type: "conjunction" }).format(["a"]),
@@ -1188,14 +1258,14 @@ export async function run(handlerEnv, ctx, constructors) {
       })),
     },
     timers: await asyncResult(async () => {
-      const values = [];
+      const values: unknown[] = [];
       const canceled = setTimeout(() => values.push("canceled"), 0);
       clearTimeout(canceled);
-      await new Promise(resolve => setTimeout(() => { values.push("timeout"); resolve(); }, 1));
-      await new Promise(resolve => setImmediate(() => { values.push("immediate"); resolve(); }));
-      const order = [];
-      const long = new Promise(resolve => setTimeout(() => { order.push("long"); resolve(); }, 5));
-      const short = new Promise(resolve => setTimeout(() => { order.push("short"); resolve(); }, 0));
+      await new Promise<void>(resolve => setTimeout(() => { values.push("timeout"); resolve(); }, 1));
+      await new Promise<void>(resolve => setImmediate(() => { values.push("immediate"); resolve(); }));
+      const order: unknown[] = [];
+      const long = new Promise<void>(resolve => setTimeout(() => { order.push("long"); resolve(); }, 5));
+      const short = new Promise<void>(resolve => setTimeout(() => { order.push("short"); resolve(); }, 0));
       await Promise.all([short, long]);
       return { values, order };
     }),
@@ -1210,7 +1280,7 @@ export async function run(handlerEnv, ctx, constructors) {
       );
       const algorithm = { name: "AES-GCM", iv: new Uint8Array(12) };
       const ciphertext = new Uint8Array(await crypto.subtle.encrypt(algorithm, key, new Uint8Array([1])));
-      const failure = async input => {
+      const failure = async (input: Uint8Array) => {
         try { await crypto.subtle.decrypt(algorithm, key, input); return null; }
         catch (error) { return errorResult(error); }
       };
@@ -1218,11 +1288,11 @@ export async function run(handlerEnv, ctx, constructors) {
       return { tampered: await failure(ciphertext), short: await failure(new Uint8Array()) };
     }),
     cryptoRsaPss: await detailedAsyncResult(async () => {
-      const keys = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+      const keys = keyPair(await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]));
       const data = new Uint8Array([1, 2, 3]);
       const algorithm = { name: "RSA-PSS", saltLength: 32 };
       const signature = await crypto.subtle.sign(algorithm, keys.privateKey, data);
-      const failures = [];
+      const failures: unknown[] = [];
       for (const saltLength of [0x80000000, 0xffffffff]) {
         failures.push({
           sign: await asyncResult(async () => { await crypto.subtle.sign({ ...algorithm, saltLength }, keys.privateKey, data); return "accepted"; }),
@@ -1249,17 +1319,18 @@ export async function run(handlerEnv, ctx, constructors) {
         type: typeof CryptoKey,
         original,
         name: key.algorithm.name,
+        // @ts-expect-error CryptoKey is not constructible.
         constructor: typeof CryptoKey === "function" ? result(() => new CryptoKey()) : null,
       };
     }),
     timerMicrotasks: await asyncResult(async () => {
-      const order = [];
-      const first = new Promise(resolve => setTimeout(() => {
+      const order: unknown[] = [];
+      const first = new Promise<void>(resolve => setTimeout(() => {
         order.push("first");
         queueMicrotask(() => order.push("micro"));
         resolve();
       }, 0));
-      const second = new Promise(resolve => setTimeout(() => { order.push("second"); resolve(); }, 0));
+      const second = new Promise<void>(resolve => setTimeout(() => { order.push("second"); resolve(); }, 0));
       await Promise.all([first, second]);
       return order;
     }),
@@ -1268,9 +1339,9 @@ export async function run(handlerEnv, ctx, constructors) {
   // Undetermined/invalid locales resolve unit display names to en-US in icu4x and
   // world-English in workerd; that CLDR-root spelling is not a parity requirement,
   // so those two locales assert structure and number parts, not the unit text.
-  const stripUnitSpelling = parts => parts.map(part => part.type === "unit" ? { type: "unit" } : part);
+  const stripUnitSpelling = (parts: Intl.NumberFormatPart[]) => parts.map(part => part.type === "unit" ? { type: "unit" } : part);
   output.localizedUnits = Object.fromEntries(["en", "de", "fr", "ja", "ar", "pl", "zh-TW", "sr-Latn-RS", "en-ZZ", "und", "zz"].map(locale => [locale,
-    ["kilometer-per-hour", "meter", "celsius", "liter-per-second"].flatMap(unit => ["short", "long", "narrow"].map(unitDisplay => {
+    ["kilometer-per-hour", "meter", "celsius", "liter-per-second"].flatMap(unit => (["short", "long", "narrow"] as const).map(unitDisplay => {
       const formatter = new Intl.NumberFormat(locale, { style: "unit", unit, unitDisplay });
       const tolerant = locale === "und" || locale === "zz";
       return [0, 1, 2, 3.5].map(value => {
@@ -1288,6 +1359,7 @@ export async function run(handlerEnv, ctx, constructors) {
     offset: nodeCrypto.timingSafeEqual(new DataView(new Uint8Array([0, 1, 2, 3]).buffer, 1, 2), new Uint8Array([1, 2])),
     empty: nodeCrypto.timingSafeEqual(new ArrayBuffer(0), new ArrayBuffer(0)),
     size: result(() => nodeCrypto.timingSafeEqual(new Uint8Array(1), new Uint8Array(2))),
+    // @ts-expect-error Strings are not views.
     invalid: result(() => nodeCrypto.timingSafeEqual("aa", "aa")),
   };
   output.authenticatedCiphers = Object.fromEntries([{}, { authTagLength: 12 }, { authLengthTag: 12 }].map(options => [JSON.stringify(options), detailedResult(() => {
@@ -1339,6 +1411,7 @@ export async function run(handlerEnv, ctx, constructors) {
       const key = new Uint8Array(32).fill(1);
       const iv = new Uint8Array(16).fill(2);
       const cipher = nodeCrypto.createCipheriv(`aes-256-${mode}`, key, iv);
+      // @ts-expect-error Only authenticated ciphers take additional data.
       const aad = result(() => cipher.setAAD(new Uint8Array([1])));
       cipher.setAutoPadding(padding);
       const encrypted = [cipher.update(new Uint8Array(16).fill(3)), cipher.update(new Uint8Array(16).fill(4)), cipher.final()];
@@ -1367,13 +1440,14 @@ export async function run(handlerEnv, ctx, constructors) {
     const hash = nodeCrypto.createHash("sha256");
     const hmac = nodeCrypto.createHmac("sha256", "secret");
     const target = new Uint8Array(4);
-    const filled = await new Promise(resolve => nodeCrypto.randomFill(target, (error, value) => resolve({ error: error ? errorResult(error) : null, length: value?.length ?? null })));
+    const filled = await new Promise<{ error: unknown; length: number | null }>(resolve => nodeCrypto.randomFill(target, (error, value) => resolve({ error: error ? errorResult(error) : null, length: value?.length ?? null })));
     const random = await new Promise(resolve => nodeCrypto.randomBytes(3, (error, value) => resolve({ error: error ? errorResult(error) : null, length: value?.length ?? null })));
     const randomInt = nodeCrypto.randomInt(10, 20);
     return {
       instances: {
         hash: hash instanceof nodeCrypto.Hash,
         hmac: hmac instanceof nodeCrypto.Hmac,
+        // @ts-expect-error KeyObject is not constructible.
         key: result(() => new nodeCrypto.KeyObject()),
       },
       hash: hash.update("a").update("bc").digest("hex"),
@@ -1381,8 +1455,11 @@ export async function run(handlerEnv, ctx, constructors) {
       hashOutput: {
         type: result(() => typeof nodeCrypto.hash("sha256", "abc")),
         value: result(() => String(nodeCrypto.hash("sha256", "abc"))),
+        // @ts-expect-error The output encoding is a string, not an options object.
         buffer: result(() => nodeCrypto.hash("sha256", "abc", { outputFormat: "buffer" }) instanceof nodeBufferCtor),
+        // @ts-expect-error The output encoding is a string, not an options object.
         hex: result(() => nodeCrypto.hash("sha256", "abc", { outputFormat: "hex" })),
+        // @ts-expect-error The output encoding is a string, not an options object.
         outputEncoding: result(() => ({ type: typeof nodeCrypto.hash("sha256", "abc", { outputEncoding: "buffer" }), buffer: nodeCrypto.hash("sha256", "abc", { outputEncoding: "buffer" }) instanceof nodeBufferCtor })),
       },
       filled: { error: filled.error, length: filled.length, changed: target.some(value => value !== 0) },
@@ -1402,7 +1479,9 @@ export async function run(handlerEnv, ctx, constructors) {
         hmac: result(() => Object.getOwnPropertyNames(nodeCrypto.Hmac.prototype).sort()),
         randomUUID: result(() => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(nodeCrypto.randomUUID())),
       },
-      errors: [result(() => nodeCrypto.randomBytes(65537)), result(() => nodeCrypto.randomFill(new Uint8Array(1))), result(() => nodeCrypto.randomInt(1, 1)), result(() => nodeCrypto.timingSafeEqual(new Uint8Array(1), new Uint8Array(2)))],
+      errors: [result(() => nodeCrypto.randomBytes(65537)),
+        // @ts-expect-error The callback is required.
+        result(() => nodeCrypto.randomFill(new Uint8Array(1))), result(() => nodeCrypto.randomInt(1, 1)), result(() => nodeCrypto.timingSafeEqual(new Uint8Array(1), new Uint8Array(2)))],
       keyDerivation: result(() => {
         const key = nodeCrypto.createSecretKey(new Uint8Array([1, 2, 3]));
         return {
@@ -1455,14 +1534,14 @@ export async function run(handlerEnv, ctx, constructors) {
         dhBob.generateKeys();
         const { privateKey, publicKey } = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 1024 });
         const encrypted = nodeCrypto.privateEncrypt(privateKey, nodeBufferCtor.from("secret"));
-        const info = nodeCrypto.getCipherInfo("aes-256-gcm");
+        const info = present(nodeCrypto.getCipherInfo("aes-256-gcm"));
         return {
           primes: {
             small: nodeCrypto.checkPrimeSync(nodeBufferCtor.from([0x0b])),
             composite: nodeCrypto.checkPrimeSync(nodeBufferCtor.from([0x0f])),
             generated: { type: prime.constructor.name, length: prime.byteLength, prime: nodeCrypto.checkPrimeSync(prime) },
             generatedBigint: typeof nodeCrypto.generatePrimeSync(16, { bigint: true }),
-            async: await new Promise(resolve => nodeCrypto.checkPrime(nodeBufferCtor.from([0x0b]), (error, value) => resolve({ error: error ? error.code ?? error.name : null, value }))),
+            async: await new Promise(resolve => nodeCrypto.checkPrime(nodeBufferCtor.from([0x0b]), (error, value) => resolve({ error: error ? member(error, "code") ?? error.name : null, value }))),
           },
           cipherInfo: {
             default: { name: info.name, nid: info.nid, blockSize: info.blockSize, ivLength: info.ivLength, keyLength: info.keyLength, mode: info.mode },
@@ -1491,7 +1570,7 @@ export async function run(handlerEnv, ctx, constructors) {
       const request = new Request("https://example.test", {
         method: "POST", body: "payload", headers: { "content-type": "text/plain" },
       });
-      const reader = request.body.getReader();
+      const reader = present(request.body).getReader();
       const first = await reader.read();
       const second = await reader.read();
       return { first: [...first.value], done: second.done, bodyUsed: request.bodyUsed };
@@ -1528,6 +1607,7 @@ export async function run(handlerEnv, ctx, constructors) {
       });
       const form = await request.formData();
       const file = form.get("file");
+      if (!(file instanceof File)) throw new TypeError("The file part is not a File");
       return { text: form.get("text"), name: file.name, type: file.type, bytes: [...new Uint8Array(await file.arrayBuffer())] };
     }),
     clones: await asyncResult(async () => {
@@ -1541,17 +1621,25 @@ export async function run(handlerEnv, ctx, constructors) {
   output.cacheApis = await asyncResult(async () => {
     const request = new Request("https://example.test/cache?b=2&a=1");
     const cache = await detailedAsyncResult(() => caches.open("contract"));
-    if (cache?.error) return { open: cache };
+    if ("error" in cache) return { open: cache };
     const response = new Response("cached", { headers: { "x-cache": "yes" } });
     const put = await detailedAsyncResult(async () => { await cache.put(request, response); return "resolved"; });
+    // @ts-expect-error workerd's Cache takes no ignoreSearch option.
     const ignoredSearch = await detailedAsyncResult(async () => { const value = await cache.match("https://example.test/cache?other=1", { ignoreSearch: true }); return value ? await value.text() : null; });
-    const keys = await detailedAsyncResult(async () => (await cache.keys()).map(value => value.url));
+    // @ts-expect-error workerd's Cache has no keys().
+    const keys = await detailedAsyncResult(async () => (await cache.keys()).map((value: Request) => value.url));
+    // @ts-expect-error workerd's Cache has no add().
     const added = await detailedAsyncResult(async () => { await cache.add("https://example.test/cache-add"); return "resolved"; });
     const storage = {
+      // @ts-expect-error workerd's CacheStorage has no has().
       has: await detailedAsyncResult(() => caches.has("contract")),
+      // @ts-expect-error workerd's CacheStorage has no keys().
       keys: await detailedAsyncResult(() => caches.keys()),
+      // @ts-expect-error workerd's CacheStorage has no match().
       match: await detailedAsyncResult(async () => { const value = await caches.match(request); return value ? await value.text() : null; }),
+      // @ts-expect-error workerd's CacheStorage has no delete().
       deleted: await detailedAsyncResult(() => caches.delete("contract")),
+      // @ts-expect-error workerd's CacheStorage has no has().
       hasAfterDelete: await detailedAsyncResult(() => caches.has("contract")),
     };
     const defaultCache = caches.default;
@@ -1567,7 +1655,7 @@ export async function run(handlerEnv, ctx, constructors) {
   });
   output.runtimeSurface = {
     globals: {
-      self: self === globalThis,
+      self: Object.is(self, globalThis),
       origin,
       fetch: typeof fetch,
       reportError: typeof reportError,
@@ -1578,7 +1666,7 @@ export async function run(handlerEnv, ctx, constructors) {
         "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList", "PromiseRejectionEvent",
         "ScheduledEvent", "TailEvent", "TraceEvent", "WebSocketRequestResponsePair", "WorkerGlobalScope",
         "ServiceWorkerGlobalScope",
-      ].map(name => [name, typeof globalThis[name]]),
+      ].map(name => [name, typeof member(globalThis, name)]),
     },
     body: {
       request: Request.prototype instanceof Body,
@@ -1600,7 +1688,7 @@ export async function run(handlerEnv, ctx, constructors) {
       })(),
     },
     streams: {
-      from: typeof ReadableStream.from,
+      from: typeof member(ReadableStream, "from"),
       values: typeof ReadableStream.prototype.values,
       fixed: typeof FixedLengthStream,
       identity: typeof IdentityTransformStream,
@@ -1611,13 +1699,13 @@ export async function run(handlerEnv, ctx, constructors) {
       const pair = new WebSocketPair();
       const client = pair[0];
       const server = pair[1];
-      const properties = Object.fromEntries(["url", "readyState", "protocol", "extensions", "binaryType"].map(name => [name, client[name]]));
+      const properties = Object.fromEntries(["url", "readyState", "protocol", "extensions", "binaryType"].map(name => [name, member(client, name)]));
       server.accept();
       server.send("hello");
       return {
         properties,
         serverReady: server.readyState,
-        static: Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED", "READY_STATE_CONNECTING", "READY_STATE_OPEN", "READY_STATE_CLOSING", "READY_STATE_CLOSED"].map(name => [name, WebSocket[name]])),
+        static: Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED", "READY_STATE_CONNECTING", "READY_STATE_OPEN", "READY_STATE_CLOSING", "READY_STATE_CLOSED"].map(name => [name, member(WebSocket, name)])),
         prototype: Object.getOwnPropertyNames(WebSocket.prototype).sort(),
       };
     }),
@@ -1631,6 +1719,7 @@ export async function run(handlerEnv, ctx, constructors) {
       resourceTiming: typeof performance.markResourceTiming,
       resourceTimingSurface: {
         prototype: Object.getOwnPropertyNames(PerformanceResourceTiming.prototype).sort(),
+        // @ts-expect-error PerformanceResourceTiming is not constructible.
         constructor: result(() => new PerformanceResourceTiming("resource")),
       },
     })),
@@ -1644,9 +1733,10 @@ export async function run(handlerEnv, ctx, constructors) {
         },
       });
       const source = EventSource.from(stream);
-      const events = [];
-      source.onmessage = event => events.push({ type: event.type, data: event.data, id: event.lastEventId });
-      source.addEventListener("update", event => events.push({ type: event.type, data: event.data, id: event.lastEventId }));
+      const events: unknown[] = [];
+      const record = (event: Event) => events.push({ type: event.type, data: member(event, "data"), id: member(event, "lastEventId") });
+      source.onmessage = record;
+      source.addEventListener("update", record);
       await new Promise(resolve => setTimeout(resolve, 5));
       return {
         url: source.url,
@@ -1661,8 +1751,8 @@ export async function run(handlerEnv, ctx, constructors) {
   output.performanceObserver = await asyncResult(async () => {
     performance.clearMarks();
     performance.clearMeasures();
-    const calls = [];
-    const observer = new PerformanceObserver(list => calls.push(list.getEntries().map(entry => ({
+    const calls: unknown[] = [];
+    const observer = new PerformanceObserver((list: PerformanceObserverEntryList) => calls.push(list.getEntries().map(entry => ({
       name: entry.name,
       type: entry.entryType,
     }))));
@@ -1680,7 +1770,7 @@ export async function run(handlerEnv, ctx, constructors) {
     const replacement = { FLAG: "replacement" };
     const restored = workers.withEnv(replacement, () => workers.env.FLAG);
     const span = workers.tracing.startSpan("contract");
-    const socket = sockets.connect({ hostname: "", port: 0 }, { secureTransport: "starttls" });
+    const socket = sockets.connect({ hostname: "", port: 0 }, { secureTransport: "starttls", allowHalfOpen: false });
     const upgradedSocket = socket.startTls();
     socket.close().catch(() => {});
     upgradedSocket.close().catch(() => {});
@@ -1691,8 +1781,8 @@ export async function run(handlerEnv, ctx, constructors) {
       close: await asyncResult(async () => await failedSocket.close()),
     };
     return {
-      cacheDefault: typeof workers.cache.default,
-      cacheDefaultOpen: typeof workers.cache.default?.match,
+      cacheDefault: typeof member(workers.cache, "default"),
+      cacheDefaultOpen: typeof member(member(workers.cache, "default"), "match"),
       env: workers.env.FLAG,
       restored,
       envAfter: workers.env.FLAG,
@@ -1700,7 +1790,7 @@ export async function run(handlerEnv, ctx, constructors) {
       rpcStub: typeof workers.RpcStub,
       rpcResults: [workers.RpcPromise, workers.RpcProperty].map(rpcResultContract),
       waitUntil: typeof workers.waitUntil,
-      restore: typeof workers.restore,
+      restore: typeof member(workers, "restore"),
       tracing: {
         prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(workers.tracing)).sort(),
         spanPrototype: Object.getOwnPropertyNames(Object.getPrototypeOf(span)).sort(),
@@ -1719,7 +1809,11 @@ export async function run(handlerEnv, ctx, constructors) {
         startTls: [typeof socket.startTls, typeof upgradedSocket.startTls],
         streams: [typeof socket.readable.getReader, typeof socket.writable.getWriter],
         close: [typeof socket.close(), typeof upgradedSocket.close()],
-        httpClient: [() => sockets.internalNewHttpClient(socket), () => sockets.internalNewHttpClient()].map(result),
+        httpClient: [
+          () => sockets.internalNewHttpClient(socket),
+          // @ts-expect-error The socket is required.
+          () => sockets.internalNewHttpClient(),
+        ].map(result),
         failedSocketLifecycle,
       },
       context: {
@@ -1738,11 +1832,12 @@ export async function run(handlerEnv, ctx, constructors) {
   output.cloudflareNode = await asyncResult(async () => {
     const node = await import("cloudflare:node");
     const http = await import("node:http");
-    const describe = value => value && {
+    const describe = (value: unknown) => value && {
       type: typeof value,
       own: Object.getOwnPropertyNames(value).sort(),
       prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(value)).sort(),
     };
+    // @ts-expect-error The port is required.
     const rawRequest = node.handleAsNodeRequest(new Request("https://example.test"));
     const rawRequestDescription = {
       type: typeof rawRequest,
@@ -1752,7 +1847,7 @@ export async function run(handlerEnv, ctx, constructors) {
       prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(rawRequest ?? {})).sort(),
     };
     const server = http.createServer((request, response) => {
-      const chunks = [];
+      const chunks: unknown[] = [];
       request.on("data", chunk => chunks.push(new TextDecoder().decode(chunk)));
       request.on("end", () => {
         response.setHeader("x-node", "yes");
@@ -1763,7 +1858,7 @@ export async function run(handlerEnv, ctx, constructors) {
     server.listen(8787);
     const handler = node.httpServerHandler(server);
     const response = await Promise.race([
-      Promise.resolve(handler.fetch(new Request("https://example.test/path?x=1", { method: "POST", body: "response" }))).then(async value => ({
+      Promise.resolve(present(handler.fetch)(new Request("https://example.test/path?x=1", { method: "POST", body: "response" }), handlerEnv, ctx)).then(async value => ({
         status: value.status,
         body: await value.text(),
         header: value.headers.get("x-node"),
@@ -1776,6 +1871,7 @@ export async function run(handlerEnv, ctx, constructors) {
       handlers: [
         result(() => describe(node.httpServerHandler(8787))),
         result(() => describe(node.httpServerHandler({ port: 8787 }))),
+        // @ts-expect-error The port or server is required.
         result(() => node.httpServerHandler()),
       ],
       invalidRequest: rawRequestDescription,
@@ -1783,13 +1879,14 @@ export async function run(handlerEnv, ctx, constructors) {
       serverAddress: server.address(),
       client: await asyncResult(async () => {
         const originalFetch = globalThis.fetch;
-        let requestDetails;
+        let requestDetails: unknown;
         globalThis.fetch = async (input, init) => {
+          const { method, body } = present(init);
           requestDetails = {
-            input: String(input), method: init.method,
-            bodyType: typeof init.body,
-            bodyTag: Object.prototype.toString.call(init.body),
-            body: await new Response(init.body).text(),
+            input: String(input), method,
+            bodyType: typeof body,
+            bodyTag: Object.prototype.toString.call(body),
+            body: await new Response(body).text(),
           };
           return new Response("client response", { status: 201, headers: { "x-client": "yes" } });
         };
@@ -1799,7 +1896,7 @@ export async function run(handlerEnv, ctx, constructors) {
               protocol: "http:", hostname: "example.test", path: "/client?x=1", method: "POST",
               headers: { "x-request": "yes" },
             }, response => {
-              const chunks = [];
+              const chunks: unknown[] = [];
               response.on("data", chunk => chunks.push(new TextDecoder().decode(chunk)));
               response.on("end", () => resolve({
                 status: response.statusCode,
@@ -1822,7 +1919,7 @@ export async function run(handlerEnv, ctx, constructors) {
     tee: await asyncResult(async () => {
       const source = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
       const [left, right] = source.tee();
-      const read = async stream => [...(await stream.getReader().read()).value];
+      const read = async (stream: ReadableStream<Uint8Array>) => [...present((await stream.getReader().read()).value)];
       return { left: await read(left), right: await read(right) };
     }),
     text: await asyncResult(async () => {
@@ -1848,15 +1945,15 @@ export async function run(handlerEnv, ctx, constructors) {
     }),
   };
   // --- streams/events differential contract ---
-  const settle = promise => Promise.race([
+  const settle = (promise: Promise<unknown>) => Promise.race([
     promise,
     new Promise(resolve => setTimeout(() => resolve("pending"), 20)),
   ]);
-  const probe = callback => Promise.race([
+  const probe = (callback: () => unknown) => Promise.race([
     asyncResult(callback),
     new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 100)),
   ]);
-  const nodeReadable = chunks => {
+  const nodeReadable = (chunks: (string | Uint8Array)[]) => {
     const source = new streams.Readable({ read() {} });
     for (const chunk of chunks) source.push(chunk);
     source.push(null);
@@ -1887,13 +1984,13 @@ export async function run(handlerEnv, ctx, constructors) {
     },
     promises: {
       pipeline: await probe(async () => {
-        const received = [];
+        const received: unknown[] = [];
         const source = new streams.Readable({ read() {} });
         const destination = new streams.Writable({ write(_chunk, _encoding, callback) { callback(); } });
-        const write = destination.write.bind(destination);
-        destination.write = (chunk, encoding, callback) => {
+        const write = destination.write;
+        destination.write = (chunk: unknown, ...args: unknown[]) => {
           received.push(String(chunk));
-          return write(chunk, encoding, callback);
+          return Reflect.apply(write, destination, [chunk, ...args]);
         };
         const completion = streamPromises.pipeline(source, destination);
         queueMicrotask(() => { source.push("a"); source.push("b"); source.push(null); });
@@ -1929,7 +2026,8 @@ export async function run(handlerEnv, ctx, constructors) {
       };
     }),
     writable: await probe(async () => {
-      const sink = { values: [], write(value) { this.values.push(value); }, close() { this.values.push("close"); } };
+      const values: unknown[] = [];
+      const sink = { values, write(value: unknown) { this.values.push(value); }, close() { this.values.push("close"); } };
       const stream = new WritableStream(sink);
       const writer = stream.getWriter();
       const before = { locked: stream.locked, desiredSize: writer.desiredSize, ready: await writer.ready.then(() => true) };
@@ -1952,8 +2050,8 @@ export async function run(handlerEnv, ctx, constructors) {
       const reader = errored.getReader();
       const read = await reader.read().catch(errorResult);
       const closed = await reader.closed.catch(errorResult);
-      const canceled = [];
-      const received = [];
+      const canceled: unknown[] = [];
+      const received: unknown[] = [];
       const source = new ReadableStream({
         start(controller) { controller.enqueue(1); controller.enqueue(2); },
         cancel(reason) { canceled.push(reason.message); },
@@ -1972,6 +2070,10 @@ export async function run(handlerEnv, ctx, constructors) {
       const reader = output.getReader();
       const value = await reader.read();
       const done = await reader.read();
+      // The spec releases the source after the destination closes, which is after
+      // the last read; workerd releases it before. Reading the lock once the pipe
+      // has settled compares the state both reach.
+      await new Promise(resolve => setTimeout(resolve, 0));
       return { same: output === transform.readable, value, done, sourceLocked: source.locked };
     }),
     tee: await probe(async () => {
@@ -1981,7 +2083,7 @@ export async function run(handlerEnv, ctx, constructors) {
       const [leftResult, rightResult] = await Promise.all([
         left.getReader().read(), right.getReader().read(),
       ]);
-      const reasons = [];
+      const reasons: unknown[] = [];
       const cancelSource = new ReadableStream({ cancel(reason) { reasons.push(Array.isArray(reason) ? reason : String(reason)); } });
       const [cancelLeft, cancelRight] = cancelSource.tee();
       await Promise.all([cancelLeft.cancel("left"), cancelRight.cancel("right")]);
@@ -1992,11 +2094,11 @@ export async function run(handlerEnv, ctx, constructors) {
       };
     }),
     transform: await probe(async () => {
-      const calls = [];
+      const calls: unknown[] = [];
       const transformer = {
-        start(controller) { calls.push(["start", this === transformer, controller instanceof TransformStreamDefaultController]); },
-        transform(value, controller) { calls.push(["transform", this === transformer]); controller.enqueue(value + 1); },
-        flush(controller) { calls.push(["flush", controller instanceof TransformStreamDefaultController]); },
+        start(controller: TransformStreamDefaultController<number>) { calls.push(["start", this === transformer, controller instanceof TransformStreamDefaultController]); },
+        transform(value: number, controller: TransformStreamDefaultController<number>) { calls.push(["transform", this === transformer]); controller.enqueue(value + 1); },
+        flush(controller: TransformStreamDefaultController<number>) { calls.push(["flush", controller instanceof TransformStreamDefaultController]); },
       };
       const stream = new TransformStream(transformer);
       const writer = stream.writable.getWriter();
@@ -2010,9 +2112,8 @@ export async function run(handlerEnv, ctx, constructors) {
       return { calls, value, done, readable: stream.readable instanceof ReadableStream, writable: stream.writable instanceof WritableStream };
     }),
     transformStart: await probe(async () => {
-      const calls = [];
-      let release;
-      const start = new Promise(resolve => { release = resolve; });
+      const calls: unknown[] = [];
+      const { promise: start, resolve: release } = Promise.withResolvers<void>();
       const stream = new TransformStream({
         start() { calls.push("start"); return start; },
         transform(value, controller) { calls.push("transform"); controller.enqueue(value); },
@@ -2022,7 +2123,7 @@ export async function run(handlerEnv, ctx, constructors) {
       const write = settle(writer.write(1).then(() => "resolved", errorResult));
       await Promise.resolve();
       const before = [...calls];
-      release?.();
+      release();
       const result = await settle(reader.read().then(value => ({ done: value.done, value: value.value }), errorResult));
       return { before, after: calls, write: await write, result };
     }),
@@ -2049,9 +2150,9 @@ export async function run(handlerEnv, ctx, constructors) {
     events: await probe(async () => {
       const basic = result(() => {
         const target = new EventTarget();
-        const calls = [];
-        const objectListener = { handleEvent(event) { calls.push(["object", this === objectListener, event.currentTarget === target, event.eventPhase]); } };
-        const functionListener = event => {
+        const calls: unknown[] = [];
+        const objectListener = { handleEvent(event: Event) { calls.push(["object", this === objectListener, event.currentTarget === target, event.eventPhase]); } };
+        const functionListener = (event: Event) => {
           calls.push(["function", event.target === target, event.currentTarget === target, event.eventPhase]);
           event.preventDefault();
         };
@@ -2088,8 +2189,8 @@ export async function run(handlerEnv, ctx, constructors) {
     }),
     eventEmitter: await probe(async () => {
       const emitter = new EventEmitter();
-      const calls = [];
-      const regular = value => calls.push(["regular", value]);
+      const calls: unknown[] = [];
+      const regular = (value: unknown) => calls.push(["regular", value]);
       emitter.on("value", regular);
       emitter.prependOnceListener("value", value => calls.push(["once", value]));
       const before = { max: emitter.getMaxListeners(), count: emitter.listenerCount("value") };
@@ -2103,7 +2204,7 @@ export async function run(handlerEnv, ctx, constructors) {
       };
     }),
     releaseTerminal: await probe(async () => {
-      const outcome = promise => promise.then(() => "resolved", errorResult);
+      const outcome = (promise: Promise<unknown>) => promise.then(() => "resolved", errorResult);
       const readable = new ReadableStream({ start(controller) { controller.close(); } });
       const reader = readable.getReader();
       await reader.read();
@@ -2143,9 +2244,8 @@ export async function run(handlerEnv, ctx, constructors) {
       return { streamCancel, streamAbort };
     }),
     writableStart: await probe(async () => {
-      const calls = [];
-      let release;
-      const start = new Promise(resolve => { release = resolve; });
+      const calls: unknown[] = [];
+      const { promise: start, resolve: release } = Promise.withResolvers<void>();
       const stream = new WritableStream({
         start() { calls.push("start"); return start; },
         abort(reason) { calls.push(["abort", reason]); },
@@ -2153,18 +2253,17 @@ export async function run(handlerEnv, ctx, constructors) {
       const abort = settle(stream.abort("aborted").then(() => "resolved", errorResult));
       await Promise.resolve();
       const before = [...calls];
-      release?.();
+      release();
       return { before, after: calls, abort: await abort };
     }),
     backpressure: await probe(async () => {
-      const values = [];
-      let release;
-      const pending = new Promise(resolve => { release = resolve; });
+      const values: unknown[] = [];
+      const { promise: pending, resolve: release } = Promise.withResolvers<void>();
       const stream = new WritableStream({ write(value) { values.push(value); return pending; } }, { highWaterMark: 1 });
       const writer = stream.getWriter();
       const write = writer.write("value");
       const during = { desiredSize: writer.desiredSize, ready: await settle(writer.ready.then(() => "resolved", errorResult)) };
-      release?.();
+      release();
       await write;
       return { during, after: { desiredSize: writer.desiredSize, ready: await settle(writer.ready.then(() => "resolved", errorResult)) }, values };
     }),
@@ -2193,30 +2292,38 @@ export async function run(handlerEnv, ctx, constructors) {
       transformReadableEnumerable: Object.getOwnPropertyDescriptor(TransformStream.prototype, "readable")?.enumerable,
     })),
     construction: await probe(async () => ({
+      // @ts-expect-error A reader needs a stream.
       defaultReader: result(() => new ReadableStreamDefaultReader()),
+      // @ts-expect-error A reader needs a stream.
       byobReader: result(() => new ReadableStreamBYOBReader()),
+      // @ts-expect-error Controllers are not constructible.
       defaultController: result(() => new ReadableStreamDefaultController()),
+      // @ts-expect-error Controllers are not constructible.
       byteController: result(() => new ReadableByteStreamController()),
+      // @ts-expect-error Requests are not constructible.
       byobRequest: result(() => new ReadableStreamBYOBRequest()),
+      // @ts-expect-error Controllers are not constructible.
       writableController: result(() => new WritableStreamDefaultController()),
+      // @ts-expect-error Controllers are not constructible.
       transformController: result(() => new TransformStreamDefaultController()),
     })),
     bytes: await probe(async () => {
-      const run = async (method) => {
-        let seen;
+      const run = async (method: "read" | "readAtLeast") => {
+        let seen: unknown;
         const stream = new ReadableStream({
           type: "bytes",
           pull(controller) {
-            const request = controller.byobRequest;
-            seen = request && { atLeast: request.atLeast, length: request.view.byteLength, desiredSize: controller.desiredSize };
-            request.view[0] = 7;
+            const request = present(controller.byobRequest);
+            const view = present(request.view);
+            seen = { atLeast: request.atLeast, length: view.byteLength, desiredSize: controller.desiredSize };
+            view[0] = 7;
             request.respond(1);
           },
         });
         const reader = stream.getReader({ mode: "byob" });
         const view = new Uint8Array(4);
-        const value = await reader[method](method === "readAtLeast" ? 1 : view, method === "readAtLeast" ? view : undefined);
-        return { value: { done: value.done, bytes: [...value.value] }, seen, same: value.value === view };
+        const value = await (method === "readAtLeast" ? reader.readAtLeast(1, view) : reader.read(view));
+        return { value: { done: value.done, bytes: [...present(value.value)] }, seen, same: value.value === view };
       };
       const invalidReader = new ReadableStream({ type: "bytes" }).getReader({ mode: "byob" });
       const invalidView = new Uint8Array(1);
@@ -2224,12 +2331,13 @@ export async function run(handlerEnv, ctx, constructors) {
         settle(asyncResult(() => invalidReader.readAtLeast(0, invalidView))),
         settle(asyncResult(() => invalidReader.readAtLeast(1.5, invalidView))),
         settle(asyncResult(() => invalidReader.readAtLeast(2, invalidView))),
+        // @ts-expect-error The view is required.
         settle(asyncResult(() => invalidReader.readAtLeast(1, null))),
       ]);
       invalidReader.releaseLock();
       return { read: await asyncResult(() => run("read")), readAtLeast: await asyncResult(() => run("readAtLeast")), invalid };
     }),
-    pipeThrough: await probe(async () => {
+    pipeThroughError: await probe(async () => {
       const error = new Error("read");
       const source = new ReadableStream({ start(controller) { controller.error(error); } });
       const transform = new TransformStream();
@@ -2264,13 +2372,13 @@ export async function run(handlerEnv, ctx, constructors) {
         },
         constants: [
           Event.NONE, Event.CAPTURING_PHASE, Event.AT_TARGET, Event.BUBBLING_PHASE,
-          Event.prototype.NONE, Event.prototype.CAPTURING_PHASE,
+          member(Event.prototype, "NONE"), member(Event.prototype, "CAPTURING_PHASE"),
         ],
       };
     }),
     listenerMutation: await probe(async () => {
       const target = new EventTarget();
-      const calls = [];
+      const calls: unknown[] = [];
       const added = () => calls.push("added");
       const first = () => {
         calls.push("first");
@@ -2285,7 +2393,7 @@ export async function run(handlerEnv, ctx, constructors) {
       return calls;
     }),
     eventDescriptors: await probe(async () => {
-      const descriptor = name => {
+      const descriptor = (name: string) => {
         const value = Object.getOwnPropertyDescriptor(Event.prototype, name);
         return { get: typeof value?.get, set: typeof value?.set, enumerable: value?.enumerable };
       };
@@ -2305,16 +2413,16 @@ export async function run(handlerEnv, ctx, constructors) {
   };
   output.messaging = await asyncResult(async () => {
     const channel = new MessageChannel();
-    const received = [];
-    channel.port2.onmessage = event => received.push(event.data.value);
+    const received: unknown[] = [];
+    channel.port2.onmessage = (event: MessageEvent) => received.push(event.data.value);
     channel.port1.postMessage({ value: 42 });
     await Promise.resolve();
     return received;
   });
   output.globalScopeEvents = await asyncResult(async () => {
-    const calls = [];
-    function record(event) {
-      calls.push([event.type, event.message ?? null, event.error?.message ?? null, event.cancelable, event.target === globalThis, this === globalThis]);
+    const calls: unknown[] = [];
+    function record(this: unknown, event: Event) {
+      calls.push([event.type, member(event, "message") ?? null, member(member(event, "error"), "message") ?? null, event.cancelable, event.target === globalThis, this === globalThis]);
       event.preventDefault();
     }
     const types = ["error", "unhandledrejection", "custom"];
@@ -2327,10 +2435,11 @@ export async function run(handlerEnv, ctx, constructors) {
     for (const type of types) removeEventListener(type, record);
     return {
       calls, dispatched, afterRemoval: dispatchEvent(new Event("custom")),
-      foreignReceivers: ["addEventListener", "removeEventListener", "dispatchEvent"].map(name => detailedResult(() => EventTarget.prototype[name].call({}, "custom", record))),
+      foreignReceivers: [EventTarget.prototype.addEventListener, EventTarget.prototype.removeEventListener, EventTarget.prototype.dispatchEvent]
+        .map(method => detailedResult(() => Reflect.apply(method, {}, ["custom", record]))),
     };
   });
-  const tasks = [];
+  const tasks: unknown[] = [];
   waitUntil(Promise.resolve().then(() => tasks.push("imported")));
   ctx.waitUntil(Promise.resolve().then(() => tasks.push("context")));
   await Promise.resolve();
@@ -2369,22 +2478,25 @@ export async function run(handlerEnv, ctx, constructors) {
       errorStatusText: [Response.error().statusText, Response.error().clone().statusText],
       responseAsBody: await asyncResult(async () => {
         const original = new Response("body", { status: 201, headers: { "x-test": "one" } });
+        // @ts-expect-error A Response is not a body.
         const copy = new Response(original);
         return { status: copy.status, text: await copy.text(), header: copy.headers.get("x-test") };
       }),
       nullBodyStatuses: [204, 205, 304].map(status => result(() => new Response("body", { status }))),
+      // @ts-expect-error Some of the values are not encodings.
       encodeBody: [undefined, "automatic", "manual", "invalid", null, 1].map(encodeBody => result(() => { new Response("body", { encodeBody }); return true; })),
+      // @ts-expect-error A null status text converts to a string.
       explicitStatusText: [undefined, "", "Custom", null, "bad\ntext"].map(statusText => result(() => new Response(null, { status: 201, statusText }).statusText)),
     },
     bodyState: await asyncResult(async () => {
       const response = new Response("body");
-      const initial = { body: response.body !== null, bodyUsed: response.bodyUsed, locked: response.body.locked };
-      const reader = response.body.getReader();
-      const locked = { bodyUsed: response.bodyUsed, locked: response.body.locked };
+      const initial = { body: response.body !== null, bodyUsed: response.bodyUsed, locked: present(response.body).locked };
+      const reader = present(response.body).getReader();
+      const locked = { bodyUsed: response.bodyUsed, locked: present(response.body).locked };
       const first = await reader.read();
       reader.releaseLock();
       return {
-        initial, locked, first: [...first.value], afterRead: { bodyUsed: response.bodyUsed, locked: response.body.locked },
+        initial, locked, first: [...first.value], afterRead: { bodyUsed: response.bodyUsed, locked: present(response.body).locked },
         cloneAfterRead: await asyncResult(async () => {
           const clone = response.clone();
           return { bodyUsed: clone.bodyUsed, text: await clone.text() };
@@ -2394,8 +2506,8 @@ export async function run(handlerEnv, ctx, constructors) {
     }),
     bodyCancel: await asyncResult(async () => {
       const response = new Response("body");
-      await response.body.cancel();
-      return { bodyUsed: response.bodyUsed, locked: response.body.locked };
+      await present(response.body).cancel();
+      return { bodyUsed: response.bodyUsed, locked: present(response.body).locked };
     }),
     streamClone: await asyncResult(async () => {
       const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
@@ -2450,6 +2562,7 @@ export async function run(handlerEnv, ctx, constructors) {
         appended,
         replaced: { search: url.search, values: [...url.searchParams], href: url.href },
         static: [URL.canParse("https://example.test"), URL.canParse("relative"), URL.parse("relative"), typeof URL.createObjectURL, typeof URL.revokeObjectURL],
+        // @ts-expect-error The object is not a Blob.
         staticErrors: [result(() => URL.createObjectURL(new Blob(["x"]))), result(() => URL.createObjectURL({ size: 1 })), result(() => URL.revokeObjectURL("blob:x"))],
       };
     }),
@@ -2475,7 +2588,9 @@ export async function run(handlerEnv, ctx, constructors) {
         reentrant: (() => {
           const original = Reflect.apply;
           try {
-            Reflect.apply = function (...args) { new URLPattern({ pathname: "/(r)" }); return original(...args); };
+            // Assigned with Object.assign, since TypeScript cannot check a
+            // replacement against Reflect.apply's generic overload.
+            Object.assign(Reflect, { apply: function (target: Function, thisArgument: unknown, argumentsList: ArrayLike<unknown>) { new URLPattern({ pathname: "/(r)" }); return original(target, thisArgument, argumentsList); } });
             return new URLPattern({ protocol: "(https?)", pathname: "/a b" }).pathname;
           } finally { Reflect.apply = original; }
         })(),
@@ -2484,13 +2599,17 @@ export async function run(handlerEnv, ctx, constructors) {
     errorsAndEdges: {
       relativeUrl: [result(() => new URL("relative")), result(() => new URL("/relative"))],
       paramsIterable: result(() => [...new URLSearchParams([new Set(["a", "b"])])]),
+      // @ts-expect-error The values are not strings, records or pairs.
       paramsPrimitive: [new URLSearchParams(1).toString(), new URLSearchParams(true).toString(), result(() => new URLSearchParams(Symbol()).toString())],
       fileUrls: [result(() => new URL("file:///tmp/a").href), result(() => new URL("file:/tmp/a").href), result(() => new URL("file:c:/a").href), result(() => new URL("file://host/share").origin)],
       headerWhitespace: result(() => new Headers([["x-test", "  one\t two  "]]).get("x-test")),
       status: [result(() => new Response(null, { status: 0 })), result(() => new Response(null, { status: 1000 })), result(() => Response.redirect("https://example.test", 304))],
+      // @ts-expect-error A null status converts to 0.
       statusConversions: [result(() => new Response(null, { status: 302.5 }).status), result(() => new Response(null, { status: null }).status), result(() => Response.redirect("https://example.test", 302.5).status)],
       blobSlice: result(() => { const blob = new Blob(["abcd"], { type: "TEXT/PLAIN" }).slice(3, 1, "TEXT/CUSTOM"); return { size: blob.size, type: blob.type }; }),
+      // @ts-expect-error The type is null, and the File has no bits or name.
       blobOptions: [new Blob([], { type: null }).type, result(() => new File())],
+      // @ts-expect-error The options are null.
       fileOptions: [new File([], "x", { type: null, lastModified: null }).type, new File([], "x", { lastModified: null }).lastModified],
       formSet: (() => { const form = new FormData(); form.append("a", "one"); form.append("b", "two"); form.append("a", "three"); form.set("a", "four"); return [...form]; })(),
       responseContentTypes: [
@@ -2498,13 +2617,16 @@ export async function run(handlerEnv, ctx, constructors) {
         new Response(new URLSearchParams("a=b")).headers.get("content-type"),
         new Response(new Blob(["x"], { type: "TEXT/X" })).headers.get("content-type"),
       ],
-      requestDefaults: (() => { const request = new Request("https://example.test"); return { method: request.method, body: request.body, duplex: request.duplex, redirect: request.redirect, referrer: request.referrer }; })(),
-      requestProperties: (() => { const request = new Request("https://example.test", { method: "POST", body: "body" }); return { cache: request.cache, credentials: request.credentials, destination: request.destination, integrity: request.integrity, keepalive: request.keepalive, mode: request.mode, referrer: request.referrer, referrerPolicy: request.referrerPolicy, duplex: request.duplex }; })(),
+      requestDefaults: (() => { const request = new Request("https://example.test"); return { method: request.method, body: request.body, duplex: member(request, "duplex"), redirect: request.redirect, referrer: member(request, "referrer") }; })(),
+      requestProperties: (() => { const request = new Request("https://example.test", { method: "POST", body: "body" }); return { cache: request.cache, credentials: member(request, "credentials"), destination: member(request, "destination"), integrity: request.integrity, keepalive: request.keepalive, mode: member(request, "mode"), referrer: member(request, "referrer"), referrerPolicy: member(request, "referrerPolicy"), duplex: member(request, "duplex") }; })(),
       requestValidation: {
+        // @ts-expect-error The init is null.
         nullInit: result(() => new Request("https://example.test", null).body),
         redirect: [result(() => new Request("https://example.test", { redirect: "FOLLOW" }).redirect), result(() => new Request("https://example.test", { redirect: "invalid" }))],
+        // @ts-expect-error The signal is not an AbortSignal.
         signal: [result(() => new Request("https://example.test", { signal: {} })), (() => { const first = new Request("https://example.test"); const second = new Request("https://example.test"); return { distinct: first.signal !== second.signal, aborted: first.signal.aborted }; })()],
         invalidCopy: (() => { const source = new Request("https://example.test", { method: "POST", body: "body" }); const outcome = result(() => new Request(source, { redirect: "invalid" })); return { outcome, used: source.bodyUsed }; })(),
+        // @ts-expect-error The members are null.
         nullMembers: [result(() => new Request("https://example.test", { method: null })), result(() => new Request("https://example.test", { redirect: null })), result(() => new Request("https://example.test", { integrity: null }))],
       },
       responseValidation: { error: (() => { const response = Response.error(); const clone = response.clone(); return { status: response.status, ok: response.ok, type: response.type, clone: [clone.status, clone.ok, clone.type] }; })(), statusText: result(() => new Response(null, { statusText: "x\t" })), webSocket: (() => { const client = new WebSocketPair()[0]; return { accepted: result(() => { const response = new Response(null, { status: 101, webSocket: client }); return { status: response.status, ok: response.ok, socket: response.webSocket === client }; }), missingSocket: result(() => new Response(null, { status: 101 })) }; })() },
@@ -2515,7 +2637,7 @@ export async function run(handlerEnv, ctx, constructors) {
     },
     formDataEdges: {
       malformedUrlEncoded: await asyncResult(async () => {
-        const values = [];
+        const values: unknown[] = [];
         for (const body of ["a=%", "a=%GG", "a=%E2%82", "%GG=x"]) {
           const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "application/x-www-form-urlencoded" } });
           values.push(await asyncResult(async () => [...await request.formData()]));
@@ -2567,13 +2689,14 @@ export async function run(handlerEnv, ctx, constructors) {
       strictAlias: nodeAssert === nodeAssertStrict,
       equal: result(() => { nodeAssert.equal(1, "1"); return "ok"; }),
       deepMap: result(() => { nodeAssert.deepEqual(new Map([[{ a: 1 }, 2]]), new Map([[{ a: 1 }, 2]])); return "ok"; }),
+      // @ts-expect-error The message is not a string or Error.
       fail: result(() => nodeAssert.fail(["why"])),
       error: result(() => { throw new nodeAssert.AssertionError({ actual: 1, expected: 2, operator: "strictEqual", message: "custom" }); }),
     },
     deepEquality: (() => {
-      const loop = value => Object.assign(value, { self: value });
+      const loop = (value: object) => Object.assign(value, { self: value });
       const outer = { a: 1 };
-      const tagged = value => Object.assign(value, { [Symbol.toStringTag]: "Tagged" });
+      const tagged = (value: object) => Object.assign(value, { [Symbol.toStringTag]: "Tagged" });
       const symbol = Symbol("key");
       const pairs = {
         numberString: [1, "1"], zero: [0, -0], nan: [NaN, NaN], prototype: [Object.create(null), {}], holes: [[1, , 3], [1, undefined, 3]],
@@ -2593,9 +2716,9 @@ export async function run(handlerEnv, ctx, constructors) {
         mapEntries: [new Map([[{ k: 1 }, "a"], [{ k: 1 }, "b"]]), new Map([[{ k: 1 }, "b"], [{ k: 1 }, "a"]])],
         setConsumed: [new Set([{ a: 1 }, { a: 1 }]), new Set([{ a: 1 }, { a: 2 }])], setOfSets: [new Set([new Set([1]), new Set([1])]), new Set([new Set([1]), new Set([2])])],
         setMixed: [new Set([1, { a: 1 }]), new Set([{ a: 1 }, 1])], setLoose: [new Set([1]), new Set(["1"])],
-        circular: [loop({ a: 1 }), loop({ a: 1 })], circularDepth: [loop({ a: 1 }), (() => { const value = { a: 1 }; value.self = { a: 1, self: value }; return value; })()],
+        circular: [loop({ a: 1 }), loop({ a: 1 })], circularDepth: [loop({ a: 1 }), (() => { const value: { a: number; self?: unknown } = { a: 1 }; value.self = { a: 1, self: value }; return value; })()],
         tag: [tagged({}), {}], forgedDates: [Object.create(Date.prototype), Object.create(Date.prototype)], forgedDate: [Object.create(Date.prototype), new Date(0)],
-        proxy: [new Proxy({ a: 1 }, {}), { a: 1 }], proxyArray: [new Proxy([1], {}), [1]], functions: [() => 1, () => 1], arguments: [(function () { return arguments; })(1), [1]],
+        proxy: [new Proxy({ a: 1 }, {}), { a: 1 }], proxyArray: [new Proxy([1], {}), [1]], functions: [() => 1, () => 1], arguments: [(function (_value: number) { return arguments; })(1), [1]],
       };
       return Object.fromEntries(Object.entries(pairs).map(([name, [actual, expected]]) => [name, [
         nodeUtil.isDeepStrictEqual(actual, expected),
@@ -2608,7 +2731,7 @@ export async function run(handlerEnv, ctx, constructors) {
       prefix: [[1, 2], [1]], longer: [[1], [1, 2]], middle: [[1, 2, 3], [2]], nested: [[1, { a: 1, b: 2 }], [1, { a: 1 }]], missingKey: [{}, { a: undefined }],
       prototype: [new Error("x"), { message: "x" }], errors: [new Error("x"), new Error("y")], primitives: [1, 1], zero: [0, -0],
       typed: [new Uint8Array([1, 2]), new Uint8Array([1])], buffers: [new Uint8Array([1, 2]).buffer, new Uint8Array([1]).buffer],
-      mapSubset: [new Map([[1, { a: 1, b: 2 }], [2, 2]]), new Map([[1, { a: 1 }]])], mapMissing: [new Map([[1, 1]]), new Map([[2, 2]])],
+      mapSubset: [new Map<number, unknown>([[1, { a: 1, b: 2 }], [2, 2]]), new Map([[1, { a: 1 }]])], mapMissing: [new Map([[1, 1]]), new Map([[2, 2]])],
       setSubset: [new Set([1, 2]), new Set([1])], setObjects: [new Set([{ a: 1, b: 2 }]), new Set([{ a: 1 }])],
     }).map(([name, [actual, expected]]) => [name, result(() => nodeAssert.partialDeepStrictEqual(actual, expected)) ?? true])),
     buffer: (() => {
@@ -2629,23 +2752,26 @@ export async function run(handlerEnv, ctx, constructors) {
         inspect: encoded.inspect(),
         json: encoded.toJSON(),
         static: [nodeBuffer.Buffer.byteLength("€"), nodeBuffer.Buffer.compare(nodeBuffer.Buffer.from([1]), nodeBuffer.Buffer.from([2])), nodeBuffer.Buffer.isEncoding("utf-8"), nodeBuffer.Buffer.of(1, 257)[1]],
-        aliases: [nodeBuffer.Blob === Blob, nodeBuffer.File === File, nodeBuffer.atob === globalThis.atob, nodeBuffer.btoa === globalThis.btoa],
+        aliases: [Object.is(nodeBuffer.Blob, Blob), Object.is(nodeBuffer.File, File), nodeBuffer.atob === globalThis.atob, nodeBuffer.btoa === globalThis.btoa],
         base64Names: [nodeBuffer.atob.name, nodeBuffer.btoa.name],
         base64: ["aGVsbG8", "aGVsbG8===", "aGVs*bG8=", "a-_b", "aGVsbG8=aGVsbG8=", "=aGVsbG8", "abcde", "YR==", "Zm9véYmFy", "AAAA====AAAA", "%%%"].map(value => [
           [...nodeBuffer.Buffer.from(value, "base64")], [...nodeBuffer.Buffer.from(value, "base64url")], nodeBuffer.Buffer.byteLength(value, "base64"), detailedResult(() => nodeBuffer.atob(value)),
         ]),
         base64Encoded: [[], [0], [0, 1], [255, 254, 253, 252]].map(bytes => [nodeBuffer.Buffer.from(bytes).toString("base64"), nodeBuffer.Buffer.from(bytes).toString("base64url")]),
         hex: ["0a1B", "0a1", "0a zz", "zz0a", ""].map(value => [...nodeBuffer.Buffer.from(value, "hex")]),
-        largeLatin1: ["latin1", "ascii"].map(encoding => nodeBuffer.Buffer.alloc(70000, 0xe9).toString(encoding).length),
-        decoderStrings: ["hex", "base64", "utf8"].map(encoding => new nodeStringDecoder.StringDecoder(encoding).write("ab")),
-        decoded: [[0x00, 0xd8], [0x41, 0x00, 0x00, 0xd8, 0x42], [0xef, 0xbb, 0xbf, 0x41]].map(bytes => ["utf16le", "utf8"].map(encoding => [...nodeBuffer.Buffer.from(bytes).toString(encoding)].map(text => text.codePointAt(0)))),
+        largeLatin1: (["latin1", "ascii"] as const).map(encoding => nodeBuffer.Buffer.alloc(70000, 0xe9).toString(encoding).length),
+        decoderStrings: (["hex", "base64", "utf8"] as const).map(encoding => new nodeStringDecoder.StringDecoder(encoding).write("ab")),
+        decoded: [[0x00, 0xd8], [0x41, 0x00, 0x00, 0xd8, 0x42], [0xef, 0xbb, 0xbf, 0x41]].map(bytes => (["utf16le", "utf8"] as const).map(encoding => [...nodeBuffer.Buffer.from(bytes).toString(encoding)].map(text => text.codePointAt(0)))),
         btoa: ["hello", "\x00\xff", "€"].map(value => detailedResult(() => nodeBuffer.btoa(value))),
+        // @ts-expect-error The input is required.
         base64Missing: [detailedResult(() => nodeBuffer.atob()), detailedResult(() => nodeBuffer.btoa())],
-        bigWrites: [[5n, "writeBigInt64LE"], [5, "writeBigInt64LE"], ["5", "writeBigInt64LE"], [2n ** 63n, "writeBigInt64LE"], [-1n, "writeBigUInt64LE"], [2n ** 64n - 1n, "writeBigUInt64BE"]].map(([value, method]) => result(() => {
+        bigWrites: ([[5n, "writeBigInt64LE"], [5, "writeBigInt64LE"], ["5", "writeBigInt64LE"], [2n ** 63n, "writeBigInt64LE"], [-1n, "writeBigUInt64LE"], [2n ** 64n - 1n, "writeBigUInt64BE"]] as const).map(([value, method]) => result(() => {
           const bytes = nodeBuffer.Buffer.alloc(8);
+          // @ts-expect-error Some of the values are not bigints.
           bytes[method](value);
           return [...bytes];
         })),
+        // @ts-expect-error BigInts are not bytes.
         bigElements: [new BigInt64Array([1n]), [1n]].map(value => result(() => [...nodeBuffer.Buffer.from(value)])),
       };
     })(),
@@ -2659,7 +2785,7 @@ export async function run(handlerEnv, ctx, constructors) {
       const legacy = nodeUrl.parse("https://user:pass@example.com:8080/a%20b?x=1#h", true, true);
       const file = new nodeUrl.URL("file:///tmp/a");
       return {
-        identity: [nodeUrl.URL === URL, nodeUrl.URLSearchParams === URLSearchParams, nodeUrl.parse !== nodeUrl.URL.parse],
+        identity: [Object.is(nodeUrl.URL, URL), nodeUrl.URLSearchParams === URLSearchParams, !Object.is(nodeUrl.parse, nodeUrl.URL.parse)],
         legacy: { protocol: legacy.protocol, slashes: legacy.slashes, auth: legacy.auth, host: legacy.host, hostname: legacy.hostname, port: legacy.port, pathname: legacy.pathname, search: legacy.search, query: legacy.query, hash: legacy.hash, path: legacy.path, href: legacy.href },
         format: nodeUrl.format({ protocol: "https:", host: "example.test", pathname: "/a b", query: { x: "1" } }),
         resolve: nodeUrl.resolve("https://example.test/a/b", "../c"),
@@ -2670,6 +2796,7 @@ export async function run(handlerEnv, ctx, constructors) {
     })(),
     querystring: (() => {
       const parsed = nodeQuerystring.parse("a+b=c+d&empty&x=");
+      // @ts-expect-error A nested object is not a query value.
       return { nullPrototype: Object.getPrototypeOf(parsed) === null, parsed, repeated: nodeQuerystring.parse("foo=bar&abc=xyz&abc=123"), stringified: nodeQuerystring.stringify({ foo: "bar", abc: ["xyz", "123"], empty: "", nil: null, undef: undefined, num: 42, bool: true, obj: { x: 1 } }), escaped: nodeQuerystring.escape("a b&c"), unescaped: nodeQuerystring.unescape("a+b%26c"), buffer: [...nodeQuerystring.unescapeBuffer("a+b%26c")], spaces: [...nodeQuerystring.unescapeBuffer("a+b", true)] };
     })(),
     querystringBytes: {
@@ -2681,27 +2808,32 @@ export async function run(handlerEnv, ctx, constructors) {
       parse: Object.entries(nodeQuerystring.parse("k%ZZ\u00e9=v%ZZ\u20ac+x&e=%41%ZZ\u20ac")),
     },
     querystringScanner: (() => {
-      const entries = callback => () => Object.entries(callback());
-      const decoded = [];
-      const throwing = value => { decoded.push(value); if (value.includes("%")) throw new URIError("bad"); return `<${value}>`; };
-      const customDecoders = [
+      const entries = (callback: () => object) => () => Object.entries(callback());
+      const decoded: unknown[] = [];
+      const throwing = (value: string) => { decoded.push(value); if (value.includes("%")) throw new URIError("bad"); return `<${value}>`; };
+      const decoders: [input: string, decoder: (value: string) => string][] = [
         ["a=%ZZ&b=%41&c=x+y", throwing], ["%E2%82%AC=%ZZ%41+&k+=v", throwing], ["a=b&c", throwing], ["a=&=b&&c=", throwing], ["a+b=c+d&%41=%42", value => value.toUpperCase()],
         ["a=%zz+%41", () => { throw new Error("always"); }], ["x=%ZZ%E2%82%AC", () => { throw 1; }],
-      ].map(([input, decoder]) => detailedResult(entries(() => nodeQuerystring.parse(input, null, null, { decodeURIComponent: decoder }))));
+      ];
+      const customDecoders = decoders.map(([input, decoder]) => detailedResult(entries(() => nodeQuerystring.parse(input, undefined, undefined, { decodeURIComponent: decoder }))));
       const parsed = [
         ["a=1;b=2", ";"], ["a:1&b:2", "&", ":"], ["a==1"], ["=1"], ["&&a=1&&"], ["a=1&a=2&a=3"], ["a=1&b=2&c=3", "&", "=", { maxKeys: 2 }],
         ...[0, -1, "1", 1.5, NaN].map(maxKeys => ["a=1&b=2", "&", "=", { maxKeys }]),
         ["a=1&&b=2", "&&"], ["a=1aab=2", "ab"], ["a=1&b=2", ""], ["a=1&b=2", 0], ["a1b", "&", 1], ["a==1&b==2", "&", "=="], ["a=b==c", "&", "=="], ["a=1", [], []],
         [5], [null], [{ toString: () => "a=1" }], ["a=%E2%82%AC&b=%zz%41&c=%"], ["%2B=%2b"], ["__proto__=1&constructor=2"], ["%41%42=\u20ac%"], ["a=%4+1"], ["a=1+&b=%2"],
+      // @ts-expect-error Each entry is a call's arguments, and some are invalid.
       ].map(args => detailedResult(entries(() => nodeQuerystring.parse(...args))));
-      const encodeBrackets = value => `[${value}]`;
+      const encodeBrackets = (value: string) => `[${value}]`;
       const stringified = [
         [{ a: 1, b: "x y", c: [1, 2], d: [], e: null, f: undefined, g: true, h: 1e21, i: NaN, j: Infinity, k: 10n, l: {}, m: -0, n: "" }],
         [{ a: 1, b: 2 }, ";", ":"], [{ a: 1 }, "", ""], [{ a: [1, 2] }, null, null], ["abc"], [5], [[1, 2]], [{ a: [1, , 2] }], [{ "": ["", ""] }, "&", []],
         [{ a: 1e21, b: -1e21, c: 1.5 }, "&", "=", { encodeURIComponent: encodeBrackets }], [{ a: [1, null, {}], b: 2n, c: true }, "&", "=", { encodeURIComponent: encodeBrackets }],
         [{ "\ud800": 1 }], [{ a: "\ud800" }], [{ a: "\ud800b\udc00c" }],
+      // @ts-expect-error Each entry is a call's arguments, and some are invalid.
       ].map(args => detailedResult(() => nodeQuerystring.stringify(...args)));
+      // @ts-expect-error Some of the values are not strings.
       const escaped = ["\ud800", "a\udc00", "\ud800\ud800", "\udc00x", "\ud83d\ude00", "!'()*-._~", { toString: () => "x y" }, true].map(value => detailedResult(() => nodeQuerystring.escape(value)));
+      // @ts-expect-error A symbol is not a string.
       return { customDecoders, decoded, parsed, stringified, escaped, symbol: result(() => nodeQuerystring.escape(Symbol("s"))) };
     })(),
     util: {
@@ -2713,22 +2845,23 @@ export async function run(handlerEnv, ctx, constructors) {
       systemErrors: [
         () => nodeUtil.getSystemErrorName(-2), () => nodeUtil.getSystemErrorMessage(-2), () => nodeUtil.getSystemErrorMap(),
         () => nodeUtil._errnoException(-2, "open"), () => nodeUtil._exceptionWithHostPort(-111, "connect", "1.2.3.4", 80),
-      ].map(detailedResult),
+      ].map((callback: () => unknown) => detailedResult(callback)),
       mime: (() => { const value = new nodeUtil.MIMEType("text/html; charset=utf-8"); return { essence: value.essence, type: value.type, subtype: value.subtype, params: [...value.params], string: value.toString() }; })(),
       parseArgs: result(() => nodeUtil.parseArgs()),
       parseEnv: result(() => nodeUtil.parseEnv("A=1\nB=two\n# comment\nEMPTY=\nQUOTED=\"a b\"")),
       inspectCustom: (() => {
         const custom = nodeUtil.inspect.custom;
-        const calls = [];
-        const recorder = { [custom](depth, options) { calls.push([depth, options.depth, typeof options.stylize, options.showHidden, options.breakLength]); return "R"; } };
+        const calls: unknown[] = [];
+        const recorder = { [custom](depth: number, options: InspectOptionsStylized) { calls.push([depth, options.depth, typeof options.stylize, options.showHidden, options.breakLength]); return "R"; } };
         const prototype = function Thing() {}.prototype;
         prototype[custom] = () => "instance";
-        const cycle = { [custom]: () => "cycle" };
+        const cycle: Record<PropertyKey, unknown> = { [custom]: () => "cycle" };
         cycle.self = cycle;
-        const describeDepth = { [custom]: (depth, options) => `d${depth}:${options.depth}` };
+        const describeDepth = { [custom]: (depth: number, options: InspectOptionsStylized) => `d${depth}:${options.depth}` };
+        const depths: [unknown, InspectOptions?][] = [[recorder], [{ a: recorder }], [{ a: { b: recorder } }, { depth: 0 }], [{ a: recorder }, { depth: 0 }], [recorder, { depth: null }], [recorder, { depth: -1 }]];
         return {
           empty: [{}, [], new Map(), new Set(), new Uint8Array(0), { a: {} }, [[]]].map(value => nodeUtil.inspect(value)),
-          depths: [[recorder], [{ a: recorder }], [{ a: { b: recorder } }, { depth: 0 }], [{ a: recorder }, { depth: 0 }], [recorder, { depth: null }], [recorder, { depth: -1 }]].map(args => nodeUtil.inspect(...args)),
+          depths: depths.map(args => nodeUtil.inspect(...args)),
           calls,
           results: [() => ({ x: 1 }), () => [1, 2], () => 5, () => undefined, () => null].map(method => nodeUtil.inspect({ [custom]: method })),
           nestedResult: nodeUtil.inspect({ a: { [custom]: () => ({ x: { y: { z: 1 } } }) } }),
@@ -2739,7 +2872,7 @@ export async function run(handlerEnv, ctx, constructors) {
       })(),
     },
     module: {
-      aliases: [nodeModule === nodeModule.Module, nodeModule.builtinModules === nodeModule.Module.builtinModules, nodeModule.isBuiltin === nodeModule.Module.isBuiltin, nodeModule.createRequire === nodeModule.Module.createRequire, nodeModule === nodeModule.default],
+      aliases: [nodeModule === nodeModule.Module, nodeModule.builtinModules === nodeModule.Module.builtinModules, nodeModule.isBuiltin === nodeModule.Module.isBuiltin, nodeModule.createRequire === nodeModule.Module.createRequire, nodeModule === member(nodeModule, "default")],
       builtin: [nodeModule.isBuiltin("node:buffer"), nodeModule.isBuiltin("node:not-real")],
       require: nodeModule.createRequire("/bundle/contracts.ts")("node:buffer") === nodeBuffer,
       stripTypeScriptTypes: result(() => nodeModule.stripTypeScriptTypes("const value: number = 1;")),
@@ -2751,6 +2884,7 @@ export async function run(handlerEnv, ctx, constructors) {
       const controller = new AbortController();
       controller.abort();
       const aborted = await asyncResult(async () => nodeTimersPromises.setTimeout(0, "never", { signal: controller.signal }));
+      // @ts-expect-error The values are not AbortSignals.
       const invalidSignals = await Promise.all([5, {}, { aborted: false }].map(signal => asyncResult(async () => nodeTimersPromises.setTimeout(0, "never", { signal }))));
       return { identity: nodeTimers.promises === nodeTimersPromises, stable: nodeTimers.promises === nodeTimers.promises, types: [typeof nodeTimers.setTimeout, typeof nodeTimers.setImmediate, typeof nodeTimersPromises.setInterval], values: [value, immediate, wait], aborted, invalidSignals };
     }),
@@ -2764,12 +2898,12 @@ export async function run(handlerEnv, ctx, constructors) {
       nodePerfHooks.performance.clearMeasures();
       const mark = nodePerfHooks.performance.mark("node-compat", { startTime: 1 });
       const measure = nodePerfHooks.performance.measure("node-compat-measure", "node-compat", "node-compat");
-      return { identity: [nodePerfHooks.performance === performance, nodePerfHooks.PerformanceEntry === PerformanceEntry, nodePerfHooks.PerformanceObserver === PerformanceObserver], entries: [mark.name, mark.entryType, mark.startTime, measure.name, measure.entryType, measure.duration], supported: nodePerfHooks.PerformanceObserver.supportedEntryTypes, utilization: nodePerfHooks.eventLoopUtilization(), histogram: result(() => nodePerfHooks.createHistogram()) };
+      return { identity: [Object.is(nodePerfHooks.performance, performance), nodePerfHooks.PerformanceEntry === PerformanceEntry, Object.is(nodePerfHooks.PerformanceObserver, PerformanceObserver)], entries: [mark.name, mark.entryType, mark.startTime, measure.name, measure.entryType, measure.duration], supported: member(nodePerfHooks.PerformanceObserver, "supportedEntryTypes"), utilization: nodePerfHooks.eventLoopUtilization(), histogram: result(() => nodePerfHooks.createHistogram()) };
     })(),
     diagnostics: (() => {
       const value = nodeDiagnostics.channel("node-compat");
-      const events = [];
-      const listener = (message, name) => events.push([message.value, name]);
+      const events: unknown[] = [];
+      const listener = (message: unknown, name: string | symbol) => events.push([member(message, "value"), name]);
       value.subscribe(listener);
       const subscribed = value.hasSubscribers;
       value.publish({ value: 1 });
@@ -2784,7 +2918,7 @@ export async function run(handlerEnv, ctx, constructors) {
         const values = [storage.getStore()];
         await Promise.resolve();
         values.push(storage.getStore());
-        await new Promise(resolve => setTimeout(() => { values.push(storage.getStore()); resolve(); }, 1));
+        await new Promise<void>(resolve => setTimeout(() => { values.push(storage.getStore()); resolve(); }, 1));
         await Promise.reject("expected").catch(() => values.push(storage.getStore()));
         values.push(await other.run("nested", async () => { await 0; return [storage.getStore(), other.getStore()]; }));
         values.push(await storage.exit(async () => { await 0; return storage.getStore() ?? null; }));
@@ -2793,37 +2927,43 @@ export async function run(handlerEnv, ctx, constructors) {
       })));
       const resource = storage.run("resource", () => new nodeAsyncHooks.AsyncResource("test"));
       const scope = await storage.run("caller", () => resource.runInAsyncScope(async () => { await 0; return storage.getStore(); }));
-      let resolve;
-      const pending = new Promise(done => { resolve = done; });
+      const { promise: pending, resolve } = Promise.withResolvers<void>();
       const subscriber = storage.run("subscriber", () => pending.then(() => storage.getStore()));
       storage.run("resolver", resolve);
-      const receiver = function () { return this === globalThis ? "global" : this === null ? "null" : this?.value ?? typeof this; };
+      const receiver = function (this: unknown) { return this === globalThis ? "global" : this === null ? "null" : member(this, "value") ?? typeof this; };
       const boundReceivers = [undefined, null, { value: "bound" }].map(value => resource.bind(receiver, value).call({ value: "caller" }));
       const staticBoundReceivers = [undefined, null, { value: "bound" }].map(value => nodeAsyncHooks.AsyncResource.bind(receiver, "bound", value).call({ value: "caller" }));
       return { result, scope, subscriber: await subscriber, boundReceivers, staticBoundReceivers, outside: storage.getStore() ?? null };
     }),
     asyncHooks: (() => {
+      // @ts-expect-error @types/node 22 declares no constructor options.
       const storage = new nodeAsyncHooks.AsyncLocalStorage({ name: "scope" });
       const scoped = storage.run({ value: 1 }, () => ({ inside: storage.getStore(), nested: storage.run(2, () => storage.getStore()), afterNested: storage.getStore() }));
       const resource = new nodeAsyncHooks.AsyncResource("resource");
+      // @ts-expect-error The callbacks are null.
       const hook = nodeAsyncHooks.createHook(null);
-      return { storage: { name: storage.name, scoped, after: storage.getStore(), enterWith: result(() => storage.enterWith(1)), disable: result(() => storage.disable()) }, resource: { type: resource.type, asyncId: resource.asyncId(), triggerAsyncId: resource.triggerAsyncId(), scope: resource.runInAsyncScope(() => "ok") }, hook: hook.enable() === hook && hook.disable() === hook, ids: [nodeAsyncHooks.executionAsyncId(), nodeAsyncHooks.triggerAsyncId()], resourceType: typeof nodeAsyncHooks.executionAsyncResource(), providers: typeof nodeAsyncHooks.asyncWrapProviders.PROMISE };
+      return { storage: { name: storage.name, scoped, after: storage.getStore(), enterWith: result(() => storage.enterWith(1)), disable: result(() => storage.disable()) }, resource: { type: member(resource, "type"), asyncId: resource.asyncId(), triggerAsyncId: resource.triggerAsyncId(), scope: resource.runInAsyncScope(() => "ok") }, hook: hook.enable() === hook && hook.disable() === hook, ids: [nodeAsyncHooks.executionAsyncId(), nodeAsyncHooks.triggerAsyncId()], resourceType: typeof nodeAsyncHooks.executionAsyncResource(), providers: typeof nodeAsyncHooks.asyncWrapProviders.PROMISE };
     })(),
     stringDecoder: (() => {
       const decoder = new nodeStringDecoder.StringDecoder("utf8");
-      return { encoding: decoder.encoding, chunks: [decoder.write(new Uint8Array([0xe2])), decoder.write(new Uint8Array([0x82, 0xac])), decoder.end()], state: [decoder.lastNeed, decoder.lastTotal, decoder.lastChar] };
+      return { encoding: member(decoder, "encoding"), chunks: [decoder.write(new Uint8Array([0xe2])), decoder.write(new Uint8Array([0x82, 0xac])), decoder.end()], state: [member(decoder, "lastNeed"), member(decoder, "lastTotal"), member(decoder, "lastChar")] };
     })(),
     streamEncoding: (() => {
       const readable = new streams.Readable();
       readable.setEncoding("utf8");
-      const chunks = [];
+      const chunks: unknown[] = [];
       readable.on("data", value => chunks.push(value));
       readable.push(new Uint8Array([0xe2]));
       readable.push(new Uint8Array([0x82, 0xac]));
       readable.push(null);
       return chunks;
     })(),
-    console: { identity: nodeConsole === globalThis.console, methods: ["log", "warn", "error", "time", "timeEnd", "table", "trace"].map(name => typeof nodeConsole[name]), constructor: result(() => new nodeConsole.Console()) },
+    console: {
+      identity: nodeConsole === globalThis.console,
+      methods: ["log", "warn", "error", "time", "timeEnd", "table", "trace"].map(name => typeof member(nodeConsole, name)),
+      // @ts-expect-error The output stream is required.
+      constructor: result(() => new nodeConsole.Console()),
+    },
     zlib: (() => {
       const compressed = nodeZlib.gzipSync("hello");
       const gzipBytes = [...compressed];
@@ -2841,11 +2981,12 @@ export async function run(handlerEnv, ctx, constructors) {
         socket.destroy();
         return options;
       }),
+      // @ts-expect-error Some of the values are not strings.
       addresses: ["127.0.0.1", "256.1.2.3", "01.2.3.4", "::1", "a:b", "fe80::1%eth0", "::ffff:192.0.2.1", "1:2:3:4:5:6:7:8:9", "::", "", null, 123].map(value => [nodeNet.isIP(value), nodeNet.isIPv4(value), nodeNet.isIPv6(value)]),
       writable: await asyncResult(async () => {
         const socket = new nodeNet.Socket({ highWaterMark: 4 });
-        const chunks = [];
-        const events = [];
+        const chunks: unknown[] = [];
+        const events: unknown[] = [];
         socket._read = () => {};
         socket._write = (chunk, encoding, callback) => {
           chunks.push(chunk.toString());
@@ -2865,7 +3006,7 @@ export async function run(handlerEnv, ctx, constructors) {
         return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), destroyed: socket.destroyed };
       }),
       socketAddresses: await asyncResult(async () => {
-        const describe = socket => [
+        const describe = (socket: NetSocket) => [
           socket.address(), socket._getsockname(), socket._getpeername(),
           socket.localAddress, socket.localPort, socket.localFamily, socket.remoteAddress, socket.remotePort, socket.remoteFamily,
         ];
@@ -2890,16 +3031,21 @@ export async function run(handlerEnv, ctx, constructors) {
           () => list.addAddress("8.8.8.8"), () => list.addRange("10.0.0.1", "10.0.0.10"), () => list.addSubnet("192.168.0.0", 16),
           () => list.addAddress("::1", "ipv6"), () => list.addRange("fe80::1", "fe80::ff", "ipv6"), () => list.addSubnet("2001:db8::", 32, "ipv6"),
           () => list.addAddress("1.2.3.4", "ipv6"), () => list.addRange("10.0.0.10", "10.0.0.1"), () => list.addSubnet("1.0.0.0", 33),
+          // @ts-expect-error A number is not an address, and ipv5 is not a type.
           () => list.addSubnet("1.0.0.0", 1.5), () => list.addAddress("not an ip"), () => list.addAddress(1), () => list.addAddress("1.2.3.4", "ipv5"),
         ].map(detailedResult);
         const checks = [
           ["8.8.8.8"], ["10.0.0.5"], ["10.0.0.11"], ["192.168.4.4"], ["192.169.0.0"], ["1.1.1.1"], ["::1", "ipv6"], ["::1"],
           ["fe80::80", "ipv6"], ["fe80::100", "ipv6"], ["2001:db8:1::5", "ipv6"], ["::ffff:8.8.8.8", "ipv6"], ["::FFFF:10.0.0.5", "ipv6"],
           ["::ffff:192.168.1.1", "ipv6"], ["8.8.8.8", "ipv6"], ["garbage"], ["8.8.8.8", "IPv4"], [123],
+        // @ts-expect-error Each entry is a call's arguments, and some are invalid.
         ].map(args => detailedResult(() => list.check(...args)));
         const edges = [
+          // @ts-expect-error A prefix is a number.
           () => list.addRange("10.0.0.1", "200.0.0.1"), () => list.check("::ffff:c0a8:5", "ipv6"), () => list.addSubnet("1.0.0.0", "8"),
+          // @ts-expect-error A number is not an address.
           () => list.addSubnet("1.0.0.0", 2 ** 31), () => list.addSubnet("::", 129, "ipv6"), () => list.addRange("1.1.1.1", 5),
+          // @ts-expect-error The values are not addresses.
           () => list.addRange("::2", "::1", "ipv6"), () => list.addRange("::2", "1.1.1.1", "ipv6"), () => list.check(true), () => list.check({}),
           () => { const other = new nodeNet.BlockList(); other.addRange("::1", "::ffff", "ipv6"); return [other.check("::ff", "ipv6"), other.check("::1:0", "ipv6")]; },
           () => { const other = new nodeNet.BlockList(); other.addSubnet("0.0.0.0", 0); return [other.check("1.2.3.4"), other.check("::ffff:1.2.3.4", "ipv6"), other.check("::1", "ipv6")]; },
@@ -2907,7 +3053,7 @@ export async function run(handlerEnv, ctx, constructors) {
         return { added, checks, edges, own: Object.getOwnPropertyNames(list), rules: list.rules, json: result(() => list.toJSON()), isBlockList: result(() => [nodeNet.BlockList.isBlockList(list), nodeNet.BlockList.isBlockList({})]) };
       })(),
       blockListJSON: (() => {
-        const load = data => () => {
+        const load = (data: string | readonly string[]) => () => {
           const list = new nodeNet.BlockList();
           return { returned: list.fromJSON(data) === undefined, rules: list.rules };
         };
@@ -2919,18 +3065,21 @@ export async function run(handlerEnv, ctx, constructors) {
           ["xx Address: IPv4 5.6.7.8 yy"], ["Address: ipv6 ::1"], ["Address: IPv6 ABCD::1"], ["address: IPv6 ::2"], ["IPv4 Address: IPv6 ::3"], ["Range: IPv4 9.9.9.9-1.1.1.1"],
           ["Subnet: IPv6 ::/129"], ["Subnet: IPv6 ::/1290"], ["Range: IPv6 ::1-::ff"], ["Address: IPv4 1.2.3.4", "Address: IPv4 1.2.3.4"], [["x"]], ["Address: IPv4 999.1.1.1"],
           ["Range: IPv6 ::1-1.2.3.4"], "not json", "[1,2]", "{}", "null", "\"Address: IPv4 1.2.3.4\"", {}, null, undefined, 5, { length: 1, 0: "Address: IPv4 1.2.3.4" }, "x".repeat(200),
+        // @ts-expect-error Some of the data are not strings or string arrays.
         ].map(data => detailedResult(load(data)));
+        // @ts-expect-error The arrays hold values that are not strings.
         const unreadable = [["Address: IPv4 1.2.3.4", 5], [5], [null], [["IPv4"]]].map(data => result(load(data)));
         return { loaded, unreadable, method: result(() => [typeof nodeNet.BlockList.prototype.fromJSON, nodeNet.BlockList.prototype.fromJSON.length, Object.getOwnPropertyNames(nodeNet.BlockList.prototype)]) };
       })(),
       blockListInspect: (() => {
         const list = new nodeNet.BlockList();
         list.addAddress("1.2.3.4");
-        return [[new nodeNet.BlockList()], [list], [list, { depth: 0 }], [list, { depth: -1 }], [{ a: list }, { depth: 0 }]].map(args => nodeUtil.inspect(...args));
+        const inspections: [unknown, InspectOptions?][] = [[new nodeNet.BlockList()], [list], [list, { depth: 0 }], [list, { depth: -1 }], [{ a: list }, { depth: 0 }]];
+        return inspections.map(args => nodeUtil.inspect(...args));
       })(),
       socketAddress: (() => {
         const { SocketAddress } = nodeNet;
-        const describe = callback => () => {
+        const describe = (callback: () => unknown) => () => {
           const value = callback();
           return value instanceof SocketAddress ? { address: value.toJSON() } : { value: value === undefined ? "undefined" : value };
         };
@@ -2940,19 +3089,27 @@ export async function run(handlerEnv, ctx, constructors) {
           { address: "1.2.3.4", port: "80" }, { port: -1 }, { port: 65536 }, { port: "65536" }, { port: 1.5 }, { port: "abc" }, { port: "" }, { port: null }, { port: true }, { port: NaN },
           { port: " 80 " }, { port: "0x10" }, { port: 65535 }, { port: 80n }, { flowlabel: -1 }, { flowlabel: 2 ** 32 }, { flowlabel: 2 ** 32 - 1 }, { flowlabel: 1.5 }, { flowlabel: "1" },
           { flowlabel: null }, { address: "fe80::1%eth0", family: "ipv6" }, { address: "::ffff:1.2.3.4", family: "ipv6" },
+        // @ts-expect-error Some of the options are invalid.
         ].map(options => detailedResult(describe(() => new SocketAddress(options))));
         const parsed = [
           "1.2.3.4", "1.2.3.4:80", "[::1]:8080", "[::1]", "::1", "example.com:80", "1.2.3.4:99999", "1.2.3.4:abc", "", "1.2.3.4:080", "user@1.2.3.4:80", "1.2.3.4/path",
           "0x7f.1", "1.2.3.4:", "[fe80::1%25eth0]:1", "127.1", "[::ffff:1.2.3.4]:5", "1.2.3.4:443", " 1.2.3.4", "1.2.3.4?x", "[::1]:65535", "%31.2.3.4", undefined, 1, null, {},
+        // @ts-expect-error Some of the inputs are not strings.
         ].map(input => detailedResult(describe(() => SocketAddress.parse(input))));
         const address = new SocketAddress({ address: "::1", family: "ipv6", port: 8080, flowlabel: 7 });
         const shape = {
           own: Object.getOwnPropertyNames(address), prototype: Object.getOwnPropertyNames(SocketAddress.prototype), statics: Object.getOwnPropertyNames(SocketAddress).sort(),
           json: JSON.stringify(address), string: String(address), values: [address.address, address.port, address.family, address.flowlabel], length: SocketAddress.length,
           is: [SocketAddress.isSocketAddress(address), SocketAddress.isSocketAddress({}), SocketAddress.isSocketAddress(address.toJSON())],
-          call: result(() => SocketAddress()), assign: result(() => { address.port = 1; }), noArguments: new SocketAddress().toJSON(),
+          // @ts-expect-error A class needs new.
+          call: result(() => SocketAddress()),
+          // @ts-expect-error The port is read-only.
+          assign: result(() => { address.port = 1; }),
+          // @ts-expect-error @types/node requires the options, which Node does not.
+          noArguments: new SocketAddress().toJSON(),
         };
         const inspected = [
+          // @ts-expect-error @types/node requires the options, which Node does not.
           nodeUtil.inspect(address), nodeUtil.inspect(new SocketAddress()), nodeUtil.inspect(address, { depth: 0 }), nodeUtil.inspect(address, { depth: null }),
           nodeUtil.format("%s", address), nodeUtil.format("%o", address), nodeUtil.format("%O", address), nodeUtil.format("%j", address), result(() => nodeUtil.inspect(SocketAddress.prototype).length > 0),
         ];
@@ -2962,6 +3119,7 @@ export async function run(handlerEnv, ctx, constructors) {
         const blockList = [
           () => list.addAddress(ipv4), () => list.addAddress(ipv6, "ipv4"), () => list.addRange(new SocketAddress({ address: "10.1.0.1" }), new SocketAddress({ address: "10.1.0.9" })),
           () => list.addRange(ipv4, ipv6), () => list.addRange(ipv6, "::9"), () => list.addRange("::1", ipv6, "ipv6"), () => list.addRange("10.0.0.1", ipv6),
+          // @ts-expect-error ipv5 is not a type.
           () => list.addSubnet(new SocketAddress({ address: "172.16.0.0" }), 12), () => list.addSubnet(ipv6, 200), () => list.addSubnet(ipv6, 120, "ipv5"), () => list.check(ipv4),
           () => list.check(ipv6, "ipv4"), () => list.check(new SocketAddress({ address: "172.20.0.1" })), () => list.check(new SocketAddress({ address: "::ffff:10.0.0.1", family: "ipv6" })),
         ].map(detailedResult);
@@ -2971,7 +3129,7 @@ export async function run(handlerEnv, ctx, constructors) {
     dns: await (async () => {
       const dns = await import("node:dns");
       const dnsPromises = await import("node:dns/promises");
-      const codes = module => [module.NOTFOUND, module.ADDRCONFIG, module.ALL, module.V4MAPPED, module.EOF, module.CANCELLED];
+      const codes = (module: object) => ["NOTFOUND", "ADDRCONFIG", "ALL", "V4MAPPED", "EOF", "CANCELLED"].map(name => member(module, name));
       return {
         namespace: Object.keys(dns).sort(),
         promisesNamespace: Object.keys(dnsPromises).sort(),
@@ -2982,6 +3140,7 @@ export async function run(handlerEnv, ctx, constructors) {
       functions: [typeof nodeTls.connect, typeof nodeTls.createSecureContext, typeof nodeTls.createServer],
       context: result(() => ({ prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(nodeTls.createSecureContext())).sort() })),
       socket: result(() => {
+        // @ts-expect-error @types/node requires the socket, which Node does not.
         const socket = new nodeTls.TLSSocket();
         return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), encrypted: socket.encrypted };
       }),
@@ -3006,8 +3165,8 @@ export async function run(handlerEnv, ctx, constructors) {
       })),
       fn: result(() => {
         const tracker = new nodeTest.MockTracker();
-        const seen = [];
-        const fn = tracker.fn(function (...args) {
+        const seen: unknown[] = [];
+        const fn = tracker.fn(function (...args: unknown[]) {
           seen.push(args.map(value => typeof value));
           return args.map(value => typeof value).join(":");
         });
@@ -3023,13 +3182,14 @@ export async function run(handlerEnv, ctx, constructors) {
         const throwing = tracker.fn(() => { throw new Error("boom"); });
         const thrown = result(() => throwing());
         const thrownCall = throwing.mock.calls[0];
-        function Constructor(value) { this.value = value; }
+        function Constructor(this: { value: unknown }, value: unknown) { this.value = value; }
         const constructor = tracker.fn(Constructor);
-        const instance = new constructor(5);
+        // Reflect.construct, since TypeScript does not construct plain functions.
+        const instance = Reflect.construct(constructor, [5]);
         const constructorCall = constructor.mock.calls[0];
-        fn.mock.mockImplementation((...args) => `implementation:${args.join(",")}`);
+        fn.mock.mockImplementation((...args: unknown[]) => `implementation:${args.join(",")}`);
         const implementation = fn("a");
-        fn.mock.mockImplementationOnce((...args) => `once:${args.join(",")}`);
+        fn.mock.mockImplementationOnce((...args: unknown[]) => `once:${args.join(",")}`);
         const once = [fn("b"), fn("c")];
         fn.mock.resetCalls();
         const resetCalls = fn.mock.callCount();
@@ -3041,8 +3201,8 @@ export async function run(handlerEnv, ctx, constructors) {
           surface: Object.getOwnPropertyNames(fn).sort(),
           copiedCalls: [copiedCalls.length, fn.mock.calls.length],
           thrown,
-          thrownCall: { error: thrownCall.error?.message, result: thrownCall.result },
-          constructor: { value: instance.value, target: typeof constructorCall.target, targetName: constructorCall.target?.name, thisValue: constructorCall.this?.value },
+          thrownCall: { error: member(thrownCall.error, "message"), result: thrownCall.result },
+          constructor: { value: instance.value, target: typeof constructorCall.target, targetName: member(constructorCall.target, "name"), thisValue: member(constructorCall.this, "value") },
           implementation,
           once,
           resetCalls,
@@ -3053,13 +3213,13 @@ export async function run(handlerEnv, ctx, constructors) {
         const tracker = new nodeTest.MockTracker();
         const target = {
           value: 2,
-          method(left, right) { return this.value + left + right; },
+          method(left: number, right: number) { return this.value + left + right; },
           get answer() { return this.value; },
-          set answer(value) { this.value = value; },
+          set answer(value: number) { this.value = value; },
         };
-        const method = tracker.method(target, "method", (...args) => `method:${args.join(",")}`);
-        const getter = tracker.getter(target, "answer", (...args) => `getter:${args.join(",")}`);
-        const setter = tracker.setter(target, "answer", (...args) => `setter:${args.join(",")}`);
+        const method = tracker.method(target, "method", (...args: unknown[]) => `method:${args.join(",")}`);
+        const getter = tracker.getter(target, "answer", (...args: unknown[]) => `getter:${args.join(",")}`);
+        const setter = tracker.setter(target, "answer", (...args: unknown[]) => `setter:${args.join(",")}`);
         target.answer = 9;
         return {
           method: target.method(3, 4),
@@ -3098,11 +3258,14 @@ export async function run(handlerEnv, ctx, constructors) {
         return { values, onceValues, calls: [fn.mock.callCount(), once.mock.callCount()] };
       }),
       validation: {
+        // @ts-expect-error The function is null, and so are the times.
         fn: [result(() => nodeTest.mock.fn(null)), result(() => nodeTest.mock.fn(() => {}, () => {}, { times: 0 })), result(() => nodeTest.mock.fn(() => {}, { times: null }))],
+        // @ts-expect-error The objects have no such method.
         method: [result(() => nodeTest.mock.method({}, "missing")), result(() => nodeTest.mock.method({ method: 1 }, "method"))],
         once: [
           result(() => { const fn = nodeTest.mock.fn(); fn(); return fn.mock.mockImplementationOnce(() => {}, 0); }),
           result(() => nodeTest.mock.fn().mock.mockImplementationOnce(() => {}, -1)),
+          // @ts-expect-error The call number is null.
           result(() => nodeTest.mock.fn().mock.mockImplementationOnce(() => {}, null)),
           result(() => nodeTest.mock.fn().mock.mockImplementationOnce(() => {}, 1.5)),
         ],

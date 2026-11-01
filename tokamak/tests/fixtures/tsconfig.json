@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // The test packages the Worker beside the RPC modules it imports.
+    "rootDirs": [".", "../../../plugins/core/src/rpc"]
+  },
+  "include": ["*.ts"],
+  "exclude": []
+}

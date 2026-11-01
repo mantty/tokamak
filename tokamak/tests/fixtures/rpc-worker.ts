@@ -1,10 +1,12 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { NativeConnection } from '../../../plugins/core/src/context.ts';
 import { rpcResponse } from './endpoint.ts';
 
 class Native extends WorkerEntrypoint {
-  echo(value) { return value; }
+  echo(value: unknown) { return value; }
   async stage() {
-    return JSON.parse(new TextDecoder().decode(await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage', new Uint8Array())));
+    const native: NativeConnection = Reflect.get(this.ctx, Symbol.for('tokamak.native'));
+    return JSON.parse(new TextDecoder().decode(await native.call('tokamak', 'lifecycleStage', new Uint8Array())));
   }
   fail() { throw Object.assign(new Error('Denied'), { code: 'DENIED' }); }
   invalid() { return { callback() {} }; }
@@ -22,7 +24,7 @@ export class TokamakEvents extends WorkerEntrypoint {
 }
 
 export default {
-  fetch(request, env, ctx) {
+  fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext) {
     return rpcResponse(request, scoped => new Native(scoped, env),
       ['echo', 'stage', 'fail', 'invalid', 'bytes', 'ignore'], ctx);
   },

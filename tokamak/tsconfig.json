@@ -16,5 +16,8 @@
     "paths": { "tokamak:*": ["./src/*"] },
     "rootDirs": ["src", "../plugins/core/src"]
   },
-  "include": ["src", "tests/**/*.ts"]
+  "include": ["src", "tests/**/*.ts"],
+  // The fixtures are their own project, since the test packages them beside
+  // other modules.
+  "exclude": ["tests/fixtures"]
 }

@@ -79,7 +79,7 @@ const definedKeys = (jwk: object) => Object.entries(jwk).filter(([, value]) => v
 const publicJwk = ({ d, p, q, dp, dq, qi, ...jwk }: JsonWebKey) => jwk;
 
 // The pair that generating an asymmetric key gives.
-function keyPair(key: CryptoKey | CryptoKeyPair) {
+export function keyPair(key: CryptoKey | CryptoKeyPair) {
   if (key instanceof CryptoKey) throw new TypeError("The generated key is not a pair");
   return key;
 }
