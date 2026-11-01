@@ -25,8 +25,16 @@ export function rpcResponse(request: Request, createWorker: CreateWorker, method
   return new Response(null, { status: 101, webSocket: client });
 }
 
-/** Serve one invocation, retaining it until the connection's streams settle. */
-export function serveRpc(socket: RpcSocket, createWorker: CreateWorker, methods: readonly string[], ctx: ExecutionContext): Promise<unknown> {
+/**
+ * Serve one invocation, retaining it until the connection's streams settle. The worker gets `ctx`, whose
+ * registered work the connection also retains.
+ */
+export function serveRpc<Context extends Pick<ExecutionContext, 'waitUntil'>>(
+  socket: RpcSocket,
+  createWorker: (ctx: Context) => unknown,
+  methods: readonly string[],
+  ctx: Context,
+): Promise<unknown> {
   const channel = new Channel(socket);
   const waitUntil = (promise: Promise<unknown>) => {
     ctx.waitUntil(promise);

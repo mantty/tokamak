@@ -17,6 +17,25 @@ export type TokamakOptions = Config & {
   module?: string;
 };
 
+/** config.json, which tok reads: the Vite root and the app's configuration. */
+export interface ConfigReport {
+  root: string;
+  config: Config;
+}
+
+/** server.json, which tok reads: the development server, its Worker and the plugin's dev socket. */
+export interface ServerReport {
+  url: string | undefined;
+  workerName: string;
+  certificates: string | undefined;
+  socketPort: number;
+}
+
+/** server.json when the plugin cannot report the development server. */
+export interface ServerFailure {
+  error: string;
+}
+
 const MIDDLEWARE_MODE_ERROR =
   "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
 
@@ -50,7 +69,7 @@ export function createNativeWorker(
       graph = createWorkerGraph(root, findModule(root, module), path.join(output, "worker"));
       graph.plugin.config.call(this, vite, environment);
       await prepare?.(root, graph);
-      writeJson(output, "config.json", { root, config });
+      writeJson(output, "config.json", { root, config } satisfies ConfigReport);
       // tok's build directory holds the apps it builds, which Windows does not let a watcher
       // open while they run. An array keeps the project's own ignored paths.
       if (buildDir && vite.server?.watch !== null) return { server: { watch: { ignored: [within(buildDir)] } } };
@@ -113,7 +132,7 @@ async function serveNativeWorker(
   const httpServer = server.httpServer;
   if (!httpServer) {
     if (!fs.existsSync(path.join(output, "server.json"))) {
-      writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR });
+      writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR } satisfies ServerFailure);
     }
     return;
   }
@@ -125,7 +144,7 @@ async function serveNativeWorker(
       workerName: names.app,
       certificates: endEntityCertificates(server.config.server.https),
       socketPort: socket.port,
-    });
+    } satisfies ServerReport);
   });
   return socket;
 }

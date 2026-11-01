@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The tests run from their sources, and run the plugin runtime's Worker
+    // modules under Node. The two type packages declare the same globals, so
+    // their declaration files are not checked.
+    "lib": ["ESNext"],
+    "types": ["node", "@cloudflare/workers-types"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rootDir": "../.."
+  },
+  "include": ["*.mts", "fixtures/*.mts"]
+}

@@ -5,7 +5,7 @@ import ts from "typescript";
 
 import { checkRpcMethod } from "./dist/rpc-contract.mjs";
 
-function contract(source, extension = "ts", ambient, types = []) {
+function contract(source: string, extension = "ts", ambient?: string, types: string[] = []) {
   const file = path.resolve(`rpc-fixture.${extension}`);
   const globals = path.resolve("rpc-globals.d.ts");
   const options = {
@@ -24,13 +24,15 @@ function contract(source, extension = "ts", ambient, types = []) {
   const program = ts.createProgram(ambient ? [file, globals] : [file], options, host);
   const checker = program.getTypeChecker();
   const module = program.getSourceFile(file);
+  assert.ok(module);
   const diagnostics = program.getSemanticDiagnostics(module).filter(({ code }) => code !== 7006);
   assert.deepEqual(diagnostics.map(({ messageText }) => ts.flattenDiagnosticMessageText(messageText, "\n")), []);
   const symbol = checker.getSymbolAtLocation(module);
+  assert.ok(symbol);
   const methods = checker.getExportsOfModule(symbol);
-  return (name) => {
+  return (name: string) => {
     const method = methods.find((method) => method.name === name);
-    assert.ok(method, `Missing fixture method ${name}`);
+    assert.ok(method?.valueDeclaration, `Missing fixture method ${name}`);
     const type = checker.getTypeOfSymbolAtLocation(method, method.valueDeclaration);
     checkRpcMethod(checker, type, name);
   };
@@ -136,6 +138,7 @@ for (const [name, location] of [
 ]) {
   test(`rejects ${name} with its contract location`, () => {
     assert.throws(() => invalid(name), (error) => {
+      assert.ok(error instanceof Error);
       assert.match(error.message, /Unsupported RPC/);
       assert.ok(error.message.includes(location), error.message);
       return true;

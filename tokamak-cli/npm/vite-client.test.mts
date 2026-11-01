@@ -8,7 +8,7 @@ import { build as viteBuild } from "vite";
 import WebSocket from "ws";
 import { createClient } from "../../plugins/core/src/rpc/client.ts";
 import { createClientPlugin } from "./dist/client.mjs";
-import { project, readOutput, serve, withEnvironment } from "./vite-fixtures.mjs";
+import { project, serve, serverReport, setGlobal, withEnvironment, type App } from "./vite-fixtures.mts";
 
 const WORKER = `import { WorkerEntrypoint } from "cloudflare:workers";
 let activeSockets = 0;
@@ -37,7 +37,7 @@ export default class Native extends WorkerEntrypoint {
   }
 }`;
 
-async function bundledClient(app, native) {
+async function bundledClient(app: App, native: boolean) {
   const entry = path.join(app.root, "client.ts");
   fs.writeFileSync(entry, 'export { default } from "virtual:tokamak/client";');
   const outDir = path.join(app.root, native ? "native-client" : "web-client");
@@ -63,24 +63,17 @@ test("the web client has the declared API and reports unavailable native operati
 test("generated clients reach the native Vite worker through the authenticated relay", { timeout: 30_000 }, async t => {
   const app = project({ "src/tokamak.ts": WORKER });
   const client = await bundledClient(app, true);
-  const originalSocket = globalThis.WebSocket;
-  const originalLocation = globalThis.location;
-  t.after(() => {
-    globalThis.WebSocket = originalSocket;
-    if (originalLocation === undefined) delete globalThis.location;
-    else globalThis.location = originalLocation;
-  });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "client-test" }, () => serve(app, async () => {
-    const { socketPort, url } = readOutput(app, "server.json");
-    globalThis.location = new URL(`http://127.0.0.1:${socketPort}/page`);
+    const { socketPort, url } = serverReport(app);
+    setGlobal(t, "location", new URL(`http://127.0.0.1:${socketPort}/page`));
     const headers = {
       "x-tokamak-session": "client-test",
       "x-forwarded-host": "app.tokamak.local", "x-forwarded-proto": "https",
       origin: "https://app.tokamak.local",
     };
-    globalThis.WebSocket = class extends WebSocket {
-      constructor(url) { super(url, { headers }); }
-    };
+    setGlobal(t, "WebSocket", class extends WebSocket {
+      constructor(url: string) { super(url, { headers }); }
+    });
     const value = { count: 42n, bytes: new Uint8Array([1, 2]) };
     assert.deepEqual(await client.echo(value), value);
     await assert.rejects(client.fail(), { message: "Denied", code: "DENIED" });
@@ -99,9 +92,9 @@ test("generated clients reach the native Vite worker through the authenticated r
     await assert.rejects(new Promise((resolve, reject) => {
       forbidden.once("open", resolve); forbidden.once("error", reject);
     }), /403/);
-    await assert.rejects(createClient(["event"], `http://127.0.0.1:${socketPort}/_tokamak/app`).event(),
+    await assert.rejects(createClient(["event"], `http://127.0.0.1:${socketPort}/_tokamak/app`, {}).event(),
       { name: "TypeError", message: "Unknown RPC method: event" });
-    const rejected = await new Promise((resolve, reject) => {
+    const rejected = await new Promise<number | undefined>((resolve, reject) => {
       const request = http.get(`http://127.0.0.1:${socketPort}/_tokamak/socket`, {
         headers: { ...headers, connection: "Upgrade", upgrade: "websocket",
           "sec-websocket-version": "13", "sec-websocket-key": "invalid" },
@@ -112,7 +105,7 @@ test("generated clients reach the native Vite worker through the authenticated r
       request.once("error", reject);
     });
     assert.equal(rejected, 400);
-    let active;
+    let active: string | undefined;
     for (const deadline = Date.now() + 1000; Date.now() < deadline;) {
       active = await (await fetch(`http://127.0.0.1:${socketPort}/_tokamak/active`, { headers })).text();
       if (active === "0") break;

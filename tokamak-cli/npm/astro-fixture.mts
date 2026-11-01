@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { temporaryProject, workerTypes } from "./worker-fixtures.mjs";
+import type { TestContext } from "node:test";
 
-export function project(t, options = {}) {
-  const wrangler = {
+import type { Options as CloudflareOptions } from "@astrojs/cloudflare";
+import { temporaryProject, workerTypes } from "./worker-fixtures.mts";
+
+export function project(t: TestContext, options: CloudflareOptions = {}) {
+  const wrangler: Record<string, unknown> = {
     name: "astro-app", main: "@astrojs/cloudflare/entrypoints/server", compatibility_date: "2026-09-01",
     compatibility_flags: ["nodejs_compat"], assets: { directory: "../dist/client", binding: "ASSETS" },
     vars: { LABEL: "default" },
@@ -44,6 +46,6 @@ export function project(t, options = {}) {
       describe(): string { return this.env.LABEL + " " + greeting; }
     }`,
   });
-  fs.symlinkSync(fileURLToPath(new URL("./node_modules", import.meta.url)), path.join(root, "node_modules"), "junction");
+  fs.symlinkSync(path.join(import.meta.dirname, "node_modules"), path.join(root, "node_modules"), "junction");
   return { root, wrangler };
 }

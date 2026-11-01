@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { discoverPlugins } from "./dist/plugin-manifest.mjs";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
-import { project } from "./plugin-service-fixture.mjs";
+import { project } from "./plugin-service-fixture.mts";
 
 test("workspace plugin packages resolve without publishing or exporting their manifest", t => {
   const { root, dependency } = project(t);
@@ -126,7 +126,7 @@ test("browser implementations must match the generated frontend API", async t =>
 
 test("a @platforms tag names the platforms that implement a plugin method; others run on every platform the plugin builds for", async t => {
   const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/plugin")));
-  const api = names => `import { Plugin } from ${sdk};
+  const api = (names: string) => `import { Plugin } from ${sdk};
     class Widgets extends Plugin {
       constructor(ctx: TokamakContext) { super(ctx, "widgets"); }
       echo(value: string): Promise<string> { return this.call("echo", value); }
@@ -139,8 +139,8 @@ test("a @platforms tag names the platforms that implement a plugin method; other
     export function widgets(ctx: TokamakContext): Widgets { return new Widgets(ctx); }`;
   const { root, dependency } = project(t);
   const manifest = path.join(dependency, "tokamak-plugin.json");
-  const source = names => fs.writeFileSync(path.join(dependency, "src/index.ts"), `import type { TokamakContext } from ${sdk};\n${api(names)}`);
-  const write = fields => fs.writeFileSync(manifest, JSON.stringify({
+  const source = (names: string) => fs.writeFileSync(path.join(dependency, "src/index.ts"), `import type { TokamakContext } from ${sdk};\n${api(names)}`);
+  const write = (fields: Record<string, unknown>) => fs.writeFileSync(manifest, JSON.stringify({
     schemaVersion: 2, id: "widgets", api: { module: "./src/index.ts", export: "widgets" },
     platforms: { ios: {}, android: {} }, ...fields,
   }));
@@ -161,7 +161,7 @@ test("a @platforms tag names the platforms that implement a plugin method; other
   for (const [names, message] of [
     ["ios macos", /widgets\.connected: @platforms names macos, which the plugin does not build for \(ios, android\)/],
     ["", /widgets\.connected: @platforms names no platform/],
-  ]) {
+  ] as const) {
     source(names);
     await assert.rejects(graph, message);
   }

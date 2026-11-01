@@ -4,8 +4,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { project } from "./plugin-service-fixture.mjs";
-import { readOutput, serve } from "./vite-fixtures.mjs";
+import { project } from "./plugin-service-fixture.mts";
+import { serve, serverReport } from "./vite-fixtures.mts";
 
 test("workspace API references reload; changing installed plugins requires restarting tok dev", async t => {
   const { root, dependency } = project(t);
@@ -20,13 +20,13 @@ test("workspace API references reload; changing installed plugins requires resta
     }
   };`);
   await serve(app, async server => {
-    const failures = [];
+    const failures: string[] = [];
     const logError = server.config.logger.error;
     server.config.logger.error = (message, options) => { failures.push(message); logError(message, options); };
     let restarted;
     const restart = server.restart.bind(server);
     server.restart = (...args) => restarted = restart(...args);
-    const { url } = readOutput(app, "server.json");
+    const { url } = serverReport(app);
     assert.deepEqual(await (await fetch(url)).json(), { bindings: ["TOKAMAK_WIDGETS"], value: "hello" });
     const context = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/plugin")));
     fs.writeFileSync(path.join(dependency, "src/other.ts"), `import type { TokamakContext } from ${context};
@@ -34,7 +34,7 @@ test("workspace API references reload; changing installed plugins requires resta
     fs.writeFileSync(path.join(dependency, "tokamak-plugin.json"), JSON.stringify({
       schemaVersion: 2, id: "widgets", api: { module: "./src/other.ts", export: "gadgets" },
     }));
-    let result;
+    let result: { value?: string } | undefined;
     for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
       // Restart briefly closes the listening socket.
       const response = await fetch(url).catch(() => undefined);

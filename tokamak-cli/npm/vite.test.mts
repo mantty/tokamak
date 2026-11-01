@@ -1,4 +1,4 @@
-import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
+import { decodeDevice, encodeDevice, type DeviceMessage } from "./fixtures/native-device.mts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { tokamak } from "@tokamakdev/tok/vite";
 import { createBuilder, createServer } from "vite";
-import WebSocket from "ws";
+import WebSocket, { type RawData } from "ws";
 
 import {
   WORKER,
@@ -19,10 +19,13 @@ import {
   project,
   readOutput,
   reported,
+  serverReport,
   serve,
   viteConfig,
   withEnvironment,
-} from "./vite-fixtures.mjs";
+  type App,
+} from "./vite-fixtures.mts";
+import { localURL } from "./worker-fixtures.mts";
 
 test("builds the portable worker for a web deployment", async () => {
   const app = project({ "src/tokamak.ts": "this native module is not valid JavaScript" });
@@ -58,7 +61,7 @@ test("reports its options, without module, and the Vite root", async () => {
 });
 
 /** Whether `worker` exports `name`. */
-const exportsName = (worker, name) => new RegExp(`export \\{[^}]*\\b${name}\\b[^}]*\\}`).test(worker);
+const exportsName = (worker: string, name: string) => new RegExp(`export \\{[^}]*\\b${name}\\b[^}]*\\}`).test(worker);
 
 test("reports an empty configuration without options, and builds without a module", async () => {
   const app = project();
@@ -77,7 +80,7 @@ export const named = "named";
 ${WORKER}`;
 
 /** A module that marks the Worker as loaded by `name`. */
-const marking = (name) => `${NATIVE_WORKER}\nglobalThis.tokamakLoaded = ${JSON.stringify(name)};\n`;
+const marking = (name: string) => `${NATIVE_WORKER}\nglobalThis.tokamakLoaded = ${JSON.stringify(name)};\n`;
 
 test("uses src/tokamak.ts for the native worker and keeps the main worker's exports", async () => {
   const app = project({
@@ -123,7 +126,7 @@ test("evaluates the module in the development Worker", async () => {
       export default class Native extends WorkerEntrypoint { loaded(): string { return "tokamak.ts"; } }`,
   });
   await serve(app, async () => {
-    const response = await fetch(readOutput(app, "server.json").url);
+    const response = await fetch(serverReport(app).url);
     assert.equal(await response.text(), "tokamak.ts");
   });
 });
@@ -131,13 +134,16 @@ test("evaluates the module in the development Worker", async () => {
 test("reports the development server's port when the configured one is taken", async () => {
   const app = project();
   const taken = net.createServer();
-  await new Promise((resolve) => taken.listen(0, "127.0.0.1", resolve));
-  const port = taken.address().port;
+  await new Promise<void>((resolve) => taken.listen(0, "127.0.0.1", resolve));
+  const address = taken.address();
+  assert.ok(typeof address === "object" && address !== null);
+  const { port } = address;
   const server = await createServer(viteConfig(app, { server: { host: "127.0.0.1", port } }));
   try {
     await server.listen();
-    const { url } = await reported(app, "server.json");
-    assert.equal(url, server.resolvedUrls.local[0]);
+    await reported(app, "server.json");
+    const { url } = serverReport(app);
+    assert.equal(url, localURL(server));
     assert.notEqual(new URL(url).port, String(port));
     assert.equal(await (await fetch(url)).text(), "worker");
   } finally {
@@ -148,7 +154,7 @@ test("reports the development server's port when the configured one is taken", a
 
 test("reports the Worker's name with the development server", async () => {
   const app = project();
-  await serve(app, () => assert.equal(readOutput(app, "server.json").workerName, "app"));
+  await serve(app, () => assert.equal(serverReport(app).workerName, "app"));
 });
 
 test("reports again when the development server restarts", async () => {
@@ -157,8 +163,9 @@ test("reports again when the development server restarts", async () => {
     fs.rmSync(app.output, { recursive: true });
     await server.restart();
     assert.deepEqual(readOutput(app, "config.json").config, { name: "App" });
-    assert.equal((await reported(app, "server.json")).url, server.resolvedUrls.local[0]);
-    assert.equal(await (await fetch(server.resolvedUrls.local[0])).text(), "worker");
+    await reported(app, "server.json");
+    assert.equal(serverReport(app).url, localURL(server));
+    assert.equal(await (await fetch(localURL(server))).text(), "worker");
   });
 });
 
@@ -173,7 +180,9 @@ test("reports that a development server in middleware mode has no address", asyn
   const app = project();
   const server = await createServer(viteConfig(app, { server: { middlewareMode: true } }));
   try {
-    assert.match(readOutput(app, "server.json").error, /middleware mode.*tok dev needs Vite's own dev server/);
+    const report = readOutput(app, "server.json");
+    assert.ok("error" in report);
+    assert.match(report.error, /middleware mode.*tok dev needs Vite's own dev server/);
   } finally {
     await server.close();
   }
@@ -184,11 +193,11 @@ test("keeps the reported development server when a middleware-mode server starts
   await serve(app, async (server) => {
     const beside = await createServer(viteConfig(app, { server: { middlewareMode: true } }));
     await beside.close();
-    assert.equal(readOutput(app, "server.json").url, server.resolvedUrls.local[0]);
+    assert.equal(serverReport(app).url, localURL(server));
   });
 });
 
-const fixture = (name) => fileURLToPath(new URL(`fixtures/${name}`, import.meta.url));
+const fixture = (name: string) => path.join(import.meta.dirname, "fixtures", name);
 
 test("reports the certificate an HTTPS development server serves, in each form Vite reads", async () => {
   const key = fs.readFileSync(fixture("localhost-key.pem"));
@@ -204,8 +213,8 @@ test("reports the certificate an HTTPS development server serves, in each form V
     await serve(
       app,
       (server) => {
-        const { socketPort, ...report } = readOutput(app, "server.json");
-        assert.deepEqual(report, { url: server.resolvedUrls.local[0], workerName: "app", certificates: certificate });
+        const { socketPort, ...report } = serverReport(app);
+        assert.deepEqual(report, { url: localURL(server), workerName: "app", certificates: certificate });
       },
       { https },
     );
@@ -216,7 +225,7 @@ test("reports the certificate an HTTPS development server serves, in each form V
  * A Worker project whose `file`, which `src/tokamak.ts` is or imports, replies to `start` with
  * `reply`, an expression of the event and `env`.
  */
-function listeningProject(reply, file = "src/tokamak.ts") {
+function listeningProject(reply: string, file = "src/tokamak.ts"): App {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
     "wrangler.jsonc": JSON.stringify({ name: "app", main: "src/index.ts", compatibility_date: "2026-09-01", vars: { GREETING: "hi" } }),
@@ -228,7 +237,7 @@ function listeningProject(reply, file = "src/tokamak.ts") {
 }
 
 /** A dev WebSocket to `port`, open, sending `token` as the device does. */
-async function openSocket(port, token) {
+async function openSocket(port: number, token: string | undefined): Promise<WebSocket> {
   const socket = new WebSocket(`ws://127.0.0.1:${port}`, { headers: token ? { "x-tokamak-session": token } : {} });
   await new Promise((resolve, reject) => {
     socket.once("open", resolve);
@@ -240,9 +249,9 @@ async function openSocket(port, token) {
 let messages = 0;
 
 /** Sends the event `name` on `socket` and returns the message that answers it within 30 seconds. */
-async function emit(socket, name, event) {
+async function emit(socket: WebSocket, name: string, event: unknown): Promise<DeviceMessage> {
   const id = messages++;
-  const answer = new Promise((resolve, reject) => {
+  const answer = new Promise<DeviceMessage>((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(unanswered);
       socket.off("message", receive);
@@ -250,7 +259,7 @@ async function emit(socket, name, event) {
     };
     const closed = () => { cleanup(); reject(new Error("the dev socket closed")); };
     const unanswered = setTimeout(() => { cleanup(); reject(new Error(`${name} was not answered`)); }, 30_000);
-    function receive(data) {
+    function receive(data: RawData) {
       const message = decodeDevice(data);
       if (message.id !== id) return;
       cleanup();
@@ -267,11 +276,11 @@ async function emit(socket, name, event) {
  * Makes the listener in `file` reply "second" rather than "first", and returns the reply to
  * `start` once it changes, or after 10 seconds.
  */
-async function replyAfterEditing(app, socket, file) {
+async function replyAfterEditing(app: App, socket: WebSocket, file: string): Promise<unknown> {
   const source = path.join(app.root, file);
   fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace('"first"', '"second"'));
   const deadline = Date.now() + 10_000;
-  let reply;
+  let reply: unknown;
   while ((reply = (await emit(socket, "start", {})).reply) !== "second" && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -282,7 +291,7 @@ test("delivers dev socket events to the development Worker's listeners", async (
   const app = listeningProject("{ foreground: event.foreground, greeting: env.GREETING }");
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
-      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      const socket = await openSocket(serverReport(app).socketPort, "token");
       try {
         assert.deepEqual(await emit(socket, "start", { foreground: true }), {
           type: "reply",
@@ -306,7 +315,7 @@ test("host event handlers call the main worker through the checked binding", asy
     }`);
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
-      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      const socket = await openSocket(serverReport(app).socketPort, "token");
       try {
         assert.equal((await emit(socket, "start", { foreground: true })).reply, "main reply");
         assert.equal((await emit(socket, "start", { foreground: false })).reply, "DataCloneError");
@@ -323,7 +332,7 @@ for (const file of ["src/tokamak.ts", "src/listeners.ts"]) {
     const app = listeningProject('"first"', file);
     await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
       serve(app, async () => {
-        const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+        const socket = await openSocket(serverReport(app).socketPort, "token");
         try {
           assert.equal((await emit(socket, "start", {})).reply, "first");
           assert.equal(await replyAfterEditing(app, socket, file), "second");
@@ -384,7 +393,7 @@ test("shares the listener registry with pre-bundled dependencies", async () => {
   fs.symlinkSync(core, path.join(app.root, "node_modules/@tokamakdev/plugin"), "junction");
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
-      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      const socket = await openSocket(serverReport(app).socketPort, "token");
       try {
         assert.equal((await emit(socket, "start", {})).reply, "pre-bundled");
       } finally {
@@ -398,7 +407,7 @@ test("refuses dev socket connections without the session token", async () => {
   const app = project();
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
-      const { socketPort } = readOutput(app, "server.json");
+      const { socketPort } = serverReport(app);
       for (const token of [undefined, "wrong"]) {
         await assert.rejects(openSocket(socketPort, token), /401/);
       }
@@ -407,8 +416,8 @@ test("refuses dev socket connections without the session token", async () => {
 });
 
 /** Answers each plugin call and subscription the device receives on `socket` with `answer(message, send)`. */
-function answerPluginCalls(socket, answer) {
-  const send = (message) => socket.send(encodeDevice(message));
+function answerPluginCalls(socket: WebSocket, answer: (message: DeviceMessage, send: (message: DeviceMessage) => void) => void): void {
+  const send = (message: DeviceMessage) => socket.send(encodeDevice(message));
   socket.on("message", (data) => {
     const message = decodeDevice(data);
     if (["call", "subscribe", "cancel"].includes(message.type)) answer(message, send);
@@ -416,7 +425,7 @@ function answerPluginCalls(socket, answer) {
 }
 
 /** The value of a plugin's result. */
-const result = (id, value, done = true) => ({ type: "result", id, result: { value, done } });
+const result = (id: number | undefined, value: unknown, done = true): DeviceMessage => ({ type: "result", id, result: { value, done } });
 
 test("passes the development Worker's plugin calls to the device and back", async () => {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
@@ -428,9 +437,9 @@ test("passes the development Worker's plugin calls to the device and back", asyn
   });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
-      const { url, socketPort } = readOutput(app, "server.json");
+      const { url, socketPort } = serverReport(app);
       const socket = await openSocket(socketPort, "token");
-      const calls = [];
+      const calls: string[] = [];
       answerPluginCalls(socket, (message, send) => {
         calls.push(`${message.plugin}.${message.method}`);
         send(result(message.id, "background"));
@@ -462,10 +471,10 @@ onStart((_event, _env, ctx) => {
   });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
-      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
-      const received = [];
-      const waiters = new Map();
-      const next = (type) => new Promise((resolve) => waiters.set(type, resolve));
+      const socket = await openSocket(serverReport(app).socketPort, "token");
+      const received: unknown[] = [];
+      const waiters = new Map<string, (message: DeviceMessage) => void>();
+      const next = (type: string) => new Promise<DeviceMessage>((resolve) => waiters.set(type, resolve));
       answerPluginCalls(socket, (message, send) => {
         if (message.type === "call") {
           received.push(message.arguments);

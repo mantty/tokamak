@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-import { readWorkerContracts } from "./dist/worker-contract.mjs";
-import { temporaryProject, workerTypes } from "./worker-fixtures.mjs";
+import { readWorkerContracts, type WorkerContract } from "./dist/worker-contract.mjs";
+import { temporaryProject, workerTypes } from "./worker-fixtures.mts";
 
-const readWorkerContract = (entry, root) => readWorkerContracts(entry, undefined, root, true).native;
-const readServiceContracts = (entry, root) => readWorkerContracts(undefined, entry, root, true).main;
+const readWorkerContract = (entry: string, root: string) => readWorkerContracts(entry, undefined, root, true).native;
+const readServiceContracts = (entry: string, root: string) => readWorkerContracts(undefined, entry, root, true).main;
 
-function project(t, source, files = {}, read = readWorkerContract) {
+/** Reads the Tokamak worker's contract, or with `read`, another of the project's contracts. */
+function project(t: TestContext, source: string, files?: Record<string, string>): () => WorkerContract;
+function project<T>(t: TestContext, source: string, files: Record<string, string>, read: (entry: string, root: string) => T): () => T;
+function project(t: TestContext, source: string, files: Record<string, string> = {}, read: (entry: string, root: string) => unknown = readWorkerContract) {
   const root = temporaryProject(t, "tokamak-contract-", {
     "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";\n${source}`,
     "worker-configuration.d.ts": workerTypes,
@@ -20,13 +23,14 @@ function project(t, source, files = {}, read = readWorkerContract) {
   return () => read(path.join(root, "src/tokamak.ts"), root);
 }
 
-function checkClient(contract, source) {
+function checkClient(contract: WorkerContract, source: string): void {
   const entry = contract.files.find((file) => file.endsWith("/src/tokamak.ts"));
+  assert.ok(entry);
   const root = path.dirname(path.dirname(entry));
   const declaration = path.join(root, "client.d.mts");
   const consumer = path.join(root, "consumer.mts");
   fs.writeFileSync(declaration, contract.declarations);
-  fs.writeFileSync(consumer, `import type { TokamakClient, TokamakService } from "./client.mjs";
+  fs.writeFileSync(consumer, `import type { TokamakClient, TokamakService } from "./client.mts";
     declare const client: TokamakClient;
     declare const service: TokamakService;
     ${source}`);

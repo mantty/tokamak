@@ -4,7 +4,15 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createServer } from "vite";
-import { project } from "./worker-graph-fixture.mjs";
+import { localURL } from "./worker-fixtures.mts";
+import { project } from "./worker-graph-fixture.mts";
+
+/** What the main Worker's fetch handler returns: a call's value, or the error that failed it. */
+interface Result {
+  value?: string;
+  error?: string;
+  code?: string;
+}
 
 test("generated bindings enforce the RPC contract in both directions, including captured and named bindings", async (t) => {
   const { root, config } = project(t, {
@@ -44,7 +52,7 @@ test("generated bindings enforce the RPC contract in both directions, including 
   const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
-  const get = async method => (await fetch(server.resolvedUrls.local[0] + method)).json();
+  const get = async (method: string): Promise<Result> => (await fetch(localURL(server) + method)).json();
   assert.deepEqual(await get("recipe"), { value: "recipe:3" });
   for (const method of ["argument", "handlerArgument", "invalid", "mainArgument", "mainResult"]) {
     assert.equal((await get(method)).error, "DataCloneError", method);
@@ -55,7 +63,7 @@ test("generated bindings enforce the RPC contract in both directions, including 
     .replace("title(id: number)", "heading(id: number)")
     .replace("recipes.title(3)", "recipes.heading(3)")
     .replace('"recipe:"', '"updated:"'));
-  let updated;
+  let updated: Result | undefined;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
     updated = await get("recipe");
     if (updated.value === "updated:3") break;

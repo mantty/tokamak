@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { build, dev } from "astro";
-import { project } from "./astro-fixture.mjs";
+import { project } from "./astro-fixture.mts";
 
-async function environment(root, run) {
+async function environment<T>(root: string, run: () => Promise<T>): Promise<T> {
   const values = {
     TOKAMAK_VITE_OUTPUT: path.join(root, ".tokamak/vite"),
     CLOUDFLARE_ENV: "staging",
@@ -33,7 +33,7 @@ test("Astro builds the worker graph while preserving environment settings and re
     }`);
   delete wrangler.main;
   fs.writeFileSync(path.join(root, "config/wrangler.json"), JSON.stringify(wrangler));
-  await environment(root, () => build({ root: pathToFileURL(`${root}/`), logLevel: "silent" }));
+  await environment(root, () => build({ root, logLevel: "silent" }));
   const pointer = path.join(root, ".wrangler/deploy/config.json");
   const deploy = JSON.parse(fs.readFileSync(pointer, "utf8"));
   const main = JSON.parse(fs.readFileSync(path.resolve(path.dirname(pointer), deploy.configPath), "utf8"));
@@ -42,7 +42,7 @@ test("Astro builds the worker graph while preserving environment settings and re
   assert.deepEqual(main.services, [{ binding: "TOKAMAK", service: "astro-staging-tokamak" }]);
   assert.deepEqual(native.services, [{ binding: "MAIN", service: "astro-staging" }]);
   assert.equal(native.vars.LABEL, "staging");
-  assert.ok(native.kv_namespaces.some(binding => binding.binding === "APP_SESSION"));
+  assert.ok(native.kv_namespaces.some((binding: { binding: string }) => binding.binding === "APP_SESSION"));
   assert.equal(fs.readFileSync(path.resolve(path.dirname(nativePath), native.d1_databases[0].migrations_dir, "001.sql"), "utf8"),
     "CREATE TABLE entries (value TEXT);");
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "config/wrangler.json"), "utf8")), wrangler);
@@ -54,7 +54,7 @@ test("Astro development reloads native code and local bindings without exposing 
   const vars = path.join(root, "config/.dev.vars.staging");
   fs.writeFileSync(vars, 'LABEL="local"');
   await environment(root, async () => {
-    const server = await dev({ root: pathToFileURL(`${root}/`), logLevel: "silent", server: { port: 0, host: "127.0.0.1" } });
+    const server = await dev({ root, logLevel: "silent", server: { port: 0, host: "127.0.0.1" } });
     try {
       const report = JSON.parse(fs.readFileSync(path.join(root, ".tokamak/vite/server.json"), "utf8"));
       assert.equal(report.workerName, "astro-app");
@@ -74,7 +74,7 @@ test("Astro development reloads native code and local bindings without exposing 
   });
 });
 
-async function waitForPage(root, message) {
+async function waitForPage(root: string, message: string): Promise<void> {
   let result;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
     try {
@@ -95,7 +95,7 @@ test("Astro web development serves generated clients without optimizing the serv
     '<h1>Web client</h1><script>import client from "virtual:tokamak/client"; console.log(client);</script>');
   await environment(root, async () => {
     delete process.env.TOKAMAK_VITE_OUTPUT;
-    const server = await dev({ root: pathToFileURL(`${root}/`), logLevel: "silent", server: { port: 0, host: "127.0.0.1" } });
+    const server = await dev({ root, logLevel: "silent", server: { port: 0, host: "127.0.0.1" } });
     try {
       const origin = `http://127.0.0.1:${server.address.port}`;
       assert.equal((await fetch(origin)).status, 200);

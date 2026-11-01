@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import type { TestContext } from "node:test";
 
 import { cloudflare } from "@cloudflare/vite-plugin";
 import ts from "typescript";
+import type { InlineConfig } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
-import { temporaryProject, workerTypes, writeFiles } from "./worker-fixtures.mjs";
+import { temporaryProject, workerTypes, writeFiles } from "./worker-fixtures.mts";
 
-export function project(t, sources = {}) {
+export function project(t: TestContext, sources: Record<string, string> = {}) {
   const root = temporaryProject(t, "tokamak-graph-", {
     "worker-configuration.d.ts": workerTypes,
     "wrangler.json": JSON.stringify({
@@ -34,15 +36,16 @@ export function project(t, sources = {}) {
   });
   writeFiles(path.join(root, "src"), sources);
   const graph = createWorkerGraph(root, path.join(root, "src/tokamak.ts"), path.join(root, ".tokamak"));
-  return { root, graph, config: {
+  const config: InlineConfig = {
     root, configFile: false, logLevel: "silent",
     resolve: { alias: { "@app": path.join(root, "src") } },
     plugins: [graph.plugin, cloudflare({ ...graph.cloudflare, inspectorPort: false, remoteBindings: false, persistState: false })]
-  } };
+  };
+  return { root, graph, config };
 }
 
 /** Typechecks `source` against the generated client, service and environment types of the project at `root`. */
-export function checkTypes(root, source) {
+export function checkTypes(root: string, source: string): void {
   const consumer = path.join(root, "src/typecheck.mts");
   fs.writeFileSync(consumer, `import generated, { type TokamakClient, type TokamakService } from "virtual:tokamak/client";
     declare const client: TokamakClient;

@@ -1,12 +1,27 @@
 // Projects and Vite servers for the tokamak Vite plugin's tests.
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after } from "node:test";
+import { after, type TestContext } from "node:test";
 
-import { tokamak } from "@tokamakdev/tok/vite";
-import { createBuilder, createServer } from "vite";
-import { workerTypes, writeFiles } from "./worker-fixtures.mjs";
+import { tokamak, type TokamakOptions } from "@tokamakdev/tok/vite";
+import { createBuilder, createServer, type InlineConfig, type ServerOptions, type ViteDevServer } from "vite";
+import type { ConfigReport, ServerFailure, ServerReport } from "./dist/native-worker.mjs";
+import { workerTypes, writeFiles } from "./worker-fixtures.mts";
+
+/** A project for the plugin, with the plugin's options and the directory it reports to. */
+export interface App {
+  root: string;
+  options?: TokamakOptions;
+  output: string;
+}
+
+/** The reports the plugin writes, by file name. */
+interface Reports {
+  "config.json": ConfigReport;
+  "server.json": ServerReport | ServerFailure;
+}
 
 export const WORKER = `export default {
   fetch() {
@@ -19,7 +34,7 @@ export const NATIVE_WORKER = `import { WorkerEntrypoint } from "cloudflare:worke
 export default class Native extends WorkerEntrypoint {}
 `;
 
-const roots = [];
+const roots: string[] = [];
 after(() => {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -29,7 +44,7 @@ process.env.MINIFLARE_REGISTRY_PATH = fs.mkdtempSync(path.join(os.tmpdir(), "tok
 roots.push(process.env.MINIFLARE_REGISTRY_PATH);
 
 /** A Worker project in a new directory, with `files` relative to its root and the plugin's `options`. */
-export function project(files = {}, options) {
+export function project(files: Record<string, string> = {}, options?: TokamakOptions): App {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-vite-")));
   roots.push(root);
   writeFiles(root, {
@@ -42,7 +57,7 @@ export function project(files = {}, options) {
 }
 
 /** The tokamak plugin as `tok` activates it for `app`. */
-export function activeTokamak(app) {
+export function activeTokamak(app: App) {
   process.env.TOKAMAK_VITE_OUTPUT = app.output;
   try {
     return tokamak(app.options, { inspectorPort: false, remoteBindings: false, persistState: false });
@@ -52,11 +67,11 @@ export function activeTokamak(app) {
 }
 
 /** Vite options for `app` with Cloudflare's plugin and the active tokamak plugin. */
-export function viteConfig(app, vite = {}) {
+export function viteConfig(app: App, vite: InlineConfig = {}): InlineConfig {
   return { root: app.root, configFile: false, logLevel: "silent", plugins: activeTokamak(app), ...vite };
 }
 
-export async function build(app, vite) {
+export async function build(app: App, vite?: InlineConfig): Promise<void> {
   const builder = await createBuilder(viteConfig(app, vite));
   await builder.buildApp();
 }
@@ -65,7 +80,7 @@ export async function build(app, vite) {
  * Runs `use` with the development server of `app`, listening on any port,
  * with Vite's `server` options, once it is reported.
  */
-export async function serve(app, use, options = {}) {
+export async function serve<T>(app: App, use: (server: ViteDevServer) => T | Promise<T>, options: ServerOptions = {}): Promise<T> {
   const server = await createServer(viteConfig(app, { server: { host: "127.0.0.1", port: 0, watch: { usePolling: true }, ...options } }));
   try {
     await server.listen();
@@ -76,7 +91,7 @@ export async function serve(app, use, options = {}) {
   }
 }
 
-export async function withEnvironment(values, run) {
+export async function withEnvironment<T>(values: Record<string, string>, run: () => T | Promise<T>): Promise<T> {
   const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
   Object.assign(process.env, values);
   try {
@@ -89,21 +104,38 @@ export async function withEnvironment(values, run) {
   }
 }
 
-export function readOutput(app, name) {
+export function readOutput<Name extends keyof Reports>(app: App, name: Name): Reports[Name] {
   return JSON.parse(fs.readFileSync(path.join(app.output, name), "utf8"));
 }
 
-/** The plugin's report `name`, once it has written it. */
-export async function reported(app, name) {
+/** The plugin's server.json, which reports a server and its URL. */
+export function serverReport(app: App): ServerReport & { url: string } {
+  const report = readOutput(app, "server.json");
+  if ("error" in report) throw new Error(report.error);
+  assert.ok(report.url, "the plugin reported no URL");
+  return { ...report, url: report.url };
+}
+
+/** Sets the global `name` to `value` until `t` ends, as a page provides the generated clients' `location` and `WebSocket`. */
+export function setGlobal(t: TestContext, name: string, value: unknown): void {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, name);
+  Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, name, previous);
+    else Reflect.deleteProperty(globalThis, name);
+  });
+}
+
+/** Waits until the plugin has written its report `name`. */
+export async function reported(app: App, name: keyof Reports): Promise<void> {
   for (const deadline = Date.now() + 5_000; !fs.existsSync(path.join(app.output, name)); ) {
     if (Date.now() > deadline) throw new Error(`the plugin did not write ${name}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  return readOutput(app, name);
 }
 
 /** The source of the Worker the build of `app` generated. */
-export function builtWorker(app, native = false) {
+export function builtWorker(app: App, native = false): string {
   const pointer = path.join(app.root, ".wrangler/deploy/config.json");
   const deploy = JSON.parse(fs.readFileSync(pointer, "utf8"));
   const config = path.resolve(path.dirname(pointer), native ? deploy.auxiliaryWorkers[0].configPath : deploy.configPath);

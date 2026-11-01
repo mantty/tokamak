@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 
-async function createRuntime(t, workers) {
+async function createRuntime(t: TestContext, workers: unknown[]) {
   const require = createRequire(import.meta.resolve('@cloudflare/vite-plugin'));
   const { Miniflare, convertV4MiniflareOptions } = await import(pathToFileURL(require.resolve('miniflare')).href);
   const runtime = new Miniflare(convertV4MiniflareOptions({ workers }));
@@ -15,11 +16,11 @@ async function createRuntime(t, workers) {
 function rpcModules() {
   return ['binding', 'client', 'endpoint', 'channel', 'frames', 'values', 'streams'].map(name => ({
     type: 'ESModule', path: `/rpc/${name}.ts`,
-    contents: stripTypeScriptTypes(fs.readFileSync(new URL(`../../plugins/core/src/rpc/${name}.ts`, import.meta.url), 'utf8')),
+    contents: stripTypeScriptTypes(fs.readFileSync(path.join(import.meta.dirname, `../../plugins/core/src/rpc/${name}.ts`), 'utf8')),
   }));
 }
 
-async function service(t, caller) {
+async function service(t: TestContext, caller: string) {
   const modules = rpcModules();
   const methods = ['echo', 'fail', 'invalid', 'count', 'ignore', 'consume', 'consumed', 'produce', 'producerCancelled', 'nested'];
   return createRuntime(t, [{

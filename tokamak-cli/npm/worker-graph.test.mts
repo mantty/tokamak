@@ -8,8 +8,8 @@ import { tokamak } from "@tokamakdev/tok/vite";
 
 import { createBuilder, createLogger, createServer } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
-import { checkTypes, project } from "./worker-graph-fixture.mjs";
-import { temporaryProject } from "./worker-fixtures.mjs";
+import { checkTypes, project } from "./worker-graph-fixture.mts";
+import { localURL, temporaryProject } from "./worker-fixtures.mts";
 
 
 
@@ -159,7 +159,7 @@ test("builds two separate bundles with generated service bindings and project al
   await builder.buildApp();
   const pointer = path.join(root, ".wrangler/deploy/config.json");
   const deploy = JSON.parse(fs.readFileSync(pointer, "utf8"));
-  const read = (file) => JSON.parse(fs.readFileSync(path.resolve(path.dirname(pointer), file), "utf8"));
+  const read = (file: string) => JSON.parse(fs.readFileSync(path.resolve(path.dirname(pointer), file), "utf8"));
   const main = read(deploy.configPath);
   const native = read(deploy.auxiliaryWorkers[0].configPath);
   assert.deepEqual(main.services, [{ binding: "TOKAMAK", service: "graph-app-tokamak" }]);
@@ -181,14 +181,14 @@ test("serves bidirectional RPC and reloads imported native code through Vite", a
   const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
-  const response = await fetch(server.resolvedUrls.local[0]);
+  const response = await fetch(localURL(server));
   assert.ok(response.ok, await response.clone().text());
   assert.deepEqual(await response.json(), { label: "configured", main: "main-only", shared: "shared-source" });
   fs.writeFileSync(path.join(root, "src/shared.ts"), 'export const shared = "updated-source";');
-  let result;
+  let result: { shared?: string } | undefined;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
-    result = await (await fetch(server.resolvedUrls.local[0])).json();
-    if (result.shared === "updated-source") break;
+    result = await (await fetch(localURL(server))).json();
+    if (result?.shared === "updated-source") break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.deepEqual(result, { label: "configured", main: "main-only", shared: "updated-source" });
@@ -210,7 +210,7 @@ test("scans the Tokamak worker's dependencies at startup instead of reloading wh
   fs.writeFileSync(path.join(dependency, "index.js"), 'export const greeting = "scanned";');
   fs.writeFileSync(path.join(dependency, "index.d.ts"), "export declare const greeting: string;");
   const logger = createLogger("info");
-  const messages = [];
+  const messages: string[] = [];
   logger.info = (message) => messages.push(message);
   const server = await createServer({
     ...config, logLevel: "info", customLogger: logger,
@@ -218,7 +218,7 @@ test("scans the Tokamak worker's dependencies at startup instead of reloading wh
   });
   t.after(() => server.close());
   await server.listen();
-  const response = await fetch(server.resolvedUrls.local[0]);
+  const response = await fetch(localURL(server));
   assert.deepEqual(await response.json(), { label: "scanned", main: "main-only", shared: "" });
   assert.deepEqual(messages.filter((message) => message.includes("new dependencies optimized")), []);
 });
@@ -261,7 +261,7 @@ test("service bindings expose validated methods and fetch while keeping events a
   const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
-  const get = (method) => fetch(server.resolvedUrls.local[0] + method);
+  const get = (method: string) => fetch(localURL(server) + method);
   assert.deepEqual(await (await get("describe")).json(), { value: "private" });
   checkTypes(root, `
     const before: Promise<string> = client.describe();
@@ -273,19 +273,21 @@ test("service bindings expose validated methods and fetch while keeping events a
   for (const method of ["event", "field"]) {
     const response = await get(method);
     assert.equal(response.status, 400, `${method} must not be exposed by the service binding`);
-    assert.match((await response.json()).error, /does not implement|not a function|not.*exposed/i);
+    const { error }: { error: string } = await response.json();
+    assert.match(error, /does not implement|not a function|not.*exposed/i);
   }
   const entry = path.join(root, "src/tokamak.ts");
   fs.writeFileSync(entry, fs.readFileSync(entry, "utf8").replace(
     'describe(): string { return this.#prefix; }',
     'added(): string { return this.#prefix + ":updated"; }',
   ));
-  let updated;
+  let updated: Response | undefined;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
     updated = await get("added");
     if (updated.ok) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  assert.ok(updated);
   assert.deepEqual(await updated.json(), { value: "private:updated" });
   assert.equal((await get("describe")).status, 400);
   checkTypes(root, `

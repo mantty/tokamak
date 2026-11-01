@@ -6,14 +6,15 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { createBuilder, createServer } from "vite";
-import { project } from "./plugin-service-fixture.mjs";
+import { project } from "./plugin-service-fixture.mts";
+import { localURL } from "./worker-fixtures.mts";
 
 test("installed plugin factories expose a named service without application forwarding methods", async t => {
   const { config } = project(t);
   const server = await createServer(config);
   t.after(() => server.close());
   await server.listen();
-  const response = await fetch(server.resolvedUrls.local[0]);
+  const response = await fetch(localURL(server));
   assert.equal(response.status, 200, await response.clone().text());
   assert.deepEqual(await response.json(), { value: "hello", connected: true });
 });
@@ -60,7 +61,7 @@ test("the generated native bundle exports plugin services and the main config se
   const main = JSON.parse(fs.readFileSync(path.resolve(directory, deployment.configPath), "utf8"));
   const nativePath = path.resolve(directory, deployment.auxiliaryWorkers[0].configPath);
   const native = JSON.parse(fs.readFileSync(nativePath, "utf8"));
-  assert.deepEqual(main.services.find(service => service.binding === "TOKAMAK_WIDGETS"), {
+  assert.deepEqual(main.services.find((service: { binding: string }) => service.binding === "TOKAMAK_WIDGETS"), {
     binding: "TOKAMAK_WIDGETS", service: native.name, entrypoint: "TOKAMAK_WIDGETS",
   });
   const source = fs.readFileSync(path.resolve(path.dirname(nativePath), native.main), "utf8");
@@ -109,14 +110,14 @@ test("plugin API edits replace the named service method list during development"
   const server = await createServer(config);
   t.after(() => server.close());
   await server.listen();
-  const url = server.resolvedUrls.local[0];
+  const url = localURL(server);
   assert.equal((await fetch(url)).status, 200);
   const source = path.join(dependency, "src/index.ts");
   fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace('echo(value: string): string { return value; }',
     'greet(value: string): string { return "hi " + value; }'));
   fs.writeFileSync(path.join(root, "main.ts"), fs.readFileSync(path.join(root, "main.ts"), "utf8")
     .replace('.echo("hello")', '.greet("hello")'));
-  let result;
+  let result: { value?: string } | undefined;
   for (const end = Date.now() + 5_000; Date.now() < end;) {
     const response = await fetch(url);
     if (response.ok) result = await response.json();

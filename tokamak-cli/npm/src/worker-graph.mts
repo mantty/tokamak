@@ -12,7 +12,8 @@ import type { DeviceRelay } from "./native.mjs";
 import type { PluginContract, WorkerContract } from "./worker-contract.mjs";
 import { WorkerTypes, type NativeService, type WorkerConfiguration } from "./worker-types.mjs";
 
-type ServiceConfiguration = Pick<WorkerConfiguration, "name" | "topLevelName" | "services" | "main" | "configPath" | "vars" | "kv_namespaces" | "d1_databases" | "r2_buckets">;
+// The parts of the main Worker's configuration the graph reads, any of which it may lack.
+type ServiceConfiguration = Partial<Pick<WorkerConfiguration, "name" | "topLevelName" | "services" | "main" | "configPath" | "vars" | "kv_namespaces" | "d1_databases" | "r2_buckets">>;
 type ServiceBindings = NonNullable<ServiceConfiguration["services"]>;
 type Auxiliary = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
 type AuxiliaryCustomizer = Extract<Extract<Auxiliary, { config: unknown }>["config"], (...args: never[]) => unknown>;

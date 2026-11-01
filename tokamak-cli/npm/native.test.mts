@@ -1,17 +1,18 @@
-let connection;
-const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await connection.call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (plugin, method, value, next, error) => connection.listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
-import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
 import WebSocket from "ws";
 
-import { SESSION_HEADER, openDevSocket } from "./dist/dev-socket.mjs";
+import { SESSION_HEADER, openDevSocket, type DevSocket } from "./dist/dev-socket.mjs";
 import { connectDevice as relayConnection } from "./dist/native.mjs";
+import { decodeDevice, encodeDevice, rawBytes, type DeviceMessage } from "./fixtures/native-device.mts";
+
+let connection: ReturnType<typeof relayConnection>;
+const nativeCall = async (plugin: string, method: string, value: unknown = null): Promise<unknown> => JSON.parse(new TextDecoder().decode(await connection.call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (plugin: string, method: string, value: unknown, next: (value: unknown) => void, error: (error: DOMException) => void) => connection.listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
 
 const TOKEN = "token";
-let opened;
+let opened: DevSocket | undefined;
 
 afterEach(async () => {
   await opened?.close();
@@ -24,15 +25,15 @@ afterEach(async () => {
  */
 async function devSocket() {
   opened = await openDevSocket("app", TOKEN);
-  const waited = [];
+  const waited: Promise<unknown>[] = [];
   connection = relayConnection({ port: opened.port, token: TOKEN }, { waitUntil: (promise) => waited.push(promise) });
   return { port: opened.port, waited };
 }
 
 /** A device on the dev socket at `port` that passes each message to `answer(message, send)`. */
-async function connectDevice(port, answer) {
+async function connectDevice(port: number, answer: (message: DeviceMessage, send: (message: DeviceMessage) => void) => void): Promise<WebSocket> {
   const socket = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
-  const send = (message) => socket.send(encodeDevice(message));
+  const send = (message: DeviceMessage) => socket.send(encodeDevice(message));
   socket.on("message", (data) => answer(decodeDevice(data), send));
   await new Promise((resolve, reject) => {
     socket.once("open", resolve);
@@ -42,20 +43,20 @@ async function connectDevice(port, answer) {
 }
 
 /** Collects what a listener receives, resolving `ended` once `count` items have arrived. */
-function collector(count) {
-  const received = [];
-  let resolve;
-  const ended = new Promise((done) => (resolve = done));
-  const add = (item) => {
+function collector(count: number) {
+  const received: unknown[] = [];
+  let resolve: () => void;
+  const ended = new Promise<void>((done) => (resolve = done));
+  const add = (item: unknown) => {
     received.push(item);
     if (received.length === count) resolve();
   };
-  return { received, ended, next: (value) => add(value), error: (error) => add(`${error.name}: ${error.message}`) };
+  return { received, ended, next: (value: unknown) => add(value), error: (error: DOMException) => add(`${error.name}: ${error.message}`) };
 }
 
 test("calls a plugin on the device and resolves with its value", async () => {
   const { port } = await devSocket();
-  const requests = [];
+  const requests: DeviceMessage[] = [];
   await connectDevice(port, (message, send) => {
     requests.push(message);
     send({ type: "result", id: message.id, result: { value: { latitude: 51.5 }, done: true } });
@@ -71,9 +72,9 @@ test("calls a plugin on the device and resolves with its value", async () => {
 
 test("cancels an abandoned native call while allowing another call to complete", { timeout: 5000 }, async () => {
   const { port } = await devSocket();
-  let started, cancelled;
-  const called = new Promise((resolve) => (started = resolve));
-  const stopped = new Promise((resolve) => (cancelled = resolve));
+  let started: (id: number | undefined) => void, cancelled: (id: number | undefined) => void;
+  const called = new Promise<number | undefined>((resolve) => (started = resolve));
+  const stopped = new Promise<number | undefined>((resolve) => (cancelled = resolve));
   await connectDevice(port, (message, send) => {
     if (message.type === "cancel") {
       cancelled(message.id);
@@ -125,8 +126,8 @@ test("waits for the device to connect", async () => {
 
 test("streams subscription results to a listener until it is removed", async () => {
   const { port, waited } = await devSocket();
-  const messages = [];
-  let cancelled;
+  const messages: string[] = [];
+  let cancelled: (id: number | undefined) => void;
   const removed = new Promise((resolve) => (cancelled = resolve));
   await connectDevice(port, (message, send) => {
     messages.push(message.type);
@@ -193,12 +194,12 @@ test("refuses plugin calls without the session token", async () => {
 
 test("cancels on the dev WebSocket that carried the subscription", async () => {
   const { port } = await devSocket();
-  const first = [];
-  const second = [];
-  let subscribed;
-  const subscription = new Promise((resolve) => (subscribed = resolve));
-  let cancelled;
-  const removed = new Promise((resolve) => (cancelled = resolve));
+  const first: string[] = [];
+  const second: string[] = [];
+  let subscribed: () => void;
+  const subscription = new Promise<void>((resolve) => (subscribed = resolve));
+  let cancelled: () => void;
+  const removed = new Promise<void>((resolve) => (cancelled = resolve));
   await connectDevice(port, (message) => {
     first.push(message.type);
     if (message.type === "subscribe") subscribed();
@@ -220,9 +221,9 @@ test("byte endpoints preserve binary calls and streams including subarray offset
   const { port, waited } = await devSocket();
   const device = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
   await new Promise(resolve => device.once("open", resolve));
-  const received = [];
+  const received: number[][] = [];
   device.on("message", bytes => {
-    const { header, payload } = decodeMessage(bytes);
+    const { header, payload } = decodeMessage(rawBytes(bytes));
     received.push(Array.from(payload));
     device.send(encodeMessage({ type: "result", id: header.id, done: true }, payload));
   });
@@ -232,7 +233,7 @@ test("byte endpoints preserve binary calls and streams including subarray offset
   const pending = native.call("bytes", "echo", input);
   input.fill(42);
   assert.deepEqual(await pending, expected);
-  const values = [];
+  const values: [number[], boolean][] = [];
   native.listen("bytes", "watch", expected, { next: (value, done) => values.push([Array.from(value), done]), error: assert.fail });
   await Promise.all(waited);
   assert.deepEqual(received, [[0, 255, 192, 175], [0, 255, 192, 175]]);
@@ -243,7 +244,7 @@ test("listener exceptions are reported without becoming native failures", async 
   const { port, waited } = await devSocket();
   await connectDevice(port, (message, send) => send({ type: "result", id: message.id, result: { value: 1, done: true } }));
   const previous = globalThis.reportError;
-  const reported = [];
+  const reported: unknown[] = [];
   const failure = new Error("consumer failed");
   globalThis.reportError = error => reported.push(error);
   try {
@@ -259,6 +260,7 @@ test("malformed routing closes only the offending device connection", async () =
   const broken = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
   await new Promise(resolve => broken.once("open", resolve));
   const closed = new Promise(resolve => broken.once("close", resolve));
+  // @ts-expect-error A null routing header is malformed.
   broken.send(encodeMessage(null));
   assert.equal(await closed, 1002);
   await connectDevice(port, (message, send) => send({ type: "result", id: message.id, result: { value: "alive", done: true } }));
@@ -270,7 +272,7 @@ test("error replies retain recoverable and terminal completion status", async ()
   await connectDevice(port, (message, send) => {
     for (const done of [false, true]) send({ type: "result", id: message.id, result: { error: { name: "NotReadableError", message: "No fix" }, done } });
   });
-  const failures = [];
+  const failures: [string, boolean][] = [];
   connection.listen("location", "watch", new Uint8Array(), { next: assert.fail, error: (error, done) => failures.push([error.name, done]) });
   await Promise.all(waited);
   assert.deepEqual(failures, [["NotReadableError", false], ["NotReadableError", true]]);
@@ -281,9 +283,9 @@ test("a call's body reaches the device one chunk per pull", { timeout: 5000 }, a
   const { port } = await devSocket();
   const device = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
   await new Promise(resolve => device.once("open", resolve));
-  const received = [];
+  const received: [string, number[], boolean][] = [];
   device.on("message", bytes => {
-    const { header, payload } = decodeMessage(bytes);
+    const { header, payload } = decodeMessage(rawBytes(bytes));
     received.push([header.type, Array.from(payload), header.done === true]);
     if (header.type === "chunk" && header.done) {
       device.send(encodeMessage({ type: "result", id: header.id, done: true }, new TextEncoder().encode("3")));
@@ -308,9 +310,9 @@ test("a call's body reaches the device one chunk per pull", { timeout: 5000 }, a
 
 test("aborting a call cancels it on the device and rejects with the reason", { timeout: 5000 }, async () => {
   const { port } = await devSocket();
-  const types = [];
-  let cancelled;
-  const cancel = new Promise(resolve => (cancelled = resolve));
+  const types: string[] = [];
+  let cancelled: () => void;
+  const cancel = new Promise<void>(resolve => (cancelled = resolve));
   await connectDevice(port, (message) => {
     types.push(message.type);
     if (message.type === "cancel") cancelled();
@@ -326,7 +328,7 @@ test("aborting a call cancels it on the device and rejects with the reason", { t
 
 test("a subscription's overflow policy reaches the device", { timeout: 5000 }, async () => {
   const { port, waited } = await devSocket();
-  let policy;
+  let policy: string | undefined;
   await connectDevice(port, (message, send) => {
     policy = message.overflow;
     send({ type: "result", id: message.id, result: { value: 1, done: true } });

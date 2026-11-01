@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { project, readOutput, serve, withEnvironment } from "./vite-fixtures.mjs";
+import { project, serve, serverReport, withEnvironment } from "./vite-fixtures.mts";
 
 // Cloudflare's plugin keeps the named exports of the first development Worker
 // in a process for later servers, so a Worker of another name, as in another
@@ -16,6 +16,6 @@ test("reports the Worker's top-level name with the development server of an envi
     }),
   });
   await withEnvironment({ CLOUDFLARE_ENV: "staging" }, () =>
-    serve(app, () => assert.equal(readOutput(app, "server.json").workerName, "app")),
+    serve(app, () => assert.equal(serverReport(app).workerName, "app")),
   );
 });

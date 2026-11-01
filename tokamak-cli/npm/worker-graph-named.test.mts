@@ -4,10 +4,11 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createServer } from "vite";
-import { checkTypes, project } from "./worker-graph-fixture.mjs";
+import { localURL } from "./worker-fixtures.mts";
+import { checkTypes, project } from "./worker-graph-fixture.mts";
 
 // Cloudflare's Vite plugin keeps each Worker's exports for the process, so a
-// project serving other exports than worker-graph.test.mjs's runs on its own.
+// project serving other exports than worker-graph.test.mts's runs on its own.
 test("named Tokamak entrypoints get generated bindings, clients and routes", async (t) => {
   const { root, graph, config } = project(t, {
     "main.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
@@ -41,12 +42,12 @@ test("named Tokamak entrypoints get generated bindings, clients and routes", asy
   const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
-  const response = await fetch(server.resolvedUrls.local[0]);
+  const response = await fetch(localURL(server));
   assert.ok(response.ok, await response.clone().text());
   assert.deepEqual(await response.json(), { pulled: [0, 1] });
 
   // The main Worker's bindings are set when the server starts.
-  const warnings = [];
+  const warnings: string[] = [];
   server.config.logger.warnOnce = message => warnings.push(message);
   const entry = path.join(root, "src/tokamak.ts");
   fs.appendFileSync(entry, `

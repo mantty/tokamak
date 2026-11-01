@@ -7,10 +7,10 @@ import { build as viteBuild } from "vite";
 import WebSocket from "ws";
 
 import { createClientPlugin } from "./dist/client.mjs";
-import { project } from "./plugin-service-fixture.mjs";
-import { readOutput, serve, withEnvironment } from "./vite-fixtures.mjs";
+import { project } from "./plugin-service-fixture.mts";
+import { serve, serverReport, setGlobal, withEnvironment } from "./vite-fixtures.mts";
 
-async function client(root, native) {
+async function client(root: string, native: boolean) {
   const entry = path.join(root, "client.ts");
   fs.writeFileSync(entry, 'export { default } from "example-widgets/client";');
   const outDir = path.join(root, native ? "native-client" : "web-client");
@@ -40,23 +40,16 @@ test("a generated package client calls its plugin without an app-native entrypoi
   `);
   const plugin = await client(root, true);
   const app = { root, output: path.join(root, ".tokamak/vite") };
-  const originalSocket = globalThis.WebSocket;
-  const originalLocation = globalThis.location;
-  t.after(() => {
-    globalThis.WebSocket = originalSocket;
-    if (originalLocation === undefined) delete globalThis.location;
-    else globalThis.location = originalLocation;
-  });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "plugin-client-test" }, () => serve(app, async () => {
-    const { socketPort } = readOutput(app, "server.json");
-    globalThis.location = new URL(`http://127.0.0.1:${socketPort}/page`);
-    globalThis.WebSocket = class extends WebSocket {
-      constructor(url) { super(url, { headers: {
+    const { socketPort } = serverReport(app);
+    setGlobal(t, "location", new URL(`http://127.0.0.1:${socketPort}/page`));
+    setGlobal(t, "WebSocket", class extends WebSocket {
+      constructor(url: string) { super(url, { headers: {
         "x-tokamak-session": "plugin-client-test",
         "x-forwarded-host": "app.tokamak.local", "x-forwarded-proto": "https",
         origin: "https://app.tokamak.local",
       } }); }
-    };
+    });
     const value = { count: 42n, bytes: new Uint8Array([1, 2]) };
     assert.deepEqual(plugin.capabilities, { echo: true, connected: false, fail: true });
     assert.deepEqual(await plugin.echo(value), value);

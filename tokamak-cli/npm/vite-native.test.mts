@@ -1,17 +1,19 @@
-import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
+import { decodeDevice, encodeDevice, type DeviceMessage } from "./fixtures/native-device.mts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
-import { createBuilder, createServer, resolveConfig } from "vite";
+import type { PluginConfig } from "@cloudflare/vite-plugin";
+import { createBuilder, createServer, resolveConfig, type InlineConfig, type Plugin } from "vite";
 import WebSocket from "ws";
 
 import { tokamak } from "./dist/vite.mjs";
-import { temporaryProject, workerTypes } from "./worker-fixtures.mjs";
+import { temporaryProject, workerTypes } from "./worker-fixtures.mts";
 
-function project(t, cloudflareOptions = {}) {
+function project(t: TestContext, cloudflareOptions: PluginConfig = {}) {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const sdk = fileURLToPath(import.meta.resolve("@tokamakdev/tok"));
   const context = fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker"));
@@ -51,7 +53,7 @@ function project(t, cloudflareOptions = {}) {
   process.env.TOKAMAK_BUILD_DIR = path.join(root, "build");
   process.env.TOKAMAK_SESSION_TOKEN = "native-test";
   process.env.TOKAMAK_PLATFORM = "android";
-  let plugins;
+  let plugins: Plugin[];
   try {
     plugins = tokamak({ name: "Native App", version: "1.0.0" }, {
       inspectorPort: false, remoteBindings: false, persistState: false, ...cloudflareOptions,
@@ -62,13 +64,14 @@ function project(t, cloudflareOptions = {}) {
     delete process.env.TOKAMAK_SESSION_TOKEN;
     delete process.env.TOKAMAK_PLATFORM;
   }
-  return { root, output, config: { root, configFile: false, logLevel: "silent", plugins } };
+  const config: InlineConfig = { root, configFile: false, logLevel: "silent", plugins };
+  return { root, output, config };
 }
 
-function deployment(root) {
+function deployment(root: string) {
   const pointer = path.join(root, ".wrangler/deploy/config.json");
   const config = JSON.parse(fs.readFileSync(pointer, "utf8"));
-  return [config.configPath, ...config.auxiliaryWorkers.map(worker => worker.configPath)].map(file => {
+  return [config.configPath, ...config.auxiliaryWorkers.map((worker: { configPath: string }) => worker.configPath)].map((file: string) => {
     const absolute = path.resolve(path.dirname(pointer), file);
     const config = JSON.parse(fs.readFileSync(absolute, "utf8"));
     return { config, source: fs.readFileSync(path.resolve(path.dirname(absolute), config.main), "utf8") };
@@ -105,13 +108,14 @@ test("Cloudflare configuration customizations apply to both worker bundles", asy
 });
 
 test("a user binding cannot replace the generated native worker binding", async t => {
-  for (const [binding, user] of [
+  const reserved: [string, PluginConfig["config"]][] = [
     ["TOKAMAK", { services: [{ binding: "TOKAMAK", service: "somewhere-else" }] }],
     ["MAIN", { vars: { MAIN: "shadowed" } }],
     ["TOKAMAK", { ai: { binding: "TOKAMAK" } }],
     ["MAIN", { durable_objects: { bindings: [{ name: "MAIN", class_name: "Counter" }] } }],
     ["MAIN", { queues: { producers: [{ binding: "MAIN", queue: "jobs" }] } }],
-  ]) {
+  ];
+  for (const [binding, user] of reserved) {
     const { config } = project(t, { config: user });
     await assert.rejects(createBuilder(config), new RegExp(`${binding} is reserved`));
   }
@@ -119,8 +123,10 @@ test("a user binding cannot replace the generated native worker binding", async 
 
 test("the development server leaves tok's build directory unwatched, beside the project's own ignored paths", async t => {
   const { root, config } = project(t);
-  const ignored = (await resolveConfig({ ...config, server: { watch: { ignored: ["**/fixtures/**"] } } }, "serve")).server.watch.ignored;
-  const ignores = file => ignored.some(matcher => typeof matcher === "function" && matcher(file));
+  const { watch } = (await resolveConfig({ ...config, server: { watch: { ignored: ["**/fixtures/**"] } } }, "serve")).server;
+  const ignored = watch?.ignored;
+  assert.ok(Array.isArray(ignored));
+  const ignores = (file: string) => ignored.some(matcher => typeof matcher === "function" && matcher(file));
   assert.ok(ignored.includes("**/fixtures/**"));
   assert.equal(ignores(path.join(root, "build")), true);
   assert.equal(ignores(path.join(root, "build", "windows", "native-app", "native-app.exe")), true);
@@ -149,8 +155,8 @@ test("development routes device calls and reloaded events through the native wor
   });
   t.after(() => socket.close());
   await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
-  const calls = [];
-  const pending = new Map();
+  const calls: string[] = [];
+  const pending = new Map<number | undefined, (message: DeviceMessage) => void>();
   socket.on("message", data => {
     const message = decodeDevice(data);
     if (message.type === "call") {
@@ -162,7 +168,7 @@ test("development routes device calls and reloaded events through the native wor
     }
   });
   const event = async (name = "start") => {
-    const result = new Promise(resolve => pending.set(100, resolve));
+    const result = new Promise<DeviceMessage>(resolve => pending.set(100, resolve));
     socket.send(encodeDevice({ type: "event", id: 100, name, event: { foreground: false } }));
     return result;
   };
@@ -179,13 +185,14 @@ test("development routes device calls and reloaded events through the native wor
   assert.deepEqual((await event()).reply, { label: "configured", foreground: false, revision: "first", stage: "background" });
   const listeners = path.join(root, "src/listeners.ts");
   fs.writeFileSync(listeners, fs.readFileSync(listeners, "utf8").replace('"first"', '"second"'));
-  let updated;
+  const second = { label: "configured", foreground: false, revision: "second", stage: "background" };
+  let updated: DeviceMessage | undefined;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
     updated = await event();
-    if (updated.reply?.revision === "second") break;
+    if (isDeepStrictEqual(updated.reply, second)) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.deepEqual(updated.reply, { label: "configured", foreground: false, revision: "second", stage: "background" });
+  assert.deepEqual(updated?.reply, second);
   const entry = path.join(root, "src/tokamak.ts");
   fs.writeFileSync(entry, fs.readFileSync(entry, "utf8").replace(
     "async describe()",
@@ -194,10 +201,11 @@ test("development routes device calls and reloaded events through the native wor
     }
     async describe()`,
   ));
+  const handled = { type: "plugin.background", data: { foreground: false }, stage: "background" };
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
     updated = await event("plugin.background");
-    if (updated.reply?.type === "plugin.background") break;
+    if (isDeepStrictEqual(updated.reply, handled)) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.deepEqual(updated.reply, { type: "plugin.background", data: { foreground: false }, stage: "background" });
+  assert.deepEqual(updated?.reply, handled);
 });

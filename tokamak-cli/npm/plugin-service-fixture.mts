@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { cloudflare } from "@cloudflare/vite-plugin";
+import type { InlineConfig } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
-import { temporaryProject, workerTypes } from "./worker-fixtures.mjs";
+import { temporaryProject, workerTypes } from "./worker-fixtures.mts";
 
-export function project(t, api = `
+export function project(t: TestContext, api = `
   export function widgets(ctx: TokamakContext) {
     return {
       echo(value: string): string { return value; },
@@ -46,7 +48,7 @@ export function project(t, api = `
   fs.mkdirSync(path.join(root, "node_modules"));
   fs.symlinkSync(dependency, path.join(root, "node_modules/example-widgets"), "dir");
   const graph = createWorkerGraph(root, undefined, path.join(root, ".tokamak"));
-  const config = {
+  const config: InlineConfig = {
     root, configFile: false, logLevel: "silent",
     server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } },
     plugins: [graph.plugin, cloudflare({

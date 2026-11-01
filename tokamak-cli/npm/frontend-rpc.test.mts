@@ -2,17 +2,34 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { WebSocketServer } from 'ws';
 import { createClient } from '../../plugins/core/src/rpc/client.ts';
 import { serveRpc } from '../../plugins/core/src/rpc/endpoint.ts';
 
-async function service(t, worker, methods) {
+/** The invocation context the tests serve RPC with, which does not retain registered work. */
+interface Context {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
+/** A worker's RPC methods, of any parameters, which reach the invocation's context as `this.ctx`. */
+type Worker = Record<string, (this: { ctx: Context }, ...args: never[]) => unknown>;
+
+/** The port `server` listens on. */
+function listeningPort(server: WebSocketServer): number {
+  const address = server.address();
+  assert.ok(typeof address === 'object' && address !== null);
+  return address.port;
+}
+
+async function service(t: TestContext, worker: Worker, methods: string[]) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   const sessions = new Set();
   server.on('connection', socket => {
-    const session = serveRpc(socket, ctx => ({ ...worker, ctx }), methods, { waitUntil() {} });
+    const context: Context = { waitUntil() {} };
+    const session = serveRpc(socket, ctx => ({ ...worker, ctx }), methods, context);
     sessions.add(session);
     session.finally(() => sessions.delete(session));
   });
@@ -22,12 +39,12 @@ async function service(t, worker, methods) {
     await Promise.all(sessions);
   });
   await once(server, 'listening');
-  return createClient(methods, `ws://127.0.0.1:${server.address().port}/_tokamak/app`);
+  return createClient(methods, `ws://127.0.0.1:${listeningPort(server)}/_tokamak/app`, {});
 }
 
 test('frontend RPC returns copied values and errors through real WebSockets', async t => {
   const client = await service(t, {
-    echo(value) { return value; },
+    echo(value: unknown) { return value; },
     fail() { throw Object.assign(new Error('Permission denied'), { code: 'DENIED' }); },
     unsupported() { return { callback() {} }; },
     badError() { throw Object.assign(new Error('bad'), { callback() {} }); },
@@ -43,7 +60,7 @@ test('frontend RPC returns copied values and errors through real WebSockets', as
 test('frontend RPC forwards byte streams without collecting them and propagates cancellation', async t => {
   const cancelled = Promise.withResolvers();
   const client = await service(t, {
-    echo(stream) { return stream; },
+    echo(stream: unknown) { return stream; },
   }, ['echo']);
   let pulls = 0;
   const source = new ReadableStream({
@@ -56,8 +73,10 @@ test('frontend RPC forwards byte streams without collecting them and propagates 
   });
   const result = await client.echo(source);
   assert.equal(pulls, 0);
+  assert.ok(result instanceof ReadableStream);
   const reader = result.getReader();
   const chunk = await reader.read();
+  assert.ok(chunk.value instanceof Uint8Array);
   assert.equal(chunk.value.byteLength, 64 * 1024);
   assert.ok(chunk.value.every(value => value === 4));
   assert.equal(pulls, 1);
@@ -76,7 +95,7 @@ test('frontend RPC dispatches only declared operations', async t => {
     await new Promise(resolve => server.close(resolve));
   });
   await once(server, 'listening');
-  const client = createClient(['secret'], `ws://127.0.0.1:${server.address().port}`);
+  const client = createClient(['secret'], `ws://127.0.0.1:${listeningPort(server)}`, {});
   await assert.rejects(client.secret(), { name: 'TypeError', message: 'Unknown RPC method: secret' });
   assert.equal(invoked, false);
 });
@@ -92,10 +111,13 @@ test('a rejected RPC result retains ownership of streams in its error data', asy
       });
     },
   }, ['fail']);
-  let error;
+  let error: unknown;
   try { await client.fail(); } catch (failure) { error = failure; }
+  assert.ok(error instanceof Error);
   assert.equal(error.message, 'Details attached');
-  assert.deepEqual(new Uint8Array(await new Response(error.details).arrayBuffer()), new Uint8Array([7]));
+  const details: unknown = Reflect.get(error, 'details');
+  assert.ok(details instanceof ReadableStream);
+  assert.deepEqual(new Uint8Array(await new Response(details).arrayBuffer()), new Uint8Array([7]));
 });
 
 test('a worker HTTP endpoint accepts same-origin RPC and rejects unrelated origins', { timeout: 15_000 }, async t => {
@@ -104,7 +126,7 @@ test('a worker HTTP endpoint accepts same-origin RPC and rejects unrelated origi
   const files = ['endpoint', 'channel', 'frames', 'values', 'streams'];
   const modules = files.map(name => ({
     type: 'ESModule', path: `/rpc/${name}.ts`,
-    contents: stripTypeScriptTypes(fs.readFileSync(new URL(`../../plugins/core/src/rpc/${name}.ts`, import.meta.url), 'utf8')),
+    contents: stripTypeScriptTypes(fs.readFileSync(path.join(import.meta.dirname, `../../plugins/core/src/rpc/${name}.ts`), 'utf8')),
   }));
   const miniflare = new Miniflare(convertV4MiniflareOptions({
     modulesRoot: '/',
@@ -125,9 +147,11 @@ test('a worker HTTP endpoint accepts same-origin RPC and rejects unrelated origi
   }));
   t.after(() => miniflare.dispose());
   const url = await miniflare.ready;
-  const client = createClient(['echo', 'stream'], url.href);
+  const client = createClient(['echo', 'stream'], url.href, {});
   assert.deepEqual(await client.echo({ value: 3n }), { value: 3n });
-  assert.deepEqual(new Uint8Array(await new Response(await client.stream()).arrayBuffer()), new Uint8Array([3, 4]));
+  const stream = await client.stream();
+  assert.ok(stream instanceof ReadableStream);
+  assert.deepEqual(new Uint8Array(await new Response(stream).arrayBuffer()), new Uint8Array([3, 4]));
   assert.equal((await miniflare.dispatchFetch(url)).status, 426);
   assert.equal((await miniflare.dispatchFetch(url, { method: 'POST' })).status, 405);
   assert.equal((await miniflare.dispatchFetch(url, { headers: { origin: 'https://unrelated.example' } })).status, 403);
@@ -143,19 +167,21 @@ test('settled RPC calls cancel input streams the handler does not retain', { tim
     const source = new ReadableStream({ type: 'bytes', cancel: cancelled.resolve });
     if (method === 'ignore') assert.equal(await client.ignore(source), 'finished');
     else await assert.rejects(client.fail(source), { message: 'finished' });
-    assert.equal((await cancelled.promise).name, 'AbortError');
+    const reason = await cancelled.promise;
+    assert.ok(reason instanceof DOMException);
+    assert.equal(reason.name, 'AbortError');
   }
 });
 
 test('registered background work retains an argument stream after the RPC result', { timeout: 5000 }, async t => {
-  const consumed = Promise.withResolvers();
+  const consumed = Promise.withResolvers<ArrayBuffer>();
   const client = await service(t, {
-    consume(stream) {
+    consume(stream: ReadableStream) {
       this.ctx.waitUntil(new Response(stream).arrayBuffer().then(consumed.resolve, consumed.reject));
       return 'queued';
     },
   }, ['consume']);
-  let producer, cancelled = false;
+  let producer: ReadableByteStreamController | undefined, cancelled = false;
   const source = new ReadableStream({
     type: 'bytes',
     start(controller) { producer = controller; },
@@ -163,6 +189,7 @@ test('registered background work retains an argument stream after the RPC result
   });
   assert.equal(await client.consume(source), 'queued');
   assert.equal(cancelled, false);
+  assert.ok(producer);
   producer.enqueue(new Uint8Array([5, 6]));
   producer.close();
   assert.deepEqual(new Uint8Array(await consumed.promise), new Uint8Array([5, 6]));
@@ -170,10 +197,10 @@ test('registered background work retains an argument stream after the RPC result
 
 test('work registered by a returned stream retains arguments after that stream settles', { timeout: 5000 }, async t => {
   for (const action of ['pull', 'cancel']) {
-    const consumed = Promise.withResolvers();
+    const consumed = Promise.withResolvers<ArrayBuffer>();
     consumed.promise.catch(() => {});
     const client = await service(t, {
-      consume(input) {
+      consume(input: ReadableStream) {
         const start = () => this.ctx.waitUntil(new Response(input).arrayBuffer().then(consumed.resolve, consumed.reject));
         return new ReadableStream({
           type: 'bytes',
@@ -187,9 +214,11 @@ test('work registered by a returned stream retains arguments after that stream s
         });
       },
     }, ['consume']);
-    let producer;
+    let producer: ReadableByteStreamController | undefined;
     const source = new ReadableStream({ type: 'bytes', start(controller) { producer = controller; } });
     const output = await client.consume(source);
+    assert.ok(output instanceof ReadableStream);
+    assert.ok(producer);
     if (action === 'pull') assert.equal((await output.getReader().read()).done, true);
     else await output.cancel();
     producer.enqueue(new Uint8Array([6, 7]));
