@@ -1228,7 +1228,7 @@ pub(super) fn open_promise<'js>(
     mode: Opt<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
     let handle = open_sync(ctx.clone(), input, flags, mode)
-        .and_then(|descriptor| file_handle_object(&ctx, descriptor).map(Object::into_value));
+        .and_then(|descriptor| file_handle(&ctx, descriptor));
     promise(ctx.clone(), handle)
 }
 

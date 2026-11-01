@@ -23,6 +23,7 @@ use url::Url;
 
 mod callback_api;
 pub(crate) mod exports;
+mod file_handle;
 mod filesystem_operations;
 mod glob;
 mod javascript_objects;
@@ -33,6 +34,8 @@ mod writes;
 
 #[allow(clippy::wildcard_imports)]
 use callback_api::*;
+#[allow(clippy::wildcard_imports)]
+use file_handle::*;
 #[allow(clippy::wildcard_imports)]
 use filesystem_operations::*;
 #[allow(clippy::wildcard_imports)]
@@ -49,3 +52,5 @@ pub use exports::{
     read_bundle_file, working_directory,
 };
 use exports::{VfsHandle, VfsUserData};
+#[cfg(test)]
+pub(crate) use file_handle::FileHandleState;

@@ -236,8 +236,8 @@ fn export_module<'js>(
     };
     export_constants(&module, promises_only)?;
     if promises_only {
-        let file_handle = file_handle_constructor(ctx)?;
-        module.value("FileHandle", file_handle.into_value())?;
+        let file_handle: Value = file_handle_module(ctx)?.get("FileHandle")?;
+        module.value("FileHandle", file_handle)?;
         export_promises(&module)?;
     } else {
         let dirent = dirent_constructor(ctx)?;

@@ -335,6 +335,26 @@ declare module "tokamak:host" {
     length?: number | undefined;
   }
 
+  export interface FileHandleState {
+    readonly [classBrand]: "FileHandleState";
+    readonly fd: number | undefined;
+    read(...args: unknown[]): ReadResult;
+    readv(buffers: unknown, position?: unknown): ReadvResult;
+    readFile(options?: unknown): unknown;
+    write(...args: unknown[]): WriteResult;
+    writev(...args: unknown[]): WritevResult;
+    writeFile(data: unknown, options?: unknown): WriteResult;
+    appendFile(data: unknown, options?: unknown): void;
+    stat(options?: unknown): object;
+    truncate(length?: number | undefined): void;
+    sync(): void;
+    chmod(mode: unknown): void;
+    chown(uid: number, gid: number): void;
+    utimes(atime: unknown, mtime: unknown): void;
+    close(): void;
+    readableWebStream(): ReadableStream;
+  }
+
   export interface FormattedPart {
     type: string;
     value: string;
@@ -520,6 +540,16 @@ declare module "tokamak:host" {
     rem?: Uint8Array | undefined;
   }
 
+  export interface ReadResult {
+    bytesRead: number;
+    buffer: unknown;
+  }
+
+  export interface ReadvResult {
+    bytesRead: number;
+    buffers: unknown;
+  }
+
   export interface RelativePart {
     type: string;
     value: string;
@@ -655,6 +685,16 @@ declare module "tokamak:host" {
   export interface WaitUntilObserver {
     readonly [classBrand]: "WaitUntilObserver";
     observe(pending: boolean): void;
+  }
+
+  export interface WriteResult {
+    bytesWritten: number;
+    buffer: unknown;
+  }
+
+  export interface WritevResult {
+    bytesWritten: number;
+    buffers: unknown;
   }
 }
 

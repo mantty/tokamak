@@ -1,7 +1,7 @@
 // workerd's node:fs ReadStream and WriteStream, over the callback fs API.
 import { builtinNamespace, processCwd } from "tokamak:host";
-import type { EventEmitter } from "../../events/events.ts";
-import { callFunction, callMethod, isFunction, isObject, objectOf, propertyOf } from "../../globals/objects.ts";
+import type { FileHandle } from "./file-handle.ts";
+import { callFunction, callMethod, isFunction, isObject, propertyOf } from "../../globals/objects.ts";
 import type { AnyFunction } from "../../globals/objects.ts";
 import { Readable, Writable, finished } from "../../streams/node.js";
 import { Buffer } from "../../node/buffer.ts";
@@ -21,16 +21,6 @@ const kHandle = Symbol("kHandle");
 
 /** The callback fs operations a stream performs its I/O with, which `options.fs` may replace. */
 type FsOperations = Record<"open" | "close" | "fsync" | "read" | "write" | "writev", AnyFunction>;
-
-/** A node:fs FileHandle, which carries `kFileHandle`: the members its streams use. */
-interface FileHandle extends EventEmitter {
-  readonly fd: number | undefined;
-  close(): Promise<void>;
-  sync(): Promise<void>;
-  read(...args: unknown[]): Promise<{ bytesRead: number; buffer: unknown }>;
-  write(...args: unknown[]): Promise<{ bytesWritten: number; buffer: unknown }>;
-  writev(...args: unknown[]): Promise<{ bytesWritten: number; buffers: unknown }>;
-}
 
 /** What a file stream keeps besides its stream state. */
 interface FileStream {
@@ -202,11 +192,17 @@ function fileHandleOperations(handle: FileHandle): FsOperations {
   const settle = <T>(pending: Promise<T>, cb: unknown, result: (value: T) => unknown[]) => pending.then(value => callFunction(cb, undefined, null, ...result(value)), error => callFunction(cb, undefined, error));
   return {
     open() { throw codedError(Error, "The open() method is not implemented", "ERR_METHOD_NOT_IMPLEMENTED"); },
-    close(...args: unknown[]) { settle(handle.close(), args.at(-1), () => []); },
-    fsync(...args: unknown[]) { settle(handle.sync(), args.at(-1), () => []); },
-    read(...args: unknown[]) { settle(handle.read(...args.slice(1, -1)), args.at(-1), result => [result.bytesRead, result.buffer]); },
-    write(...args: unknown[]) { settle(handle.write(...args.slice(1, -1)), args.at(-1), result => [result.bytesWritten, result.buffer]); },
-    writev(...args: unknown[]) { settle(handle.writev(...args.slice(1, -1)), args.at(-1), result => [result.bytesWritten, result.buffers]); },
+    close(_fd: unknown, cb: unknown) { settle(handle.close(), cb, () => []); },
+    fsync(_fd: unknown, cb: unknown) { settle(handle.sync(), cb, () => []); },
+    read(_fd: unknown, buffer: unknown, offset: unknown, length: unknown, position: unknown, cb: unknown) {
+      settle(handle.read(buffer, offset, length, position), cb, result => [result.bytesRead, result.buffer]);
+    },
+    write(_fd: unknown, buffer: unknown, offset: unknown, length: unknown, position: unknown, cb: unknown) {
+      settle(handle.write(buffer, offset, length, position), cb, result => [result.bytesWritten, result.buffer]);
+    },
+    writev(_fd: unknown, buffers: unknown, position: unknown, cb: unknown) {
+      settle(handle.writev(buffers, position), cb, result => [result.bytesWritten, result.buffers]);
+    },
   };
 }
 
@@ -576,13 +572,3 @@ export function createReadStream(path: unknown, options: unknown = {}) {
 export function createWriteStream(path: unknown, options: unknown = {}) {
   return new WriteStream(path, options);
 }
-
-// FileHandle's stream methods.
-export const fileHandleMethods = {
-  createReadStream(this: unknown, options: unknown = {}) {
-    return createReadStream("", { ...objectOf(options ?? {}), fd: this });
-  },
-  createWriteStream(this: unknown, options: unknown = {}) {
-    return createWriteStream("", { ...objectOf(options ?? {}), fd: this });
-  },
-};

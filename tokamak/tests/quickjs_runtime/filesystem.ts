@@ -1,6 +1,6 @@
 // Imported, since workers-types declares the global Buffer as any.
 import { Buffer } from "node:buffer";
-import type { EventEmitter } from "node:events";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import process from "node:process";
@@ -1216,6 +1216,56 @@ function shape(value: object) {
   return levels;
 }
 
+// The name and length of each function among the own properties of
+// `object`, by key, with getters named by their key.
+function functionsOf(object: object) {
+  return Reflect.ownKeys(object).map(key => {
+    const descriptor = present(Object.getOwnPropertyDescriptor(object, key));
+    const value: unknown = descriptor.get ?? descriptor.value;
+    return typeof value === "function" ? [String(key), value.name, value.length] : [String(key)];
+  });
+}
+
+// What constructing `constructor` and calling it without `new` throw.
+function constructorOutcome(constructor: Function) {
+  const Constructor = constructor as new () => unknown;
+  return {
+    constructed: attempt(() => new Constructor()),
+    called: attempt(() => Reflect.apply(constructor, undefined, [])),
+  };
+}
+
+// What a file handle method call throws, or how the promise it returns settles.
+async function callOutcome(call: () => Promise<unknown>) {
+  let pending: Promise<unknown>;
+  try { pending = call(); } catch (error) { return { thrown: failure(error) }; }
+  return pending.then(() => "resolved", (error: unknown) => ({ rejected: failure(error) }));
+}
+
+// What each method of the closed file handle `handle` does.
+async function closedHandleOutcomes(handle: FileHandle) {
+  const calls: Record<string, () => Promise<unknown>> = {
+    appendFile: () => handle.appendFile("x"),
+    chmod: () => handle.chmod(0o644),
+    chown: () => handle.chown(0, 0),
+    datasync: () => handle.datasync(),
+    sync: () => handle.sync(),
+    read: () => handle.read(Buffer.alloc(1), 0, 1, 0),
+    readv: () => handle.readv([Buffer.alloc(1)]),
+    readFile: () => handle.readFile(),
+    stat: () => handle.stat(),
+    truncate: () => handle.truncate(),
+    utimes: () => handle.utimes(0, 0),
+    write: () => handle.write(Buffer.from("x")),
+    writev: () => handle.writev([Buffer.from("x")]),
+    writeFile: () => handle.writeFile("x"),
+    readableWebStream: async () => handle.readableWebStream(),
+  };
+  const outcomes: Record<string, unknown> = {};
+  for (const [name, call] of Object.entries(calls)) outcomes[name] = await callOutcome(call);
+  return outcomes;
+}
+
 const statFields = ["dev", "ino", "mode", "nlink", "uid", "gid", "rdev", "size", "blksize", "blocks", "atimeMs"] as const;
 
 // What Stats and Dir objects look like.
@@ -1237,6 +1287,16 @@ async function shapeContracts() {
   const dir = fs.opendirSync(root);
   const dirShape = shape(dir);
   dir.closeSync();
+  const handle = await fs.promises.open(`${root}/file`, "r");
+  const handleShape = shape(handle);
+  const openFd = typeof handle.fd;
+  let closeEvents = 0;
+  const emitter = handle instanceof EventEmitter;
+  if (handle instanceof EventEmitter) handle.on("close", () => closeEvents++);
+  await handle.close();
+  await handle.close();
+  const disposed = await fs.promises.open(`${root}/file`, "r");
+  const disposal = await disposed[Symbol.asyncDispose]();
   return {
     stats: Object.fromEntries(Object.entries(stats).map(([name, stat]) => [name, {
       shape: shape(stat),
@@ -1247,6 +1307,16 @@ async function shapeContracts() {
     statsClass: [typeof fs.Stats, fs.Stats.name, attempt(() => new fs.Stats()) ?? null],
     dir: { shape: dirShape, instance: dir instanceof fs.Dir, path: dir.path },
     dirClass: [typeof fs.Dir, fs.Dir.name],
+    handle: {
+      shape: handleShape,
+      functions: functionsOf(Object.getPrototypeOf(handle)),
+      fd: [openFd, handle.fd],
+      constructor: constructorOutcome(handle.constructor),
+      emitter,
+      closeEvents,
+      closed: await closedHandleOutcomes(handle),
+      disposed: [typeof disposal, typeof disposed.fd],
+    },
   };
 }
 

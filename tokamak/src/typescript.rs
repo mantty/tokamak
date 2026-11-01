@@ -18,6 +18,9 @@ pub(crate) trait JsType {
     /// optional.
     const OPTIONAL: bool = false;
 
+    /// Whether JavaScript may give `undefined` for the value.
+    const ACCEPTS_UNDEFINED: bool = Self::OPTIONAL;
+
     /// The TypeScript type, after adding the named types it uses to `types`.
     fn typescript(types: &mut Types) -> String;
 }
@@ -47,7 +50,7 @@ impl<T: JsType> JsParameter for Opt<T> {
         // `undefined` to `T`, which `name?:` allows.
         const {
             assert!(
-                T::OPTIONAL,
+                T::ACCEPTS_UNDEFINED,
                 "an Opt parameter's type must accept undefined: use Opt<Option<T>>"
             );
         }
@@ -140,7 +143,6 @@ fixed_types! {
     usize => "number",
     f32 => "number",
     f64 => "number",
-    Value<'_> => "unknown",
     Object<'_> => "object",
     Array<'_> => "unknown[]",
     Function<'_> => "(...args: never[]) => unknown",
@@ -163,6 +165,14 @@ fixed_types! {
     TypedArray<'_, f64> => "Float64Array",
     TypedArray<'_, i64> => "BigInt64Array",
     TypedArray<'_, u64> => "BigUint64Array",
+}
+
+impl JsType for Value<'_> {
+    const ACCEPTS_UNDEFINED: bool = true;
+
+    fn typescript(_: &mut Types) -> String {
+        "unknown".to_owned()
+    }
 }
 
 /// A value converted with JavaScript's coercion rules accepts any value.
@@ -428,6 +438,8 @@ fn declarations() -> String {
         Module::new("tokamak:host", |types| {
             // `builtins/runtime.ts` exports the bootstrap that Rust reads.
             crate::dispatcher::Bootstrap::typescript(types);
+            // `fs/node/file-handle.ts` defines `FileHandle` over this state.
+            <rquickjs::Class<'_, crate::fs::node::FileHandleState>>::typescript(types);
             crate::globals::native::declarations(types)
         }),
         Module::new("tokamak:storage", crate::storage::declarations),
