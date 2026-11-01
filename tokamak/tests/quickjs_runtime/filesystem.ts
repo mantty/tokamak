@@ -1467,6 +1467,46 @@ async function writtenFile(options: WriteStreamOptions, write: (stream: fs.Write
   return { events: await events, contents: fs.readFileSync(path, "latin1"), bytesWritten: stream.bytesWritten };
 }
 
+// What a write stream over "abcdef" writes and reports when its `fs` writes at most each step's
+// number of bytes or answers EAGAIN, repeating the last step, and the positions it writes at.
+async function retriedWrite(steps: (number | "EAGAIN")[], options: WriteStreamOptions, write: (stream: fs.WriteStream) => void) {
+  const eagain = Object.assign(new Error("Resource temporarily unavailable"), { code: "EAGAIN" });
+  const positions: unknown[] = [];
+  let calls = 0;
+  const step = () => steps[Math.min(calls++, steps.length - 1)];
+  type Written<T> = (error: NodeJS.ErrnoException | null, written: number, buffer: T) => void;
+  const custom = {
+    write(fd: number, buffer: Buffer, offset: number, length: number, position: number | null, callback: Written<Buffer>) {
+      positions.push(position);
+      const limit = step();
+      if (limit === "EAGAIN") callback(eagain, 0, buffer);
+      else fs.write(fd, buffer, offset, Math.min(length, limit), position, callback);
+    },
+    writev(fd: number, buffers: Buffer[], position: number | null, callback: Written<Buffer[]>) {
+      positions.push(position);
+      const limit = step();
+      const bytes = Buffer.concat(buffers);
+      if (limit === "EAGAIN") callback(eagain, 0, buffers);
+      else fs.write(fd, bytes, 0, Math.min(bytes.length, limit), position, (error, written) => callback(error, written, buffers));
+    },
+  };
+  return { ...(await writtenFile({ ...options, fs: custom }, write)), positions };
+}
+
+// How write streams finish writes that their `fs` completes in parts, retries, or stalls.
+async function streamRetryContracts() {
+  const corked = (stream: fs.WriteStream) => { stream.cork(); stream.write("AB"); stream.write("CD"); stream.uncork(); stream.end(); };
+  return {
+    partial: await retriedWrite([2], {}, stream => stream.end("ABCDE")),
+    partialFromStart: await retriedWrite([2], { start: 1 }, stream => stream.end("ABCDE")),
+    eagain: await retriedWrite(["EAGAIN", 6], {}, stream => stream.end("ABC")),
+    stalled: await retriedWrite([0], {}, stream => stream.end("ABC")),
+    vector: await retriedWrite([3], {}, corked),
+    vectorFromStart: await retriedWrite([3], { start: 1 }, corked),
+    vectorStalled: await retriedWrite([0], {}, corked),
+  };
+}
+
 // When a write stream writes, and the events it emits around its writes.
 async function writeStreamTiming() {
   const path = "/tmp/filesystem-stream-timing.bin";
@@ -2170,6 +2210,7 @@ async function fileStreamContracts() {
     ending: await streamEndingContracts(),
     flow: await streamFlowContracts(),
     shapes: streamShapeContracts(),
+    retries: await streamRetryContracts(),
   };
 }
 

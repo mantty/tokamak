@@ -37,11 +37,6 @@ jobs:
         with:
           cache-bin: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-        with:
-          version: 9.9.0
-
       - name: Setup Node
         uses: actions/setup-node@v6.4.0
         with:
@@ -49,6 +44,11 @@ jobs:
 
       - name: Install jscpd
         run: npm install --global jscpd@5.4.2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+        with:
+          version: 9.9.0
 
       - name: Install TypeScript project dependencies
         run: |

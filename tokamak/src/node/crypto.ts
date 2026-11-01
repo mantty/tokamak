@@ -519,23 +519,30 @@ export class SecretKeyObject extends KeyObject {
     keyObjectState.set(this, { type: "secret", kind: "secret", format: "raw", bytes: Buffer.from(bytes) });
   }
 }
-/** The constructor body the signing classes share. */
-function initSigning(instance: Sign | Verify, algorithm: unknown, token: unknown) {
-  if (token !== signToken) illegalConstructor();
-  instance.__algorithm = normalizeHash(algorithm);
-  instance.__chunks = [];
-  instance.__finalized = false;
-}
-export class Sign extends Transform {
+/** The data and stream methods Sign and Verify share. */
+class SigningTransform extends Transform {
   declare __algorithm: string;
   declare __chunks: Buffer[];
   declare __finalized: boolean;
 
   constructor(algorithm: unknown, token: unknown) {
     super();
-    initSigning(this, algorithm, token);
+    if (token !== signToken) illegalConstructor();
+    this.__algorithm = normalizeHash(algorithm);
+    this.__chunks = [];
+    this.__finalized = false;
   }
-  update(value: unknown, encoding?: unknown) { return updateSigning(this, value, encoding); }
+  update(value: unknown, encoding?: unknown) {
+    if (this.__finalized) throw finalizedError();
+    this.__chunks.push(Buffer.from(value, encoding));
+    return this;
+  }
+  _transform(chunk: unknown, encoding: BufferEncoding, callback: StreamCallback) { transformUpdate(this, chunk, encoding, callback); }
+  _flush(callback: StreamCallback) { callback(); }
+}
+// Sign and Verify declare their constructors so that the length of each is 2.
+export class Sign extends SigningTransform {
+  constructor(algorithm: unknown, token: unknown) { super(algorithm, token); }
   sign(key: unknown, options?: unknown, callback?: unknown) {
     const [settings, done] = isFunction(options) ? [undefined, options] : [options, callback];
     return returnOrDeliver(done, () => {
@@ -547,19 +554,9 @@ export class Sign extends Transform {
       return outputEncoding(output, typeof settings === "string" ? settings : undefined);
     });
   }
-  _transform(chunk: unknown, encoding: BufferEncoding, callback: StreamCallback) { transformUpdate(this, chunk, encoding, callback); }
-  _flush(callback: StreamCallback) { callback(); }
 }
-export class Verify extends Transform {
-  declare __algorithm: string;
-  declare __chunks: Buffer[];
-  declare __finalized: boolean;
-
-  constructor(algorithm: unknown, token: unknown) {
-    super();
-    initSigning(this, algorithm, token);
-  }
-  update(value: unknown, encoding?: unknown) { return updateSigning(this, value, encoding); }
+export class Verify extends SigningTransform {
+  constructor(algorithm: unknown, token: unknown) { super(algorithm, token); }
   verify(key: unknown, signature?: unknown, callback?: unknown) {
     const [publicKey, actual, done] = isFunction(signature) ? [undefined, key, signature] : [key, signature, callback];
     return returnOrDeliver(done, () => {
@@ -570,8 +567,6 @@ export class Verify extends Transform {
       return value;
     });
   }
-  _transform(chunk: unknown, encoding: BufferEncoding, callback: StreamCallback) { transformUpdate(this, chunk, encoding, callback); }
-  _flush(callback: StreamCallback) { callback(); }
 }
 export const X509Certificate = class X509Certificate { constructor() { illegalConstructor(); } };
 
@@ -582,12 +577,6 @@ function keySettings(input: unknown) {
 
 function flushDigest(instance: Hash, callback: StreamCallback) {
   try { callback(null, instance.digest()); } catch (error) { callback(error); }
-}
-
-function updateSigning<T extends Sign | Verify>(instance: T, value: unknown, encoding: unknown) {
-  if (instance.__finalized) throw finalizedError();
-  instance.__chunks.push(Buffer.from(value, encoding));
-  return instance;
 }
 
 function updateDigest<T extends Hash | Hmac>(instance: T, value: unknown, encoding: unknown) {

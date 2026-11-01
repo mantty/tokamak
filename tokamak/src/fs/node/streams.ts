@@ -401,22 +401,38 @@ Object.defineProperty(ReadStream.prototype, "pending", {
   configurable: true,
 });
 
+/**
+ * Counts the bytes that one attempt of the write operation `name` reported, and the attempts in a
+ * row that wrote nothing. Calls `cb` and returns undefined instead when the write fails.
+ */
+function countWritten(stream: WriteStream, name: string, er: unknown, bytesWritten: unknown, retries: number, cb: Callback) {
+  // No data currently available and operation should be retried later.
+  const retry = propertyOf(er, "code") === "EAGAIN";
+  const error = retry ? null : er;
+  if (stream.destroyed || error) {
+    cb(error || streamDestroyed(name));
+    return undefined;
+  }
+  const written = retry ? 0 : Number(bytesWritten ?? 0);
+  stream.bytesWritten += written;
+  const attempts = written ? 0 : retries + 1;
+  // Try writing non-zero number of bytes up to 5 times.
+  if (attempts > 5) {
+    cb(codedError(Error, `${name} failed`, "ERR_SYSTEM_ERROR"));
+    return undefined;
+  }
+  return { written, attempts };
+}
+
 function writeAll(this: WriteStream, data: Uint8Array, size: number, pos: number | undefined, cb: Callback, retries = 0) {
   if (this.fd == null) return cb(invalidArgValue("fd", "null"));
   this[kFs].write(this.fd, data, 0, size, pos, (er: unknown, bytesWritten: unknown, buffer: unknown) => {
-    // No data currently available and operation should be retried later.
-    const retry = propertyOf(er, "code") === "EAGAIN";
-    const error = retry ? null : er;
-    if (this.destroyed || error) return cb(error || streamDestroyed("write"));
-    const written = retry ? 0 : Number(bytesWritten ?? 0);
-    this.bytesWritten += written;
-    const attempts = written ? 0 : retries + 1;
+    const progress = countWritten(this, "write", er, bytesWritten, retries, cb);
+    if (!progress) return;
+    const { written, attempts } = progress;
     const remaining = size - written;
     const next = pos === undefined ? undefined : pos + written;
-    // Try writing non-zero number of bytes up to 5 times.
-    if (attempts > 5) {
-      cb(codedError(Error, "write failed", "ERR_SYSTEM_ERROR"));
-    } else if (remaining && buffer != null) {
+    if (remaining && buffer != null) {
       const buf = typeof buffer === "string" ? Buffer.from(buffer) : Buffer.from(propertyOf(buffer, "buffer"), propertyOf(buffer, "byteOffset"), propertyOf(buffer, "byteLength"));
       writeAll.call(this, buf.slice(written), remaining, next, cb, attempts);
     } else {
@@ -428,20 +444,13 @@ function writeAll(this: WriteStream, data: Uint8Array, size: number, pos: number
 function writevAll(this: WriteStream, chunks: Uint8Array[], size: number, pos: number | undefined, cb: Callback, retries = 0) {
   if (this.fd == null) return cb(invalidArgValue("fd", "null"));
   this[kFs].writev(this.fd, chunks, this.pos, (er: unknown, bytesWritten: unknown, buffers: unknown) => {
-    // No data currently available and operation should be retried later.
-    const retry = propertyOf(er, "code") === "EAGAIN";
-    const error = retry ? null : er;
-    if (this.destroyed || error) return cb(error || streamDestroyed("writev"));
-    const written = retry ? 0 : Number(bytesWritten ?? 0);
-    this.bytesWritten += written;
-    const attempts = written ? 0 : retries + 1;
+    const progress = countWritten(this, "writev", er, bytesWritten, retries, cb);
+    if (!progress) return;
+    const { written, attempts } = progress;
     const remaining = size - written;
     const next = pos === undefined ? undefined : pos + written;
     const writtenChunks = Array.isArray(buffers) ? buffers : [];
-    // Try writing non-zero number of bytes up to 5 times.
-    if (attempts > 5) {
-      cb(codedError(Error, "writev failed", "ERR_SYSTEM_ERROR"));
-    } else if (remaining && writtenChunks.length > 0) {
+    if (remaining && writtenChunks.length > 0) {
       const bufs = writtenChunks.map(b => Buffer.from(propertyOf(b, "buffer"), propertyOf(b, "byteOffset"), propertyOf(b, "byteLength")));
       writevAll.call(this, [Buffer.concat(bufs).slice(written)], remaining, next, cb, attempts);
     } else {

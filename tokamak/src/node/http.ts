@@ -45,6 +45,11 @@ interface IncomingSocket {
 }
 
 // Calls `callback` unless it is null or undefined.
+/** The bytes of a chunk written to an outgoing message, decoded with `encoding` when it names one. */
+function chunkBytes(chunk: unknown, encoding: unknown): Buffer {
+  return Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined);
+}
+
 function callOptional(callback: unknown): void {
   if (callback != null) callFunction(callback, undefined);
 }
@@ -190,7 +195,7 @@ export class ServerResponse extends OutgoingMessage {
   }
   write(chunk: unknown, encoding?: unknown, callback?: unknown): boolean {
     if (this.finished) throw new Error("write after end");
-    if (chunk !== undefined) this.__chunks.push(Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined));
+    if (chunk !== undefined) this.__chunks.push(chunkBytes(chunk, encoding));
     callOptional(callback);
     return true;
   }
@@ -239,7 +244,7 @@ export class ClientRequest extends OutgoingMessage {
 
   write(chunk: unknown, encoding?: unknown, callback?: unknown): boolean {
     if (this._ended) throw new Error("write after end");
-    this._body.push(Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined));
+    this._body.push(chunkBytes(chunk, encoding));
     callOptional(callback);
     return true;
   }

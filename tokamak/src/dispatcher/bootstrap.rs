@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use rquickjs::class::Trace;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, TypedArray, Value,
+    class::Trace,
 };
 use tokamak_macros::JsType;
 

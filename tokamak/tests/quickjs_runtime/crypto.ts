@@ -795,6 +795,7 @@ function nodeCryptoContracts() {
     publicJwk: publicKey.export({ format: "jwk" }),
     sign: nodeCrypto.createSign("sha256").update(Buffer.from("abc")).sign(privateKey).toString("hex"),
     verify: nodeCrypto.createVerify("sha256").update(Buffer.from("abc")).verify(publicKey, nodeCrypto.sign("sha256", Buffer.from("abc"), privateKey)),
+    constructorLengths: [nodeCrypto.Sign.length, nodeCrypto.Verify.length],
     privateEncrypt: outcome(() => nodeCrypto.privateEncrypt(fixtures.rsaPrivatePem, Buffer.from("legacy")).toString("hex")),
     publicDecrypt: outcome(() => nodeCrypto.publicDecrypt(fixtures.rsaPublicPem, nodeCrypto.privateEncrypt(fixtures.rsaPrivatePem, Buffer.from("legacy"))).toString("utf8")),
     oaepRoundTrip: outcome(() => nodeCrypto.privateDecrypt({ key: fixtures.rsaPrivatePem, oaepHash: "sha1" }, nodeCrypto.publicEncrypt({ key: fixtures.rsaPublicPem, oaepHash: "sha1" }, Buffer.from("legacy"))).toString("utf8")),
