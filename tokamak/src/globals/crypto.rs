@@ -10,10 +10,10 @@ mod keys;
 mod rsa;
 
 use ::rsa::traits::PublicKeyParts;
-use rquickjs::{ArrayBuffer, Ctx, Exception, Object, TypedArray};
+use rquickjs::{ArrayBuffer, Ctx, Exception, FromJs, IntoJs, TypedArray};
 use serde_json::Value as JsonValue;
 use subtle::ConstantTimeEq;
-use tokamak_macros::host_function;
+use tokamak_macros::{JsType, host_function};
 
 use self::aes::{Mode, Stream};
 use self::curves::Curve;
@@ -128,6 +128,16 @@ pub(super) fn hkdf<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+/// An AES operation's mode, GCM's tag length or CTR's counter length in bits,
+/// and the data GCM authenticates with the input.
+#[derive(FromJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct AesParams<'js> {
+    tag_length: u32,
+    mode: String,
+    additional_data: Option<TypedArray<'js, u8>>,
+}
+
 #[host_function]
 pub(super) fn aes_gcm<'js>(
     ctx: Ctx<'js>,
@@ -135,14 +145,17 @@ pub(super) fn aes_gcm<'js>(
     key: TypedArray<'js, u8>,
     iv: TypedArray<'js, u8>,
     input: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: AesParams<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let key = bytes(&ctx, key)?;
     let iv = bytes(&ctx, iv)?;
     let input = bytes(&ctx, input)?;
-    let tag_length: u32 = options.get("tagLength")?;
-    let mode: String = options.get("mode")?;
-    let additional_data = optional_bytes(&ctx, &options, "additionalData")?;
+    let AesParams {
+        tag_length,
+        mode,
+        additional_data,
+    } = options;
+    let additional_data = optional_bytes(&ctx, additional_data)?;
     let output = match mode.as_str() {
         "AES-GCM" => aes_gcm_operation(
             &ctx,
@@ -287,54 +300,115 @@ fn aes_kw_operation(
     output.map_err(|error| operation_error(ctx, error.0))
 }
 
-#[host_function]
-fn host_generate_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
-    let key = generate_key(&ctx, &options)?;
-    key_object(&ctx, &KeyMaterial::Private(key))
+/// The key `cryptoGenerateKey` makes: its kind, with an RSA key's modulus
+/// length and public exponent, or an EC key's curve.
+#[derive(FromJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct KeyGeneration<'js> {
+    kind: String,
+    modulus_length: Option<u32>,
+    public_exponent: Option<TypedArray<'js, u8>>,
+    curve: Option<String>,
 }
 
 #[host_function]
-fn host_import_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
-    let input = optional_bytes(&ctx, &options, "key")?;
-    let material = parse_key(&ctx, &input, &options)?;
-    key_object(&ctx, &material)
+fn host_generate_key<'js>(
+    ctx: Ctx<'js>,
+    options: KeyGeneration<'js>,
+) -> rquickjs::Result<HostKey<'js>> {
+    let key = generate_key(&ctx, options)?;
+    HostKey::new(&ctx, &KeyMaterial::Private(key))
+}
+
+/// A key to import: its bytes in `format`, or the text of a JSON Web Key,
+/// which must be of `kind` when one is given. A raw EC key names its curve.
+#[derive(FromJs, JsType)]
+pub(crate) struct KeyImport<'js> {
+    format: String,
+    kind: Option<String>,
+    curve: Option<String>,
+    key: Option<TypedArray<'js, u8>>,
+    jwk: Option<String>,
+}
+
+#[host_function]
+fn host_import_key<'js>(ctx: Ctx<'js>, options: KeyImport<'js>) -> rquickjs::Result<HostKey<'js>> {
+    let input = optional_bytes(&ctx, options.key)?;
+    let kind = options.kind.as_deref();
+    let material = match options.format.as_str() {
+        "raw" => raw_key(&ctx, &input, kind, options.curve.as_deref())?,
+        "jwk" => jwk_key(&ctx, kind, options.jwk)?,
+        format => parse_der(&ctx, &input, format)?,
+    };
+    HostKey::new(&ctx, &of_kind(&ctx, material, kind)?)
 }
 
 /// A key as the JavaScript layers hold it: its kind, its SPKI and, when private,
 /// its PKCS#8, with an RSA key's modulus length and exponent or an EC key's curve.
-fn key_object<'js>(ctx: &Ctx<'js>, material: &KeyMaterial) -> rquickjs::Result<Object<'js>> {
-    let object = Object::new(ctx.clone())?;
-    let public = material.public();
-    object.set("kind", material.kind().name())?;
-    object.set(
-        "public",
-        TypedArray::new(ctx.clone(), public_der(ctx, &public)?)?,
-    )?;
-    if let KeyMaterial::Private(key) = material {
-        let private = key.to_pkcs8().map_err(|error| operation(ctx, &error))?;
-        object.set("private", TypedArray::new(ctx.clone(), private)?)?;
+#[derive(IntoJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct HostKey<'js> {
+    kind: &'static str,
+    public: TypedArray<'js, u8>,
+    private: Option<TypedArray<'js, u8>>,
+    modulus_length: Option<u32>,
+    public_exponent: Option<TypedArray<'js, u8>>,
+    named_curve: Option<&'static str>,
+}
+
+impl<'js> HostKey<'js> {
+    fn new(ctx: &Ctx<'js>, material: &KeyMaterial) -> rquickjs::Result<Self> {
+        let public = material.public();
+        let spki = TypedArray::new(ctx.clone(), public_der(ctx, &public)?)?;
+        let private = match material {
+            KeyMaterial::Private(key) => {
+                let pkcs8 = key.to_pkcs8().map_err(|error| operation(ctx, &error))?;
+                Some(TypedArray::new(ctx.clone(), pkcs8)?)
+            }
+            KeyMaterial::Public(_) => None,
+        };
+        let (modulus_length, public_exponent, named_curve) = match &public {
+            PublicKey::Rsa(key) => {
+                let exponent = TypedArray::new(ctx.clone(), keys::bytes(key.e()))?;
+                (Some(key.n().bits()), Some(exponent), None)
+            }
+            PublicKey::Ec(key) => (None, None, Some(curves::curve_of(key).name())),
+            PublicKey::Ed25519(_) | PublicKey::X25519(_) => (None, None, None),
+        };
+        Ok(Self {
+            kind: material.kind().name(),
+            public: spki,
+            private,
+            modulus_length,
+            public_exponent,
+            named_curve,
+        })
     }
-    match &public {
-        PublicKey::Rsa(key) => {
-            object.set("modulusLength", key.n().bits())?;
-            object.set(
-                "publicExponent",
-                TypedArray::new(ctx.clone(), keys::bytes(key.e()))?,
-            )?;
-        }
-        PublicKey::Ec(key) => object.set("namedCurve", curves::curve_of(key).name())?,
-        PublicKey::Ed25519(_) | PublicKey::X25519(_) => {}
-    }
-    Ok(object)
+}
+
+/// A key to export in `format`: its DER bytes in `keyFormat`, which must be
+/// of `kind` when one is given.
+#[derive(FromJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct KeyExport<'js> {
+    format: String,
+    key_format: String,
+    key: TypedArray<'js, u8>,
+    kind: Option<String>,
 }
 
 #[host_function]
-fn host_export_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let format = required_string(&ctx, &options, "format")?;
-    let key_format = required_string(&ctx, &options, "keyFormat")?;
-    let input = required_bytes(&ctx, &options, "key")?;
-    let material = parse_key_with_format(&ctx, &input, &options, &key_format)?;
-    let output = match format.as_str() {
+fn host_export_key<'js>(
+    ctx: Ctx<'js>,
+    options: KeyExport<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let material = der_key(
+        &ctx,
+        &options.key,
+        &options.key_format,
+        options.kind.as_deref(),
+    )?;
+    let output = match options.format.as_str() {
         "spki" => public_der(&ctx, &material.public())?,
         "pkcs8" => private_der(&ctx, &material)?,
         "raw" => material.public().to_raw().ok_or_else(|| {
@@ -355,11 +429,23 @@ fn host_export_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+/// A signature scheme, `kind`, whose kind of key the key must be; the key's
+/// DER bytes in `format`; the message digest; and RSA-PSS's salt length.
+#[derive(FromJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct Signing<'js> {
+    kind: String,
+    key: TypedArray<'js, u8>,
+    format: String,
+    hash: String,
+    salt_length: Option<u32>,
+}
+
 #[host_function]
 fn host_sign<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: Signing<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let input = bytes(&ctx, input)?;
     let output = sign_key(&ctx, &input, &options)?;
@@ -370,20 +456,32 @@ fn host_sign<'js>(
 fn host_verify<'js>(
     ctx: Ctx<'js>,
     signature: TypedArray<'js, u8>,
-    options: Object<'js>,
+    message: TypedArray<'js, u8>,
+    options: Signing<'js>,
 ) -> rquickjs::Result<bool> {
     let signature = bytes(&ctx, signature)?;
-    verify_key(&ctx, &signature, &options)
+    let message = bytes(&ctx, message)?;
+    verify_key(&ctx, &signature, &message, &options)
+}
+
+/// An RSA-OAEP operation's key, its DER bytes in `format`; its digest; and
+/// its label.
+#[derive(FromJs, JsType)]
+pub(crate) struct Oaep<'js> {
+    key: TypedArray<'js, u8>,
+    format: String,
+    hash: String,
+    label: TypedArray<'js, u8>,
 }
 
 #[host_function]
 fn host_encrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: Oaep<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let plaintext = bytes(&ctx, input)?;
-    let (material, hash, label) = oaep_operands(&ctx, &options)?;
+    let (material, hash, label) = oaep_operands(&ctx, options)?;
     let output = rsa_public(&ctx, &material.public()).and_then(|key| {
         rsa::encrypt_oaep(key, hash, &label, &plaintext).map_err(|error| operation(&ctx, &error))
     })?;
@@ -394,33 +492,40 @@ fn host_encrypt<'js>(
 fn host_decrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: Oaep<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let ciphertext = bytes(&ctx, input)?;
-    let (material, hash, label) = oaep_operands(&ctx, &options)?;
+    let (material, hash, label) = oaep_operands(&ctx, options)?;
     let key = rsa_private(&ctx, &material)?;
     let output = rsa::decrypt_oaep(key, hash, &label, &ciphertext)
         .map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
 }
 
-fn oaep_operands<'js>(
-    ctx: &Ctx<'js>,
-    options: &Object<'js>,
+fn oaep_operands(
+    ctx: &Ctx<'_>,
+    options: Oaep<'_>,
 ) -> rquickjs::Result<(KeyMaterial, Hash, Vec<u8>)> {
-    if required_string(ctx, options, "kind")? != "rsa-oaep" {
-        return Err(unsupported_algorithm(ctx));
-    }
-    let material = required_key(ctx, options)?;
-    let hash = message_digest(ctx, &required_string(ctx, options, "hash")?)?;
-    let label = optional_bytes(ctx, options, "label")?;
+    let material = der_key(ctx, &options.key, &options.format, Some("rsa-oaep"))?;
+    let hash = message_digest(ctx, &options.hash)?;
+    let label = bytes(ctx, options.label)?;
     Ok((material, hash, label))
 }
 
+/// A key agreement's private key, its DER bytes in `format`, which must be
+/// of `kind`; and the peer's public key in SPKI.
+#[derive(FromJs, JsType)]
+pub(crate) struct Agreement<'js> {
+    key: TypedArray<'js, u8>,
+    format: String,
+    kind: String,
+    peer: TypedArray<'js, u8>,
+}
+
 #[host_function]
-fn host_derive<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let material = required_key(&ctx, &options)?;
-    let peer = required_bytes(&ctx, &options, "peer")?;
+fn host_derive<'js>(ctx: Ctx<'js>, options: Agreement<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let material = der_key(&ctx, &options.key, &options.format, Some(&options.kind))?;
+    let peer = bytes(&ctx, options.peer)?;
     let peer = PublicKey::from_spki(&peer).map_err(|error| operation(&ctx, &error))?;
     let KeyMaterial::Private(private) = material else {
         return Err(private_required(&ctx));
@@ -435,15 +540,20 @@ fn host_derive<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Arr
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+/// The number of checks a primality test makes.
+#[derive(FromJs, JsType)]
+pub(crate) struct PrimeCheck {
+    checks: u32,
+}
+
 #[host_function]
 fn host_check_prime<'js>(
     ctx: Ctx<'js>,
     candidate: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: PrimeCheck,
 ) -> rquickjs::Result<bool> {
     let candidate = bytes(&ctx, candidate)?;
-    let checks: Option<u32> = options.get("checks")?;
-    if checks.is_some_and(|checks| i32::try_from(checks).is_err()) {
+    if i32::try_from(options.checks).is_err() {
         return Err(Exception::throw_range(
             &ctx,
             "The value of \"checks\" is out of range",
@@ -452,41 +562,64 @@ fn host_check_prime<'js>(
     Ok(bignum::check_prime(&candidate))
 }
 
+/// A prime to generate: its length in bits, whether it is a safe prime, and
+/// the remainder `rem` it leaves when divided by `add`.
+#[derive(FromJs, JsType)]
+pub(crate) struct PrimeGeneration<'js> {
+    bits: u32,
+    safe: bool,
+    add: Option<TypedArray<'js, u8>>,
+    rem: Option<TypedArray<'js, u8>>,
+}
+
 #[host_function]
 fn host_generate_prime<'js>(
     ctx: Ctx<'js>,
-    options: Object<'js>,
+    options: PrimeGeneration<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let bits = required_u32(&ctx, &options, "bits")?;
+    let bits = options.bits;
     if bits < 2 || i32::try_from(bits).is_err() {
         return Err(Exception::throw_range(
             &ctx,
             "The value of \"bits\" is out of range",
         ));
     }
-    let safe = options.get::<_, Option<bool>>("safe")?.unwrap_or(false);
-    let add = option_bytes(&ctx, &options, "add")?;
-    let rem = option_bytes(&ctx, &options, "rem")?;
-    let output = bignum::generate_prime(bits, safe, add.as_deref(), rem.as_deref())
+    let add = option_bytes(&ctx, options.add)?;
+    let rem = option_bytes(&ctx, options.rem)?;
+    let output = bignum::generate_prime(bits, options.safe, add.as_deref(), rem.as_deref())
         .map_err(|error| operation_error(&ctx, error))?;
     ArrayBuffer::new_copy(ctx, &output)
+}
+
+/// scrypt's salt, its cost `n`, block size `r` and parallelism `p`, the
+/// memory those may use, and the length of the derived key.
+#[derive(FromJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct ScryptParams<'js> {
+    salt: TypedArray<'js, u8>,
+    n: u64,
+    r: u64,
+    p: u64,
+    maxmem: u64,
+    key_length: u32,
 }
 
 #[host_function]
 fn host_scrypt<'js>(
     ctx: Ctx<'js>,
     password: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: ScryptParams<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let password = bytes(&ctx, password)?;
-    let salt = required_bytes(&ctx, &options, "salt")?;
-    let n = options.get::<_, Option<u64>>("n")?.unwrap_or(16_384);
-    let r = options.get::<_, Option<u64>>("r")?.unwrap_or(8);
-    let p = options.get::<_, Option<u64>>("p")?.unwrap_or(1);
-    let maxmem = options
-        .get::<_, Option<u64>>("maxmem")?
-        .unwrap_or(32 * 1024 * 1024);
-    let length = required_u32(&ctx, &options, "keyLength")? as usize;
+    let ScryptParams {
+        salt,
+        n,
+        r,
+        p,
+        maxmem,
+        key_length,
+    } = options;
+    let salt = bytes(&ctx, salt)?;
     let invalid = |message: &str| Exception::throw_range(&ctx, message);
     if !n.is_power_of_two() || n < 2 {
         return Err(invalid("N must be a power of two greater than one"));
@@ -501,18 +634,17 @@ fn host_scrypt<'js>(
     let r = u32::try_from(r).map_err(|_| invalid("r is too large"))?;
     let p = u32::try_from(p).map_err(|_| invalid("p is too large"))?;
     let params = scrypt::Params::new(log_n, r, p).map_err(|error| invalid(&error.to_string()))?;
-    let mut output = vec![0; length];
-    if length > 0 {
+    let mut output = vec![0; key_length as usize];
+    if key_length > 0 {
         scrypt::scrypt(&password, &salt, &params, &mut output)
             .map_err(|error| invalid(&error.to_string()))?;
     }
     ArrayBuffer::new_copy(ctx, &output)
 }
 
-/// The `curve` option, spelled as `WebCrypto` names it.
-fn required_curve(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Curve> {
-    let name = required_string(ctx, options, "curve")?;
-    Curve::parse(&name)
+/// The curve `WebCrypto` calls `name`.
+fn parse_curve(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<Curve> {
+    Curve::parse(name)
         .ok_or_else(|| not_supported_error(ctx, "The requested elliptic curve is not supported"))
 }
 
@@ -527,100 +659,177 @@ fn point_format(ctx: &Ctx<'_>, format: &str) -> rquickjs::Result<bool> {
     }
 }
 
-/// The curve and private key that `options` give the ECDH calls.
-fn ecdh_secret<'js>(
-    ctx: &Ctx<'js>,
-    options: &Object<'js>,
-) -> rquickjs::Result<(Curve, curves::EcSecret)> {
-    let curve = required_curve(ctx, options)?;
-    let private = required_bytes(ctx, options, "private")?;
-    let key =
-        curves::secret_from_scalar(curve, &private).map_err(|error| operation(ctx, &error))?;
-    Ok((curve, key))
+/// An ECDH private key: its curve, as `WebCrypto` names it, and its scalar.
+#[derive(FromJs, JsType)]
+pub(crate) struct EcdhKey<'js> {
+    curve: String,
+    private: TypedArray<'js, u8>,
+}
+
+impl EcdhKey<'_> {
+    fn secret(&self, ctx: &Ctx<'_>) -> rquickjs::Result<(Curve, curves::EcSecret)> {
+        let curve = parse_curve(ctx, &self.curve)?;
+        let private = byte_slice(ctx, &self.private)?;
+        let key =
+            curves::secret_from_scalar(curve, private).map_err(|error| operation(ctx, &error))?;
+        Ok((curve, key))
+    }
 }
 
 #[host_function]
-fn host_ecdh_public<'js>(
-    ctx: Ctx<'js>,
-    options: Object<'js>,
-) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (_, key) = ecdh_secret(&ctx, &options)?;
+fn host_ecdh_public<'js>(ctx: Ctx<'js>, key: EcdhKey<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let (_, key) = key.secret(&ctx)?;
     ArrayBuffer::new_copy(ctx, curves::encode_point(&curves::public_of(&key), false))
 }
 
 #[host_function]
 fn host_ecdh_compute<'js>(
     ctx: Ctx<'js>,
-    options: Object<'js>,
+    key: EcdhKey<'js>,
+    peer: TypedArray<'js, u8>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let (curve, key) = ecdh_secret(&ctx, &options)?;
-    let peer = required_bytes(&ctx, &options, "peer")?;
+    let (curve, key) = key.secret(&ctx)?;
+    let peer = bytes(&ctx, peer)?;
     let peer = curves::decode_point(curve, &peer).map_err(|error| operation(&ctx, &error))?;
     let output = curves::agree(&key, &peer).map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
+}
+
+/// An EC point encoding: the curve, as `WebCrypto` names it, and whether the
+/// point is `compressed` or `uncompressed`.
+#[derive(FromJs, JsType)]
+pub(crate) struct PointEncoding {
+    curve: String,
+    format: String,
 }
 
 #[host_function]
 fn host_ecdh_convert<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: PointEncoding,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let input = bytes(&ctx, input)?;
-    let curve = required_curve(&ctx, &options)?;
+    let curve = parse_curve(&ctx, &options.curve)?;
     let point = curves::decode_point(curve, &input).map_err(|error| operation(&ctx, &error))?;
-    let compressed = point_format(&ctx, &required_string(&ctx, &options, "format")?)?;
+    let compressed = point_format(&ctx, &options.format)?;
     ArrayBuffer::new_copy(ctx, curves::encode_point(&point, compressed))
 }
 
-#[host_function]
-fn host_dh_params<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
-    let bits = required_u32(&ctx, &options, "bits")?;
-    let generator: Option<u32> = options.get("generator")?;
-    let (prime, generator) = bignum::dh_parameters(bits, generator.unwrap_or(2))
-        .map_err(|error| operation_error(&ctx, error))?;
-    let params = Object::new(ctx.clone())?;
-    params.set("prime", TypedArray::new(ctx.clone(), prime)?)?;
-    params.set("generator", TypedArray::new(ctx, generator)?)?;
-    Ok(params)
+/// The Diffie-Hellman group to generate: its prime's length in bits, and its
+/// generator.
+#[derive(FromJs, JsType)]
+pub(crate) struct DhGroup {
+    bits: u32,
+    generator: u32,
+}
+
+/// A Diffie-Hellman group's prime and generator, big-endian.
+#[derive(IntoJs, JsType)]
+pub(crate) struct DhParams<'js> {
+    prime: TypedArray<'js, u8>,
+    generator: TypedArray<'js, u8>,
 }
 
 #[host_function]
-fn host_dh_generate<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<Object<'js>> {
-    let prime = required_bytes(&ctx, &options, "prime")?;
-    let generator = required_bytes(&ctx, &options, "generator")?;
+fn host_dh_params(ctx: Ctx<'_>, options: DhGroup) -> rquickjs::Result<DhParams<'_>> {
+    let (prime, generator) = bignum::dh_parameters(options.bits, options.generator)
+        .map_err(|error| operation_error(&ctx, error))?;
+    Ok(DhParams {
+        prime: TypedArray::new(ctx.clone(), prime)?,
+        generator: TypedArray::new(ctx, generator)?,
+    })
+}
+
+/// A Diffie-Hellman key pair to make in the group of `prime` and
+/// `generator`, from `private` when one is given.
+#[derive(FromJs, JsType)]
+pub(crate) struct DhGeneration<'js> {
+    prime: TypedArray<'js, u8>,
+    generator: TypedArray<'js, u8>,
+    private: Option<TypedArray<'js, u8>>,
+}
+
+/// A Diffie-Hellman key pair, big-endian.
+#[derive(IntoJs, JsType)]
+pub(crate) struct DhKeys<'js> {
+    public: TypedArray<'js, u8>,
+    private: TypedArray<'js, u8>,
+}
+
+#[host_function]
+fn host_dh_generate<'js>(
+    ctx: Ctx<'js>,
+    options: DhGeneration<'js>,
+) -> rquickjs::Result<DhKeys<'js>> {
+    let prime = bytes(&ctx, options.prime)?;
+    let generator = bytes(&ctx, options.generator)?;
     let failed = |error| operation_error(&ctx, error);
-    let private = match option_bytes(&ctx, &options, "private")? {
+    let private = match option_bytes(&ctx, options.private)? {
         Some(private) => private,
         None => bignum::random_below(&prime).map_err(failed)?,
     };
     let public = bignum::mod_pow(&generator, &private, &prime).map_err(failed)?;
-    let keys = Object::new(ctx.clone())?;
-    keys.set("public", TypedArray::new(ctx.clone(), public)?)?;
-    keys.set("private", TypedArray::new(ctx, private)?)?;
-    Ok(keys)
+    Ok(DhKeys {
+        public: TypedArray::new(ctx.clone(), public)?,
+        private: TypedArray::new(ctx, private)?,
+    })
+}
+
+/// A Diffie-Hellman agreement in the group of `prime`, between `private` and
+/// the peer's public key.
+#[derive(FromJs, JsType)]
+pub(crate) struct DhAgreement<'js> {
+    prime: TypedArray<'js, u8>,
+    private: TypedArray<'js, u8>,
+    peer: TypedArray<'js, u8>,
 }
 
 #[host_function]
-fn host_dh_compute<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let prime = required_bytes(&ctx, &options, "prime")?;
-    let private = required_bytes(&ctx, &options, "private")?;
-    let peer = required_bytes(&ctx, &options, "peer")?;
+fn host_dh_compute<'js>(
+    ctx: Ctx<'js>,
+    options: DhAgreement<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let prime = bytes(&ctx, options.prime)?;
+    let private = bytes(&ctx, options.private)?;
+    let peer = bytes(&ctx, options.peer)?;
     let secret =
         bignum::mod_pow(&peer, &private, &prime).map_err(|error| operation_error(&ctx, error))?;
     ArrayBuffer::new_copy(ctx, &secret)
+}
+
+/// An RSA key for a raw operation: its DER bytes in `format`, which must be
+/// of `kind`, and the padding, PKCS#1 when absent.
+#[derive(FromJs, JsType)]
+pub(crate) struct RsaLegacy<'js> {
+    kind: String,
+    format: String,
+    key: TypedArray<'js, u8>,
+    padding: Option<u32>,
+}
+
+impl RsaLegacy<'_> {
+    fn key(&self, ctx: &Ctx<'_>) -> rquickjs::Result<KeyMaterial> {
+        der_key(ctx, &self.key, &self.format, Some(&self.kind))
+    }
+
+    fn padding(&self, ctx: &Ctx<'_>) -> rquickjs::Result<rsa::Padding> {
+        rsa::Padding::parse(self.padding).ok_or_else(|| {
+            not_supported_error(ctx, "The requested RSA padding mode is not supported")
+        })
+    }
 }
 
 #[host_function]
 fn host_rsa_legacy_private_encrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: RsaLegacy<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let plaintext = bytes(&ctx, input)?;
-    let material = required_key(&ctx, &options)?;
+    let material = options.key(&ctx)?;
     let key = rsa_private(&ctx, &material)?;
-    let padding = rsa_padding(&ctx, &options)?;
+    let padding = options.padding(&ctx)?;
     let output =
         rsa::private_encrypt(key, padding, &plaintext).map_err(|error| operation(&ctx, &error))?;
     ArrayBuffer::new_copy(ctx, &output)
@@ -630,100 +839,117 @@ fn host_rsa_legacy_private_encrypt<'js>(
 fn host_rsa_legacy_public_decrypt<'js>(
     ctx: Ctx<'js>,
     input: TypedArray<'js, u8>,
-    options: Object<'js>,
+    options: RsaLegacy<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let ciphertext = bytes(&ctx, input)?;
-    let material = required_key(&ctx, &options)?;
-    let padding = rsa_padding(&ctx, &options)?;
+    let material = options.key(&ctx)?;
+    let padding = options.padding(&ctx)?;
     let output = rsa_public(&ctx, &material.public()).and_then(|key| {
         rsa::public_decrypt(key, padding, &ciphertext).map_err(|error| operation(&ctx, &error))
     })?;
     ArrayBuffer::new_copy(ctx, &output)
 }
 
-fn rsa_padding(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<rsa::Padding> {
-    let padding: Option<u32> = options.get("padding")?;
-    rsa::Padding::parse(padding)
-        .ok_or_else(|| not_supported_error(ctx, "The requested RSA padding mode is not supported"))
-}
-
-fn generate_key(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<PrivateKey> {
-    let kind = required_string(ctx, options, "kind")?;
-    Ok(match kind.as_str() {
+fn generate_key(ctx: &Ctx<'_>, options: KeyGeneration<'_>) -> rquickjs::Result<PrivateKey> {
+    Ok(match options.kind.as_str() {
         "rsa" | "rsa-pss" | "rsa-oaep" => {
-            let modulus_length = required_u32(ctx, options, "modulusLength")?;
-            let exponent = required_bytes(ctx, options, "publicExponent")?;
+            let modulus_length = required(ctx, options.modulus_length, "modulusLength")?;
+            let exponent = required(ctx, options.public_exponent, "publicExponent")?;
             PrivateKey::Rsa(
-                rsa::generate(modulus_length as usize, &exponent)
+                rsa::generate(modulus_length as usize, &bytes(ctx, exponent)?)
                     .map_err(|error| operation(ctx, &error))?,
             )
         }
-        "ec" => PrivateKey::Ec(curves::generate(required_curve(ctx, options)?)),
+        "ec" => {
+            let curve = required(ctx, options.curve, "curve")?;
+            PrivateKey::Ec(curves::generate(parse_curve(ctx, &curve)?))
+        }
         "ed25519" => PrivateKey::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng())),
         "x25519" => PrivateKey::X25519(x25519_dalek::StaticSecret::random_from_rng(&mut rng())),
         _ => return Err(unsupported_algorithm(ctx)),
     })
 }
 
-/// The key in the `key` option, parsed as the options describe it.
-fn required_key(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<KeyMaterial> {
-    let key_bytes = required_bytes(ctx, options, "key")?;
-    parse_key(ctx, &key_bytes, options)
-}
-
-fn parse_key(ctx: &Ctx<'_>, input: &[u8], options: &Object<'_>) -> rquickjs::Result<KeyMaterial> {
-    let format = required_string(ctx, options, "format")?;
-    parse_key_with_format(ctx, input, options, &format)
-}
-
-/// The key `input` holds in `format`, which must be of the `kind` option when one is given.
-/// The `der` format is PKCS#8 or SPKI, whichever `input` is.
-fn parse_key_with_format(
+/// The key DER-encoded in `key` as `format`, which must be of `kind` when one
+/// is given.
+fn der_key(
     ctx: &Ctx<'_>,
-    input: &[u8],
-    options: &Object<'_>,
+    key: &TypedArray<'_, u8>,
     format: &str,
+    kind: Option<&str>,
 ) -> rquickjs::Result<KeyMaterial> {
-    let kind_name = option_string(options, "kind")?;
-    let kind = kind_name.as_deref().and_then(Kind::parse);
-    let key_error = |error: KeyError| match error {
-        KeyError::Data(message) => data_error(ctx, &message),
-        KeyError::Operation(message) => operation_error(ctx, &message),
-    };
+    of_kind(ctx, parse_der(ctx, byte_slice(ctx, key)?, format)?, kind)
+}
+
+/// The key DER-encoded in `input` as `format`: SPKI, PKCS#8, or `der` for
+/// whichever of them `input` is.
+fn parse_der(ctx: &Ctx<'_>, input: &[u8], format: &str) -> rquickjs::Result<KeyMaterial> {
     let material = match format {
-        "spki" => KeyMaterial::Public(PublicKey::from_spki(input).map_err(key_error)?),
-        "pkcs8" => KeyMaterial::Private(PrivateKey::from_pkcs8(input).map_err(key_error)?),
+        "spki" => PublicKey::from_spki(input).map(KeyMaterial::Public),
+        "pkcs8" => PrivateKey::from_pkcs8(input).map(KeyMaterial::Private),
         "der" => PrivateKey::from_pkcs8(input)
             .map(KeyMaterial::Private)
-            .or_else(|_| PublicKey::from_spki(input).map(KeyMaterial::Public))
-            .map_err(key_error)?,
-        "raw" => {
-            let Some(kind) = kind.filter(|kind| *kind != Kind::Rsa) else {
-                return Err(not_supported_error(
-                    ctx,
-                    "Raw import is not supported for this algorithm",
-                ));
-            };
-            let curve = option_string(options, "curve")?.and_then(|name| Curve::parse(&name));
-            KeyMaterial::Public(PublicKey::from_raw(kind, curve, input).map_err(key_error)?)
-        }
-        "jwk" => {
-            let text = required_string(ctx, options, "jwk")?;
-            let jwk: JsonValue =
-                serde_json::from_str(&text).map_err(|error| data_error(ctx, &error.to_string()))?;
-            let kind = kind
-                .ok_or_else(|| data_error(ctx, "The JWK does not match the requested algorithm"))?;
-            keys::from_jwk(kind, &jwk).map_err(key_error)?
-        }
+            .or_else(|_| PublicKey::from_spki(input).map(KeyMaterial::Public)),
         _ => return Err(unsupported_format(ctx)),
     };
-    if kind_name.is_some() && kind != Some(material.kind()) {
+    material.map_err(|error| key_error(ctx, error))
+}
+
+/// The raw public key `input`, of the kind `kind` names; an EC key's `curve`
+/// names its curve.
+fn raw_key(
+    ctx: &Ctx<'_>,
+    input: &[u8],
+    kind: Option<&str>,
+    curve: Option<&str>,
+) -> rquickjs::Result<KeyMaterial> {
+    let Some(kind) = kind.and_then(Kind::parse).filter(|kind| *kind != Kind::Rsa) else {
+        return Err(not_supported_error(
+            ctx,
+            "Raw import is not supported for this algorithm",
+        ));
+    };
+    let curve = curve.and_then(Curve::parse);
+    PublicKey::from_raw(kind, curve, input)
+        .map(KeyMaterial::Public)
+        .map_err(|error| key_error(ctx, error))
+}
+
+/// The key in the JSON Web Key `text`, of the kind `kind` names.
+fn jwk_key(
+    ctx: &Ctx<'_>,
+    kind: Option<&str>,
+    text: Option<String>,
+) -> rquickjs::Result<KeyMaterial> {
+    let text = required(ctx, text, "jwk")?;
+    let jwk: JsonValue =
+        serde_json::from_str(&text).map_err(|error| data_error(ctx, &error.to_string()))?;
+    let kind = kind
+        .and_then(Kind::parse)
+        .ok_or_else(|| data_error(ctx, "The JWK does not match the requested algorithm"))?;
+    keys::from_jwk(kind, &jwk).map_err(|error| key_error(ctx, error))
+}
+
+/// `material`, which must be of the kind `kind` names when one is given.
+fn of_kind(
+    ctx: &Ctx<'_>,
+    material: KeyMaterial,
+    kind: Option<&str>,
+) -> rquickjs::Result<KeyMaterial> {
+    if kind.is_some_and(|name| Kind::parse(name) != Some(material.kind())) {
         return Err(data_error(
             ctx,
             "The key does not match the requested algorithm",
         ));
     }
     Ok(material)
+}
+
+fn key_error(ctx: &Ctx<'_>, error: KeyError) -> rquickjs::Error {
+    match error {
+        KeyError::Data(message) => data_error(ctx, &message),
+        KeyError::Operation(message) => operation_error(ctx, &message),
+    }
 }
 
 fn public_der(ctx: &Ctx<'_>, key: &PublicKey) -> rquickjs::Result<Vec<u8>> {
@@ -763,18 +989,17 @@ fn private_required(ctx: &Ctx<'_>) -> rquickjs::Error {
     throw_dom_exception(ctx, "InvalidAccessError", "A private key is required")
 }
 
-fn sign_key(ctx: &Ctx<'_>, message: &[u8], options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
-    let kind = required_string(ctx, options, "kind")?;
-    let material = required_key(ctx, options)?;
-    let hash = || message_digest(ctx, &required_string(ctx, options, "hash")?);
+fn sign_key(ctx: &Ctx<'_>, message: &[u8], options: &Signing<'_>) -> rquickjs::Result<Vec<u8>> {
+    let material = der_key(ctx, &options.key, &options.format, Some(&options.kind))?;
+    let hash = || message_digest(ctx, &options.hash);
     let KeyMaterial::Private(key) = &material else {
         return Err(private_required(ctx));
     };
     let failed = |error: KeyError| operation(ctx, &error);
-    match (kind.as_str(), key) {
+    match (options.kind.as_str(), key) {
         ("rsa", PrivateKey::Rsa(key)) => rsa::sign_pkcs1(key, hash()?, message).map_err(failed),
         ("rsa-pss", PrivateKey::Rsa(key)) => {
-            let salt_length = required_u32(ctx, options, "saltLength")? as usize;
+            let salt_length = required(ctx, options.salt_length, "saltLength")? as usize;
             rsa::sign_pss(key, hash()?, salt_length, message).map_err(failed)
         }
         ("ec" | "ecdsa", PrivateKey::Ec(key)) => {
@@ -785,29 +1010,30 @@ fn sign_key(ctx: &Ctx<'_>, message: &[u8], options: &Object<'_>) -> rquickjs::Re
     }
 }
 
-fn verify_key(ctx: &Ctx<'_>, signature: &[u8], options: &Object<'_>) -> rquickjs::Result<bool> {
-    let kind = required_string(ctx, options, "kind")?;
-    let message = required_bytes(ctx, options, "message")?;
-    let key = required_key(ctx, options)?.public();
-    let hash = || message_digest(ctx, &required_string(ctx, options, "hash")?);
-    match (kind.as_str(), &key) {
-        ("rsa", PublicKey::Rsa(key)) => Ok(rsa::verify_pkcs1(key, hash()?, &message, signature)),
+fn verify_key(
+    ctx: &Ctx<'_>,
+    signature: &[u8],
+    message: &[u8],
+    options: &Signing<'_>,
+) -> rquickjs::Result<bool> {
+    let key = der_key(ctx, &options.key, &options.format, Some(&options.kind))?.public();
+    let hash = || message_digest(ctx, &options.hash);
+    match (options.kind.as_str(), &key) {
+        ("rsa", PublicKey::Rsa(key)) => Ok(rsa::verify_pkcs1(key, hash()?, message, signature)),
         ("rsa-pss", PublicKey::Rsa(key)) => {
-            let salt_length = required_u32(ctx, options, "saltLength")? as usize;
+            let salt_length = required(ctx, options.salt_length, "saltLength")? as usize;
             Ok(rsa::verify_pss(
                 key,
                 hash()?,
                 salt_length,
-                &message,
+                message,
                 signature,
             ))
         }
         ("ec" | "ecdsa", PublicKey::Ec(key)) => {
-            Ok(curves::verify(key, &hash()?.digest(&message), signature))
+            Ok(curves::verify(key, &hash()?.digest(message), signature))
         }
-        ("ed25519", PublicKey::Ed25519(key)) => {
-            Ok(curves::ed25519_verify(key, &message, signature))
-        }
+        ("ed25519", PublicKey::Ed25519(key)) => Ok(curves::ed25519_verify(key, message, signature)),
         _ => Err(unsupported_algorithm(ctx)),
     }
 }
@@ -816,38 +1042,19 @@ fn message_digest(ctx: &Ctx<'_>, algorithm: &str) -> rquickjs::Result<Hash> {
     Hash::parse(algorithm).ok_or_else(|| unsupported_algorithm(ctx))
 }
 
-fn required_string(ctx: &Ctx<'_>, options: &Object<'_>, name: &str) -> rquickjs::Result<String> {
-    option_string(options, name)?.ok_or_else(|| missing(ctx, name))
+/// `value`, which the option `name` must give.
+fn required<T>(ctx: &Ctx<'_>, value: Option<T>, name: &str) -> rquickjs::Result<T> {
+    value.ok_or_else(|| Exception::throw_type(ctx, &format!("{name} is required")))
 }
 
-fn option_string(options: &Object<'_>, name: &str) -> rquickjs::Result<Option<String>> {
-    options.get(name)
-}
-
-fn required_u32(ctx: &Ctx<'_>, options: &Object<'_>, name: &str) -> rquickjs::Result<u32> {
-    options
-        .get::<_, Option<u32>>(name)?
-        .ok_or_else(|| missing(ctx, name))
-}
-
-fn required_bytes(ctx: &Ctx<'_>, options: &Object<'_>, name: &str) -> rquickjs::Result<Vec<u8>> {
-    option_bytes(ctx, options, name)?.ok_or_else(|| missing(ctx, name))
-}
-
-fn missing(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
-    Exception::throw_type(ctx, &format!("{name} is required"))
-}
-
-fn optional_bytes(ctx: &Ctx<'_>, options: &Object<'_>, name: &str) -> rquickjs::Result<Vec<u8>> {
-    Ok(option_bytes(ctx, options, name)?.unwrap_or_default())
+fn optional_bytes(ctx: &Ctx<'_>, value: Option<TypedArray<'_, u8>>) -> rquickjs::Result<Vec<u8>> {
+    Ok(option_bytes(ctx, value)?.unwrap_or_default())
 }
 
 fn option_bytes(
     ctx: &Ctx<'_>,
-    options: &Object<'_>,
-    name: &str,
+    value: Option<TypedArray<'_, u8>>,
 ) -> rquickjs::Result<Option<Vec<u8>>> {
-    let value: Option<TypedArray<'_, u8>> = options.get(name)?;
     value.map(|value| bytes(ctx, value)).transpose()
 }
 

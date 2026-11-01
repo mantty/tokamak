@@ -26,55 +26,55 @@ declare module "tokamak:host" {
 
   export function createNodeCompression(mode: number, options: CodecOptions, dictionary: Uint8Array): NodeCodec;
 
-  export function cryptoAesGcm(encrypt: boolean, key: Uint8Array, iv: Uint8Array, input: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoAesGcm(encrypt: boolean, key: Uint8Array, iv: Uint8Array, input: Uint8Array, options: AesParams): ArrayBuffer;
 
-  export function cryptoCheckPrime(candidate: Uint8Array, options: object): boolean;
+  export function cryptoCheckPrime(candidate: Uint8Array, options: PrimeCheck): boolean;
 
   export function cryptoCreateCipher(mode: string, encrypt: boolean, key: Uint8Array, iv: Uint8Array, tagLength: number | undefined): CipherState;
 
   export function cryptoCreateDigest(algorithm: string, key?: Uint8Array): DigestState;
 
-  export function cryptoDecrypt(input: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoDecrypt(input: Uint8Array, options: Oaep): ArrayBuffer;
 
-  export function cryptoDerive(options: object): ArrayBuffer;
+  export function cryptoDerive(options: Agreement): ArrayBuffer;
 
-  export function cryptoDhCompute(options: object): ArrayBuffer;
+  export function cryptoDhCompute(options: DhAgreement): ArrayBuffer;
 
-  export function cryptoDhGenerate(options: object): object;
+  export function cryptoDhGenerate(options: DhGeneration): DhKeys;
 
-  export function cryptoDhParams(options: object): object;
+  export function cryptoDhParams(options: DhGroup): DhParams;
 
-  export function cryptoEcdhCompute(options: object): ArrayBuffer;
+  export function cryptoEcdhCompute(key: EcdhKey, peer: Uint8Array): ArrayBuffer;
 
-  export function cryptoEcdhConvert(input: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoEcdhConvert(input: Uint8Array, options: PointEncoding): ArrayBuffer;
 
-  export function cryptoEcdhPublic(options: object): ArrayBuffer;
+  export function cryptoEcdhPublic(key: EcdhKey): ArrayBuffer;
 
-  export function cryptoEncrypt(input: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoEncrypt(input: Uint8Array, options: Oaep): ArrayBuffer;
 
-  export function cryptoExportKey(options: object): ArrayBuffer;
+  export function cryptoExportKey(options: KeyExport): ArrayBuffer;
 
-  export function cryptoGenerateKey(options: object): object;
+  export function cryptoGenerateKey(options: KeyGeneration): HostKey;
 
-  export function cryptoGeneratePrime(options: object): ArrayBuffer;
+  export function cryptoGeneratePrime(options: PrimeGeneration): ArrayBuffer;
 
   export function cryptoHkdf(algorithm: string, key: Uint8Array, salt: Uint8Array, info: Uint8Array, length: number): ArrayBuffer;
 
-  export function cryptoImportKey(options: object): object;
+  export function cryptoImportKey(options: KeyImport): HostKey;
 
   export function cryptoPbkdf2(algorithm: string, password: Uint8Array, salt: Uint8Array, iterations: number, length: number): ArrayBuffer;
 
-  export function cryptoRsaLegacyPrivateEncrypt(input: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoRsaLegacyPrivateEncrypt(input: Uint8Array, options: RsaLegacy): ArrayBuffer;
 
-  export function cryptoRsaLegacyPublicDecrypt(input: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoRsaLegacyPublicDecrypt(input: Uint8Array, options: RsaLegacy): ArrayBuffer;
 
-  export function cryptoScrypt(password: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoScrypt(password: Uint8Array, options: ScryptParams): ArrayBuffer;
 
-  export function cryptoSign(input: Uint8Array, options: object): ArrayBuffer;
+  export function cryptoSign(input: Uint8Array, options: Signing): ArrayBuffer;
 
   export function cryptoTimingSafeEqual(left: Uint8Array, right: Uint8Array): boolean;
 
-  export function cryptoVerify(signature: Uint8Array, options: object): boolean;
+  export function cryptoVerify(signature: Uint8Array, message: Uint8Array, options: Signing): boolean;
 
   export function detachArrayBuffer(buffer: ArrayBuffer): void;
 
@@ -155,6 +155,19 @@ declare module "tokamak:host" {
   export function writeStderr(text: string): void;
 
   export function writeStdout(text: string): void;
+
+  export interface AesParams {
+    tagLength: number;
+    mode: string;
+    additionalData?: Uint8Array | undefined;
+  }
+
+  export interface Agreement {
+    key: Uint8Array;
+    format: string;
+    kind: string;
+    peer: Uint8Array;
+  }
 
   export interface AssetFetcher {
     readonly [classBrand]: "AssetFetcher";
@@ -254,11 +267,43 @@ declare module "tokamak:host" {
 
   export type ContentKind = "html" | "text";
 
+  export interface DhAgreement {
+    prime: Uint8Array;
+    private: Uint8Array;
+    peer: Uint8Array;
+  }
+
+  export interface DhGeneration {
+    prime: Uint8Array;
+    generator: Uint8Array;
+    private?: Uint8Array | undefined;
+  }
+
+  export interface DhGroup {
+    bits: number;
+    generator: number;
+  }
+
+  export interface DhKeys {
+    public: Uint8Array;
+    private: Uint8Array;
+  }
+
+  export interface DhParams {
+    prime: Uint8Array;
+    generator: Uint8Array;
+  }
+
   export interface DigestState {
     readonly [classBrand]: "DigestState";
     update(input: Uint8Array): void;
     finish(): ArrayBuffer;
     copy(): DigestState;
+  }
+
+  export interface EcdhKey {
+    curve: string;
+    private: Uint8Array;
   }
 
   export interface ElementAttribute {
@@ -304,6 +349,15 @@ declare module "tokamak:host" {
     end?: number | undefined;
   }
 
+  export interface HostKey {
+    kind: string;
+    public: Uint8Array;
+    private?: Uint8Array | undefined;
+    modulusLength?: number | undefined;
+    publicExponent?: Uint8Array | undefined;
+    namedCurve?: string | undefined;
+  }
+
   export type HtmlContent = string | { source: number };
 
   export interface HtmlOperation {
@@ -344,6 +398,28 @@ declare module "tokamak:host" {
   export interface JsReply {
     failed: boolean;
     value: JsMessage;
+  }
+
+  export interface KeyExport {
+    format: string;
+    keyFormat: string;
+    key: Uint8Array;
+    kind?: string | undefined;
+  }
+
+  export interface KeyGeneration {
+    kind: string;
+    modulusLength?: number | undefined;
+    publicExponent?: Uint8Array | undefined;
+    curve?: string | undefined;
+  }
+
+  export interface KeyImport {
+    format: string;
+    kind?: string | undefined;
+    curve?: string | undefined;
+    key?: Uint8Array | undefined;
+    jwk?: string | undefined;
   }
 
   export interface LocaleInfo {
@@ -391,6 +467,13 @@ declare module "tokamak:host" {
     close(): void;
   }
 
+  export interface Oaep {
+    key: Uint8Array;
+    format: string;
+    hash: string;
+    label: Uint8Array;
+  }
+
   export type OutboxFrame = { type: "message"; binary: true; data: ArrayBuffer } | { type: "message"; binary: false; data: string } | { type: "close"; code: number; reason: string };
 
   export type Overflow = "error" | "dropOldest";
@@ -421,6 +504,22 @@ declare module "tokamak:host" {
     done: boolean;
   }
 
+  export interface PointEncoding {
+    curve: string;
+    format: string;
+  }
+
+  export interface PrimeCheck {
+    checks: number;
+  }
+
+  export interface PrimeGeneration {
+    bits: number;
+    safe: boolean;
+    add?: Uint8Array | undefined;
+    rem?: Uint8Array | undefined;
+  }
+
   export interface RelativePart {
     type: string;
     value: string;
@@ -442,6 +541,22 @@ declare module "tokamak:host" {
     webSocket?: NativeSocket | undefined;
   }
 
+  export interface RsaLegacy {
+    kind: string;
+    format: string;
+    key: Uint8Array;
+    padding?: number | undefined;
+  }
+
+  export interface ScryptParams {
+    salt: Uint8Array;
+    n: number;
+    r: number;
+    p: number;
+    maxmem: number;
+    keyLength: number;
+  }
+
   export interface ServiceCall {
     reply: Promise<JsReply>;
     cancellation: Cancellation;
@@ -456,6 +571,14 @@ declare module "tokamak:host" {
     readonly [classBrand]: "ServiceStreamPort";
     read(codec: StreamCodec): Promise<JsReply>;
     cancel(reason: JsMessage, codec: StreamCodec): Promise<JsReply>;
+  }
+
+  export interface Signing {
+    kind: string;
+    key: Uint8Array;
+    format: string;
+    hash: string;
+    saltLength?: number | undefined;
   }
 
   export interface SocketConnection {

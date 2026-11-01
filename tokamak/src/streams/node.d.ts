@@ -19,7 +19,8 @@ export interface Transform extends Omit<stream.Transform, Implementation> {
   _flush(callback: StreamCallback): void;
   destroy(error?: unknown): this;
 }
-export const Transform: { new (options?: stream.TransformOptions): Transform; readonly prototype: Transform };
+// readable-stream reads the options it knows from any value.
+export const Transform: { new (options?: unknown): Transform; readonly prototype: Transform };
 
 /** A `Duplex`, which a constructor written before ES classes can also call. */
 export const Duplex: typeof stream.Duplex & ((this: stream.Duplex, options?: unknown) => void);
