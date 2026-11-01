@@ -88,35 +88,37 @@ declare module "tokamak:host" {
 
   export function httpStatusText(status: number): string;
 
-  export function intlCanonicalLocales(input: string): string;
+  export function intlCanonicalLocales(values: string[]): string[];
 
   export function intlCollatorCompare(left: string, right: string, locales: string, options: string): number;
 
-  export function intlDateTime(milliseconds: number, locales: string, optionsJson: string, parts: boolean): string;
+  export function intlDateTime(milliseconds: number, locales: string, options: string): string;
+
+  export function intlDateTimeParts(milliseconds: number, locales: string, options: string): FormattedPart[];
 
   export function intlDisplayName(code: string, locales: string, options: string): string;
 
-  export function intlFractionDigits(options: string): number[];
+  export function intlFractionDigits(options: string): [number, number];
 
   export function intlHourCycle(locales: string): string;
 
-  export function intlListParts(values: string, locales: string, options: string): string;
+  export function intlListParts(values: string[], locales: string, options: string): FormattedPart[];
 
-  export function intlLocaleInfo(tag: string): string;
+  export function intlLocaleInfo(tag: string): LocaleInfo;
 
   export function intlNumber(value: number, locales: string, options: string): string;
 
-  export function intlNumberParts(value: number, locales: string, options: string): string;
+  export function intlNumberParts(value: number, locales: string, options: string): FormattedPart[];
 
   export function intlPlural(value: number, locales: string, kind: string): string;
 
-  export function intlPluralCategories(locales: string, kind: string): string;
+  export function intlPluralCategories(locales: string, kind: string): string[];
 
   export function intlPluralRange(start: number, end: number, locales: string, kind: string): string;
 
-  export function intlRelativeParts(value: number, unit: string, locales: string, options: string): string;
+  export function intlRelativeParts(value: number, unit: string, locales: string, options: string): RelativePart[];
 
-  export function intlSegment(text: string, granularity: string): string;
+  export function intlSegment(text: string, granularity: string): TextSegment[];
 
   export function ipVersion(input: string): number;
 
@@ -273,6 +275,11 @@ declare module "tokamak:host" {
     length?: number | undefined;
   }
 
+  export interface FormattedPart {
+    type: string;
+    value: string;
+  }
+
   export interface HandlerSpec {
     selector?: string | undefined;
     element?: number | undefined;
@@ -324,6 +331,22 @@ declare module "tokamak:host" {
     value: JsMessage;
   }
 
+  export interface LocaleInfo {
+    string: string;
+    baseName: string;
+    language: string;
+    script?: string | undefined;
+    region?: string | undefined;
+    calendar: string;
+    numberingSystem: string;
+    hourCycle?: string | undefined;
+    maximize: string;
+    minimize: string;
+    direction: string;
+    firstDay: number;
+    weekend: number[];
+  }
+
   export interface NativeCall {
     reply: Promise<PluginReply>;
     cancellation: Cancellation;
@@ -373,6 +396,12 @@ declare module "tokamak:host" {
     payload: ArrayBuffer;
     failed: boolean;
     done: boolean;
+  }
+
+  export interface RelativePart {
+    type: string;
+    value: string;
+    unit?: string | undefined;
   }
 
   export interface RequestDescriptor {
@@ -446,6 +475,12 @@ declare module "tokamak:host" {
     readonly [classBrand]: "TextDecoderState";
     readonly encoding: string;
     decode(input: Uint8Array, stream: boolean): string;
+  }
+
+  export interface TextSegment {
+    segment: string;
+    index: number;
+    isWordLike?: boolean | undefined;
   }
 
   export type TokenProperties = { token: "element"; tagName: string; namespaceURI: string; removed: boolean; attributes: ElementAttribute[] } | { token: "text"; text: string; lastInTextNode: boolean; removed: boolean } | { token: "comment"; text: string; removed: boolean } | { token: "doctype"; name?: string | undefined; publicId?: string | undefined; systemId?: string | undefined } | { token: "endTag"; name: string } | { token: "end" };

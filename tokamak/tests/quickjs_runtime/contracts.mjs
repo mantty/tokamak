@@ -1147,8 +1147,13 @@ export async function run(handlerEnv, ctx, constructors) {
           cardinal: new Intl.PluralRules("ru").resolvedOptions(),
           ordinal: new Intl.PluralRules("en", { type: "ordinal" }).resolvedOptions(),
           categories: new Intl.PluralRules("ru").selectRange(1, 2),
+          invalidType: (() => {
+            try { return new Intl.PluralRules("en", { type: "nominal" }).resolvedOptions().type; }
+            catch (error) { return error.name; }
+          })(),
         },
         list: [
+          new Intl.ListFormat("en", { type: "conjunction" }).format(undefined),
           new Intl.ListFormat("en", { type: "conjunction" }).format([]),
           new Intl.ListFormat("en", { type: "conjunction" }).format(["a"]),
           new Intl.ListFormat("en", { type: "conjunction" }).format(["a", "b"]),
