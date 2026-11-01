@@ -1118,7 +1118,7 @@ mod tests {
         context.with(|ctx| {
             let key = TypedArray::new(ctx.clone(), Vec::<u8>::new())?;
             let input = TypedArray::new(ctx.clone(), b"abc".to_vec())?;
-            let state = digest::create(ctx.clone(), "SHA-256".into(), Opt(Some(key)))?;
+            let state = digest::create(ctx.clone(), "SHA-256".into(), Opt(Some(Some(key))))?;
             state.borrow_mut().update(input)?;
             let output = state.borrow_mut().finish(ctx.clone())?;
             let bytes = output
@@ -1128,6 +1128,25 @@ mod tests {
             assert_eq!(
                 base64::engine::general_purpose::STANDARD.encode(bytes),
                 "/XrbFSwF74Dcz1Ch+kwF1aPsbalVdfwxKufF0JGDY1E="
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn digest_treats_an_undefined_key_as_omitted() -> rquickjs::Result<()> {
+        let runtime = rquickjs::Runtime::new()?;
+        let context = rquickjs::Context::full(&runtime)?;
+        context.with(|ctx| {
+            let create = rquickjs::Function::new(ctx.clone(), digest::create)?;
+            let state: rquickjs::Class<digest::DigestState> =
+                create.call(("SHA-256", rquickjs::Undefined))?;
+            let output = state.borrow_mut().finish(ctx.clone())?;
+            assert_eq!(
+                output.as_bytes(),
+                Some(&*hex(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                ))
             );
             Ok(())
         })

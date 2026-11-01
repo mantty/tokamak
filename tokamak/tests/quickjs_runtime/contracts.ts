@@ -2556,6 +2556,7 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
         appended,
         replaced: { search: url.search, values: [...url.searchParams], href: url.href },
         static: [URL.canParse("https://example.test"), URL.canParse("relative"), URL.parse("relative"), typeof URL.createObjectURL, typeof URL.revokeObjectURL],
+        constructorLength: URL.length,
         // @ts-expect-error The object is not a Blob.
         staticErrors: [result(() => URL.createObjectURL(new Blob(["x"]))), result(() => URL.createObjectURL({ size: 1 })), result(() => URL.revokeObjectURL("blob:x"))],
       };

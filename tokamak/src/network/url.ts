@@ -97,7 +97,9 @@ export class URL {
   #parts: UrlParts;
   readonly #searchParams: URLSearchParams;
 
-  constructor(input: unknown, base?: unknown) {
+  // A rest parameter gives URL a length of 0, as in workerd.
+  constructor(...args: [input: unknown, base?: unknown]) {
+    const [input, base] = args;
     markHostObject(this);
     this.#parts = urlParse(usvString(input), base === undefined ? undefined : usvString(base));
     this.#searchParams = new URLSearchParams(this.#parts.search);

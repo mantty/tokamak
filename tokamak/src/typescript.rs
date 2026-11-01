@@ -43,6 +43,14 @@ impl JsParameter for Ctx<'_> {
 
 impl<T: JsType> JsParameter for Opt<T> {
     fn parameter(name: &str, types: &mut Types) -> Option<String> {
+        // rquickjs reads an omitted argument as `None` but converts an explicit
+        // `undefined` to `T`, which `name?:` allows.
+        const {
+            assert!(
+                T::OPTIONAL,
+                "an Opt parameter's type must accept undefined: use Opt<Option<T>>"
+            );
+        }
         Some(format!("{name}?: {}", T::typescript(types)))
     }
 }

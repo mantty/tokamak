@@ -32,7 +32,7 @@ declare module "tokamak:host" {
 
   export function cryptoCreateCipher(mode: string, encrypt: boolean, key: Uint8Array, iv: Uint8Array, tagLength: number | undefined): CipherState;
 
-  export function cryptoCreateDigest(algorithm: string, key?: Uint8Array): DigestState;
+  export function cryptoCreateDigest(algorithm: string, key?: Uint8Array | undefined): DigestState;
 
   export function cryptoDecrypt(input: Uint8Array, options: Oaep): ArrayBuffer;
 
