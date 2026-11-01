@@ -1,46 +1,57 @@
 import net from "node:net";
+import type { AddressInfo, Server as NetServer } from "node:net";
 import http from "node:http";
 import { EventEmitter } from "node:events";
 import { Duplex } from "node:stream";
 import { connectHandler, handleAsNodeConnection, handleAsNodeRequest, httpServerHandler } from "cloudflare:node";
+import { member, present } from "./outcome.ts";
 
 // The name, code and message of a thrown error.
-function failure(error) {
-  return { error: error.name, code: error.code ?? null, message: error.message };
+function failure(error: unknown) {
+  return { error: member(error, "name"), code: member(error, "code") ?? null, message: member(error, "message") };
 }
 
-function attempt(callback) {
+function attempt(callback: () => unknown) {
   try { return callback(); }
   catch (error) { return failure(error); }
 }
 
-async function asyncAttempt(callback) {
+async function asyncAttempt(callback: () => unknown) {
   try { return await callback(); }
   catch (error) { return failure(error); }
 }
 
 const turn = () => new Promise(resolve => setTimeout(resolve, 1));
 
-function addressInUse(callback) {
+function addressInUse(callback: () => unknown) {
   try { return callback(); }
-  catch (error) { return { ...failure(error), syscall: error.syscall ?? null, address: error.address ?? null, port: error.port ?? null }; }
+  catch (error) { return { ...failure(error), syscall: member(error, "syscall") ?? null, address: member(error, "address") ?? null, port: member(error, "port") ?? null }; }
 }
 
 // Whether `port` is free in the isolate's port table.
-function isFree(port) {
+function isFree(port: number) {
   return attempt(() => { new net.BoundSocket({ port }).close(); return true; });
+}
+
+// The address of a server listening on a port.
+function addressOf(server: { address(): string | AddressInfo | null }) {
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new TypeError("The server has no port");
+  return address;
 }
 
 // An inbound socket as the platform hands one to a connect handler: `chunks`
 // arrive, then EOF unless `open`; writes and close() calls are recorded.
-function inboundSocket(info, chunks = [], open = false) {
-  const written = [];
-  const closed = Promise.withResolvers();
-  let readable;
+function inboundSocket(info: SocketInfo, chunks: string[] = [], open = false) {
+  const written: string[] = [];
+  const closed = Promise.withResolvers<void>();
+  let readable: ReadableByteStreamController | undefined;
   let closes = 0;
-  const socket = {
+  const socket: Socket = {
     opened: Promise.resolve(info),
     closed: closed.promise,
+    upgraded: false,
+    secureTransport: "off",
     readable: new ReadableStream({
       type: "bytes",
       start(controller) {
@@ -53,11 +64,14 @@ function inboundSocket(info, chunks = [], open = false) {
     close() {
       closes++;
       if (open) {
-        readable.close();
-        readable.byobRequest?.respond(0);
+        present(readable).close();
+        readable?.byobRequest?.respond(0);
       }
       closed.resolve();
       return Promise.resolve();
+    },
+    startTls() {
+      throw new TypeError("An inbound socket has no TLS");
     },
   };
   return { socket, written, closes: () => closes };
@@ -68,23 +82,26 @@ function boundSocketContracts() {
   const v6 = new net.BoundSocket({ ipv6Only: true });
   const fixed = new net.BoundSocket({ port: 9100, host: "::1" });
   const shared = new net.BoundSocket({ port: 9101, reusePort: true });
-  const result = {
+  const result: Record<string, unknown> = {
     addresses: [bound.address(), v6.address(), fixed.address(), bound.address() === bound.address(), bound.fd()],
     shape: {
       own: Object.getOwnPropertyNames(bound), prototype: Object.getOwnPropertyNames(net.BoundSocket.prototype),
       symbols: Object.getOwnPropertySymbols(net.BoundSocket.prototype).map(String), statics: Object.getOwnPropertyNames(net.BoundSocket).sort(),
-      length: net.BoundSocket.length, call: attempt(() => net.BoundSocket()).error,
+      // @ts-expect-error A class needs new.
+      length: net.BoundSocket.length, call: member(attempt(() => net.BoundSocket()), "error"),
     },
     is: [bound, {}, null, bound.address(), net.BoundSocket.prototype].map(value => net.BoundSocket.isBoundSocket(value)),
     conflicts: [
       () => new net.BoundSocket({ port: 9100 }),
       () => new net.BoundSocket({ port: 9101 }),
       () => { const other = new net.BoundSocket({ port: 9101, reusePort: true, host: "127.0.0.1" }); const address = other.address(); other.close(); return address; },
+      // @ts-expect-error A port is a number.
       () => new net.BoundSocket({ port: "9100" }),
     ].map(addressInUse),
     invalid: [
       null, [], "x", 5, { path: "/tmp/socket" }, { path: undefined, port: 9102 }, { host: "localhost" }, { host: 5 }, { host: "" }, { port: -1 },
       { port: "x" }, { port: 65536 }, { port: 1.5 }, { ipv6Only: 1 }, { reusePort: "yes" }, { host: null, ipv6Only: true, port: 9103 },
+    // @ts-expect-error Most of the options are invalid.
     ].map(options => attempt(() => { const socket = new net.BoundSocket(options); const address = socket.address(); socket.close(); return address; })),
   };
   fixed.close();
@@ -99,15 +116,17 @@ function boundSocketContracts() {
   return result;
 }
 
-function serverFields(server) {
-  return [server.allowHalfOpen, server.pauseOnConnect, server.noDelay, server.keepAlive, server.keepAliveInitialDelay, server.highWaterMark ?? null, server.maxConnections ?? null];
+// The options a server keeps in undeclared fields.
+function serverFields(server: NetServer) {
+  return [...["allowHalfOpen", "pauseOnConnect", "noDelay", "keepAlive", "keepAliveInitialDelay"].map(name => member(server, name)), member(server, "highWaterMark") ?? null, server.maxConnections ?? null];
 }
 
 // The address a new server reports after listen(...args), or the error listen() throws.
-function listenedAddress(args) {
+function listenedAddress(args: unknown[]) {
   const server = net.createServer();
   server.on("error", () => {});
   try {
+    // @ts-expect-error The arguments include invalid ones.
     server.listen(...args);
     return server.address();
   } catch (error) {
@@ -118,9 +137,9 @@ function listenedAddress(args) {
 }
 
 async function serverContracts() {
-  const events = [];
-  const record = (server, label) => {
-    for (const name of ["listening", "close", "error"]) server.on(name, value => events.push([label, name, value instanceof Error ? failure(value) : null]));
+  const events: unknown[] = [];
+  const record = (server: NetServer, label: string) => {
+    for (const name of ["listening", "close", "error"]) server.on(name, (value: unknown) => events.push([label, name, value instanceof Error ? failure(value) : null]));
   };
   const server = net.createServer();
   record(server, "first");
@@ -130,14 +149,18 @@ async function serverContracts() {
     symbols: Object.getOwnPropertySymbols(net.Server.prototype).map(String),
     emitter: server instanceof EventEmitter,
     lengths: [net.Server.length, net.Server.prototype.listen.length, net.Server.prototype.close.length, net.Server.prototype.getConnections.length],
-    call: attempt(() => net.Server()).error,
+    // @ts-expect-error A class needs new.
+    call: member(attempt(() => net.Server()), "error"),
   };
   const options = [
     undefined, null, {}, { allowHalfOpen: true, pauseOnConnect: 1, noDelay: "yes", keepAlive: true, keepAliveInitialDelay: 2500, highWaterMark: 7 },
     { keepAliveInitialDelay: -5 }, { keepAliveInitialDelay: 1999 }, { keepAliveInitialDelay: "1" }, { allowHalfOpen: 0 }, [], "x", 5,
+    // @ts-expect-error Most of the options are invalid.
   ].map(value => attempt(() => serverFields(new net.Server(value))));
   const listeners = [
+    // @ts-expect-error A listener is a function and options are an object.
     () => net.createServer(() => {}).listenerCount("connection"), () => net.createServer({}, "x"), () => net.createServer(null, null),
+    // @ts-expect-error Options are an object.
     () => new net.Server(() => {}, () => {}).listenerCount("connection"), () => net.createServer({}, undefined).listenerCount("connection"),
   ].map(attempt);
   const listened = server.listen(9200) === server;
@@ -167,8 +190,9 @@ async function serverContracts() {
   server.close(error => events.push(["first", "closed", error ? failure(error) : null]));
   const afterClose = [server.listening, server.address(), isFree(9200)];
   net.createServer().close(error => events.push(["idle", "closed", failure(error)]));
-  const counts = [];
+  const counts: unknown[] = [];
   server.getConnections((error, count) => counts.push([error, count]));
+  // @ts-expect-error getConnections needs a callback.
   const getConnections = [attempt(() => server.getConnections()), server.ref() === server, server.unref() === server, server.close() === server];
   await turn();
   const disposable = net.createServer().listen(9211);
@@ -185,10 +209,10 @@ async function serverContracts() {
 }
 
 async function connectionContracts() {
-  const events = [];
+  const events: unknown[] = [];
   const server = net.createServer(socket => {
     events.push(["connection", socket.address(), socket._getpeername(), socket.localAddress, socket.localPort, socket.localFamily, socket.remoteAddress, socket.remotePort,
-      socket.remoteFamily, socket.server === server, socket._server === server, socket.connecting, socket.pending, socket.readyState, socket.allowHalfOpen, socket.isPaused()]);
+      socket.remoteFamily, member(socket, "server") === server, member(socket, "_server") === server, socket.connecting, socket.pending, socket.readyState, socket.allowHalfOpen, socket.isPaused()]);
     server.getConnections((error, count) => events.push(["connections", error, count]));
     socket.on("data", chunk => {
       events.push(["data", chunk.toString(), socket.bytesRead]);
@@ -197,9 +221,12 @@ async function connectionContracts() {
     for (const name of ["end", "finish", "close"]) socket.on(name, value => events.push([name, value ?? null, socket.bytesWritten]));
   });
   server.listen(9300);
-  const counts = [];
+  const counts: unknown[] = [];
   const one = inboundSocket({ remoteAddress: "10.1.2.3:5555", localAddress: "0.0.0.0:9300" }, ["hi", "there"]);
-  const handled = connectHandler().connect(one.socket, {}, {});
+  const inbound = connectHandler();
+  if (inbound.connect === undefined) throw new TypeError("connectHandler() returned no connect method");
+  // @ts-expect-error A stand-in context, which the handler only passes on.
+  const handled = inbound.connect(one.socket, {}, {});
   server.getConnections((error, count) => counts.push(count));
   await turn();
   server.getConnections((error, count) => counts.push(count));
@@ -271,15 +298,18 @@ async function connectionContracts() {
   const web = http.createServer(() => {}).listen(9306);
   const errors = await Promise.all([
     { localAddress: "0.0.0.0:9399" }, {}, { localAddress: "x:70000" }, { localAddress: 9300 }, { localAddress: "127.0.0.1:9306" }, { localAddress: "[::1]" },
+    // @ts-expect-error The sockets have only an opened promise, and some addresses are not strings.
   ].map(info => asyncAttempt(() => handleAsNodeConnection({ opened: Promise.resolve(info) }))));
+  // @ts-expect-error The socket has only an opened promise.
   errors.push(await asyncAttempt(() => handleAsNodeConnection({ opened: Promise.reject(new RangeError("refused")) })));
   errors.push(await asyncAttempt(() => handleAsNodeRequest(9300, new Request("http://example.test/"))));
-  errors.push((await asyncAttempt(() => handleAsNodeConnection(null))).error);
+  // @ts-expect-error null is not a socket.
+  errors.push(member(await asyncAttempt(() => handleAsNodeConnection(null)), "error"));
   web.close();
   for (const listening of [server, halfOpen, anonymous, paused]) listening.close();
   const handler = connectHandler();
   return {
-    handler: { own: Object.getOwnPropertyNames(handler), type: typeof handler.connect, length: handler.connect.length, fresh: handler !== connectHandler() },
+    handler: { own: Object.getOwnPropertyNames(handler), type: typeof handler.connect, length: present(handler.connect).length, fresh: handler !== connectHandler() },
     lengths: [connectHandler.length, handleAsNodeConnection.length],
     counts, events, errors,
   };
@@ -287,14 +317,17 @@ async function connectionContracts() {
 
 async function socketContracts() {
   const constructed = [
+    // @ts-expect-error A class needs new, and object modes are not socket options.
     () => net.Socket() instanceof net.Socket, () => new net.Socket({ objectMode: true }), () => new net.Socket({ readableObjectMode: true }),
+    // @ts-expect-error The options are invalid.
     () => new net.Socket({ writableObjectMode: 1 }), () => new net.Socket(3), () => new net.Socket({ fd: 3 }), () => new net.Socket({ keepAliveInitialDelay: "1" }),
+    // @ts-expect-error The options are invalid.
     () => new net.Socket({ signal: {} }), () => new net.Socket({ handle: 5 }), () => new net.Socket({ allowHalfOpen: 1 }).allowHalfOpen,
   ].map(attempt);
   const fresh = new net.Socket();
   const state = [
-    fresh.connecting, fresh.pending, fresh.readyState, fresh.bufferSize ?? null, fresh.bytesRead, fresh.bytesWritten, fresh._bytesDispatched, fresh.server, fresh._server,
-    fresh._host, fresh._handle, fresh.timeout ?? null, fresh.autoSelectFamilyAttemptedAddresses, fresh.ref() ?? null, fresh.unref() ?? null,
+    fresh.connecting, fresh.pending, fresh.readyState, fresh.bufferSize ?? null, fresh.bytesRead, fresh.bytesWritten, ...["_bytesDispatched", "server", "_server", "_host", "_handle"].map(name => member(fresh, name)),
+    fresh.timeout ?? null, fresh.autoSelectFamilyAttemptedAddresses, fresh.ref() ?? null, fresh.unref() ?? null,
     fresh.setNoDelay(true) === fresh, fresh.setKeepAlive(true, 1) === fresh, fresh.address(), fresh.remoteAddress ?? null, fresh.localPort ?? null,
   ];
   const connects = [
@@ -304,17 +337,18 @@ async function socketContracts() {
   ].map(args => attempt(() => {
     const socket = new net.Socket();
     socket.on("error", () => {});
+    // @ts-expect-error The arguments include invalid ones.
     socket.connect(...args);
     socket.destroy();
     return "connected";
   }));
   const connecting = new net.Socket();
   connecting.on("error", () => {});
-  const attempts = [];
+  const attempts: unknown[] = [];
   connecting.on("connectionAttempt", (...args) => attempts.push(args));
   connecting.connect({ host: "::1", port: 1, localAddress: "::1" });
   const described = [
-    connecting.address(), connecting._getpeername(), connecting._host, connecting.autoSelectFamilyAttemptedAddresses, attempts, connecting.connecting,
+    connecting.address(), connecting._getpeername(), member(connecting, "_host"), connecting.autoSelectFamilyAttemptedAddresses, attempts, connecting.connecting,
     connecting.pending, connecting.readyState, attempt(() => connecting.connect({ port: 1 })),
   ];
   connecting.destroy();
@@ -328,7 +362,7 @@ async function socketContracts() {
 
   const holder = new net.BoundSocket({ port: 9401 });
   const conflicted = new net.Socket();
-  const socketEvents = [];
+  const socketEvents: unknown[] = [];
   conflicted.on("error", error => socketEvents.push(["conflict error", failure(error)]));
   conflicted.on("close", hadError => socketEvents.push(["conflict close", hadError]));
   conflicted.connect({ host: "127.0.0.1", port: 1, localPort: 9401 });
@@ -352,7 +386,7 @@ async function socketContracts() {
   adopting.destroy();
   adopted.push(isFree(9402));
 
-  const lookups = [];
+  const lookups: unknown[] = [];
   const viaLookup = new net.Socket();
   viaLookup.on("error", () => {});
   viaLookup.on("lookup", (error, address, family, host) => lookups.push(["lookup", error ?? null, address, family, host]));
@@ -360,7 +394,7 @@ async function socketContracts() {
     lookups.push(["called", host, options]);
     callback(null, "127.0.0.1", 4);
   } });
-  lookups.push(viaLookup._getpeername(), viaLookup.address(), viaLookup._host);
+  lookups.push(viaLookup._getpeername(), viaLookup.address(), member(viaLookup, "_host"));
   viaLookup.destroy();
   const failedLookup = new net.Socket();
   failedLookup.on("error", error => socketEvents.push(["lookup error", failure(error)]));
@@ -372,6 +406,7 @@ async function socketContracts() {
   ];
 
   const timed = new net.Socket();
+  // @ts-expect-error A timeout is a number and a callback is a function.
   const timeouts = [attempt(() => timed.setTimeout(-1)), attempt(() => timed.setTimeout(Infinity)), attempt(() => timed.setTimeout("5")), timed.timeout, attempt(() => timed.setTimeout(0, 1)), timed.setTimeout(0) === timed];
   timeouts.push(await new Promise(resolve => {
     const socket = new net.Socket();
@@ -399,7 +434,7 @@ async function socketContracts() {
   aborted.on("error", error => socketEvents.push(["abort error", failure(error)]));
   aborted.on("close", hadError => socketEvents.push(["abort close", hadError]));
   await turn();
-  const abort = [aborted._aborted, attempt(() => aborted.connect({ port: 1 })), await new Promise(resolve => aborted.connect({ port: 1 }, error => resolve(failure(error))))];
+  const abort = [member(aborted, "_aborted"), attempt(() => aborted.connect({ port: 1 })), await new Promise(resolve => aborted.connect({ port: 1 }, (error?: unknown) => resolve(failure(error))))];
   await turn();
   return { constructed, state, connects, described, reservation, adopted, lookups, badLookup, timeouts, abort, events: socketEvents };
 }
@@ -409,6 +444,7 @@ function moduleContracts() {
     net.getDefaultAutoSelectFamily(), net.getDefaultAutoSelectFamilyAttemptTimeout(), attempt(() => net.setDefaultAutoSelectFamily(false)),
     attempt(() => net.setDefaultAutoSelectFamily(true)), attempt(() => net.setDefaultAutoSelectFamilyAttemptTimeout(5)), net.getDefaultAutoSelectFamilyAttemptTimeout(),
     attempt(() => net.setDefaultAutoSelectFamilyAttemptTimeout(250)), net.getDefaultAutoSelectFamilyAttemptTimeout(), attempt(() => net.setDefaultAutoSelectFamilyAttemptTimeout(0)),
+    // @ts-expect-error A timeout is a number.
     attempt(() => net.setDefaultAutoSelectFamilyAttemptTimeout(1.5)), attempt(() => net.setDefaultAutoSelectFamilyAttemptTimeout("5")),
   ];
   net.setDefaultAutoSelectFamilyAttemptTimeout(10);
@@ -424,26 +460,27 @@ function moduleContracts() {
 }
 
 async function httpPortContracts() {
-  const order = [];
+  const order: unknown[] = [];
   const web = http.createServer(() => {});
   web.listen(0, () => order.push("listening callback"));
   order.push("sync");
-  const port = web.address().port;
+  const port = addressOf(web).port;
   const bound = new net.BoundSocket();
   const contention = await new Promise(resolve => {
     const server = net.createServer();
     server.on("error", error => resolve([server.listening, failure(error)]));
     server.listen(port);
   });
-  const results = {
+  const results: Record<string, unknown> = {
     ephemeral: typeof port === "number" && port >= 49152,
     contention,
     boundConflict: addressInUse(() => http.createServer().listen(bound.address().port)),
     twice: attempt(() => web.listen(0)),
     listens: [[], [{}], [{ port: "9501" }], ["/tmp/socket"], ["x"], [{ port: true }], [9502, "0.0.0.0"], [-1], [70000]].map(args => attempt(() => {
       const server = http.createServer();
+      // @ts-expect-error The arguments include invalid ones.
       server.listen(...args);
-      const { port: listened, ...address } = server.address();
+      const { port: listened, ...address } = addressOf(server);
       server.close();
       return { ...address, port: listened >= 49152 ? "ephemeral" : listened };
     })),
@@ -456,9 +493,12 @@ async function httpPortContracts() {
     response.end(JSON.stringify([Object.keys(request.cloudflare), env ?? null, ctx ?? null, cf ?? null, rest]));
   });
   const handler = httpServerHandler(unlistened);
+  if (handler.fetch === undefined) throw new TypeError("httpServerHandler() returned no fetch method");
+  // @ts-expect-error The handler needs no environment or context.
   const handled = await handler.fetch(new Request("http://example.test/"));
-  const bindings = await handleAsNodeRequest(unlistened.address().port, new Request("http://example.test/"), { name: "env" }, { name: "ctx" });
-  results.handler = [unlistened.listening, unlistened.address().port >= 49152, handled.status, await handled.text(), await bindings.text()];
+  // @ts-expect-error A stand-in context, which the handler only passes on.
+  const bindings = await handleAsNodeRequest(addressOf(unlistened).port, new Request("http://example.test/"), { name: "env" }, { name: "ctx" });
+  results.handler = [unlistened.listening, addressOf(unlistened).port >= 49152, handled.status, await handled.text(), await bindings.text()];
   unlistened.close();
   await turn();
   results.order = order;

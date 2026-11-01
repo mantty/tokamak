@@ -1,20 +1,20 @@
 import { get } from "node:http";
 import { gunzipSync, brotliDecompressSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { cases } from "./encoding.ts";
-import { esModule } from "./reference.ts";
+import { cases } from "./encoding-cases.ts";
+import { esModule } from "./reference.mts";
 
 const mf = new Miniflare(convertV4MiniflareOptions({
   cf: false, modulesRoot: import.meta.dirname, compatibilityDate: "2026-08-25", compatibilityFlags: ["nodejs_compat"],
-  modules: [esModule(import.meta.dirname, "encoding.ts")],
+  modules: ["encoding.ts", "encoding-cases.ts"].map(name => esModule(import.meta.dirname, name)),
 }));
 try {
   const base = await mf.ready;
-  const results = [];
+  const results: unknown[] = [];
   for (let index = 0; index < cases.length; index++) {
     results.push(await new Promise((resolve, reject) => {
       get(new URL(`/?case=${index}`, base), response => {
-        const chunks = [];
+        const chunks: Buffer[] = [];
         response.on("data", chunk => chunks.push(chunk));
         response.on("error", reject);
         response.on("end", () => {
@@ -22,7 +22,7 @@ try {
           const encoding = response.headers["content-encoding"];
           let body = raw, encoded = false;
           try {
-            const decode = { gzip: gunzipSync, br: brotliDecompressSync }[encoding];
+            const decode = encoding === "gzip" ? gunzipSync : encoding === "br" ? brotliDecompressSync : undefined;
             if (decode) { body = decode(raw); encoded = true; }
           } catch { /* Manual bodies need not be encoded. */ }
           resolve({ encoding, encoded, body: body.toString() });

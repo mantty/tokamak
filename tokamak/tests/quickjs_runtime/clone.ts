@@ -1,7 +1,7 @@
-import { outcome } from "./outcome.ts";
+import { member, outcome } from "./outcome.ts";
 
 export async function cloneContracts() {
-  const result = {};
+  const result: Record<string, unknown> = {};
   result.aliases = [new Date(1234), /abc/g, new Uint8Array([1,2]), new DataView(new ArrayBuffer(2)), new Blob(["a"]), new File(["a"], "name")].map(value => outcome(() => {
     const copy = structuredClone([value, value]);
     return { alias: copy[0] === copy[1], different: copy[0] !== value, tag: Object.prototype.toString.call(copy[0]) };
@@ -29,6 +29,7 @@ export async function cloneContracts() {
     buffer.resize(1);
     return structuredClone(view).byteLength;
   });
+  // @ts-expect-error The options are not dictionaries.
   result.options = [1, "x", true, null, undefined, () => {}, Symbol()].map(options => outcome(() => structuredClone(1, options)));
   result.transferGetter = outcome(() => {
     let reads = 0;
@@ -58,15 +59,15 @@ export async function cloneContracts() {
       ownProto: Object.hasOwn(copy, "__proto__"), getterCalls, descriptor: Object.getOwnPropertyDescriptor(copy, "value") };
   });
   result.sparse = outcome(() => {
-    const input = new Array(4); input[2] = "x"; input.extra = "yes";
+    const input = Object.assign(new Array<string>(4), { extra: "yes" }); input[2] = "x";
     const copy = structuredClone(input);
     return { length: copy.length, keys: Object.keys(copy), extra: copy.extra };
   });
   result.errors = [new TypeError("type", { cause: { code: 1 } }), new AggregateError([1,2], "many"), new DOMException("denied", "NotAllowedError")].map(error => outcome(() => {
-    error.extra = 3;
-    const copy = structuredClone([error, error]);
+    const tagged = Object.assign(error, { extra: 3 });
+    const copy = structuredClone([tagged, tagged]);
     return { alias: copy[0] === copy[1], name: copy[0].name, message: copy[0].message,
-      cause: copy[0].cause, extra: copy[0].extra, errors: copy[0].errors,
+      cause: copy[0].cause, extra: copy[0].extra, errors: member(copy[0], "errors"),
       error: copy[0] instanceof Error, dom: copy[0] instanceof DOMException };
   }));
   result.rejected = [() => {}, Symbol("x"), new WeakMap(), new WeakSet(), Promise.resolve(), new URL("https://example.com"), new Headers(), new Request("https://example.com"), new Response("x")].map(value => outcome(() => Object.prototype.toString.call(structuredClone(value))));
@@ -76,17 +77,19 @@ export async function cloneContracts() {
     const transfer = kind === "duplicate" ? [buffer, buffer] : kind === "invalid" ? [{}] : [buffer];
     const value = kind === "unlisted" ? {} : kind === "failedClone" ? { buffer, fn() {} } : { buffer };
     const clone = outcome(() => structuredClone(value, { transfer }));
-    return { original: buffer.byteLength, cloned: clone.buffer?.byteLength, byte: clone.buffer && new Uint8Array(clone.buffer)[0], error: clone.error, code: clone.code };
+    const cloned = member(clone, "buffer");
+    return { original: buffer.byteLength, cloned: member(cloned, "byteLength"), byte: cloned instanceof ArrayBuffer ? new Uint8Array(cloned)[0] : cloned,
+      error: member(clone, "error"), code: member(clone, "code") };
   }));
   result.cycles = outcome(() => {
-    const value = new Map(); const set = new Set([value]); value.set(value, set);
+    const value = new Map<unknown, Set<unknown>>(); const set = new Set<unknown>([value]); value.set(value, set);
     const copy = structuredClone(value);
-    return copy.get(copy).has(copy);
+    return copy.get(copy)?.has(copy);
   });
   result.mutatingCollections = ["map", "set"].map(kind => outcome(() => {
-    const collection = kind === "map" ? new Map() : new Set();
-    const value = { get entry() { kind === "map" ? collection.set("late", 2) : collection.add(2); return 1; } };
-    kind === "map" ? collection.set("first", value) : collection.add(value);
+    const collection = kind === "map" ? new Map<string, unknown>() : new Set<unknown>();
+    const value = { get entry() { collection instanceof Map ? collection.set("late", 2) : collection.add(2); return 1; } };
+    collection instanceof Map ? collection.set("first", value) : collection.add(value);
     const copy = structuredClone(collection);
     return { size: copy.size, values: [...copy.values()] };
   }));
@@ -95,7 +98,7 @@ export async function cloneContracts() {
     let calls = 0;
     Object.defineProperty(error, "cause", { enumerable: true, get() { return ++calls; } });
     const copy = structuredClone(error);
-    return { calls, cause: copy.cause, enumerable: Object.getOwnPropertyDescriptor(copy, "cause").enumerable };
+    return { calls, cause: copy.cause, enumerable: Object.getOwnPropertyDescriptor(copy, "cause")?.enumerable };
   });
   result.proxyPrototype = outcome(() => {
     let traps = 0;
@@ -111,7 +114,7 @@ export async function cloneContracts() {
   result.forgedHostPrototype = [Blob, Headers, URL, ReadableStream].map(Type => outcome(() => structuredClone(Object.create(Type.prototype))));
   result.sharedBuffer = outcome(() => {
     const buffer = new SharedArrayBuffer(8);
-    const copy = structuredClone([buffer, buffer, new Uint8Array(buffer)]);
+    const copy = structuredClone([buffer, buffer, new Uint8Array(buffer)] as const);
     new Uint8Array(buffer)[0] = 17;
     copy[2][1] = 23;
     return { different: copy[0] !== buffer, alias: copy[0] === copy[1], view: copy[2].buffer === copy[0], bytes: [...new Uint8Array(copy[0])], original: [...new Uint8Array(buffer)] };
@@ -125,8 +128,7 @@ export async function cloneContracts() {
     return { first, second: [buffer.byteLength, copy.byteLength], max: copy.maxByteLength, growable: copy.growable };
   });
   result.hostProperties = [new Blob(["x"]), new Headers(), new Request("https://e"), new Response(null)].map(value => outcome(() => {
-    value.extra = "custom";
-    const copy = structuredClone(value);
+    const copy = structuredClone(Object.assign(value, { extra: "custom" }));
     return { tag: Object.prototype.toString.call(copy), extra: copy.extra };
   }));
   result.resizableBuffer = outcome(() => {
@@ -144,11 +146,11 @@ export async function cloneContracts() {
     const buffer = kind === "shared" ? new SharedArrayBuffer(4) : new ArrayBuffer(4);
     const view = kind === "data" ? new DataView(buffer) : new Uint8Array(buffer);
     const copy = outcome(() => structuredClone(view, { transfer: [view] }));
-    return { original: buffer.byteLength, length: copy.byteLength, error: copy.error, code: copy.code };
+    return { original: buffer.byteLength, length: member(copy, "byteLength"), error: member(copy, "error"), code: member(copy, "code") };
   }));
   result.cryptoKey = await (async () => {
     const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 128 }, false, ["encrypt", "decrypt"]);
-    return outcome(() => { const copy = structuredClone([key,key]); return { key: copy[0] instanceof CryptoKey, alias: copy[0] === copy[1], different: copy[0] !== key, algorithm: copy[0].algorithm, extractable: copy[0].extractable, usages: copy[0].usages }; });
+    return outcome(() => { const copy = structuredClone([key,key]); return { key: copy[0] instanceof CryptoKey, alias: copy[0] === copy[1], different: copy[0] !== key, algorithm: member(copy[0], "algorithm"), extractable: member(copy[0], "extractable"), usages: member(copy[0], "usages") }; });
   })();
   return result;
 }

@@ -1,4 +1,4 @@
-async function echo(request) {
+async function echo(request: Request) {
   const bodyIsStream = request.body instanceof ReadableStream;
   const body = new Uint8Array(await request.arrayBuffer());
   return Response.json({
@@ -23,7 +23,7 @@ function stream() {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
-async function egress(port) {
+async function egress(port: string) {
   const response = await fetch(`http://127.0.0.1:${port}/upstream`);
   return Response.json({
     status: response.status,
@@ -40,4 +40,4 @@ export default {
     if (url.pathname === "/egress") return egress(env.UPSTREAM_PORT);
     return new Response("not found", { status: 404 });
   },
-};
+} satisfies ExportedHandler<{ UPSTREAM_PORT: string }>;

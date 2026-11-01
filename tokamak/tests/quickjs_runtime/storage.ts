@@ -3,31 +3,32 @@
 // reduced to their types.
 
 import { byteOutcomes, bytesOf } from "./bytes.ts";
+import { isObject, member, present } from "./outcome.ts";
 
-async function outcome(callback) {
+async function outcome(callback: () => unknown) {
   try {
     return await callback();
   } catch (error) {
-    return { error: String(error?.message ?? error), name: error?.name ?? null };
+    return { error: String(member(error, "message") ?? error), name: member(error, "name") ?? null };
   }
 }
 
-function meta(value) {
-  if (value === null || typeof value !== "object") return value;
+function meta(value: unknown) {
+  if (!isObject(value)) return value;
   const { duration, size_after, served_by, served_by_region, served_by_primary, timings, ...stable } = value;
   return { ...stable, duration: typeof duration, size_after: typeof size_after };
 }
 
-function result(value) {
-  if (value === null || typeof value !== "object") return value;
+function result(value: unknown) {
+  if (!isObject(value)) return value;
   if ("count" in value && "duration" in value) return { ...value, duration: typeof value.duration };
   if (!("meta" in value)) return value;
   return { ...value, meta: meta(value.meta) };
 }
 
-async function d1Contracts(db) {
-  const results = {};
-  const record = async (name, callback) => {
+async function d1Contracts(db: D1Database) {
+  const results: Record<string, unknown> = {};
+  const record = async (name: string, callback: () => unknown) => {
     const value = await outcome(callback);
     results[name] = Array.isArray(value) ? value.map(result) : result(value);
   };
@@ -107,27 +108,32 @@ async function d1Contracts(db) {
   return results;
 }
 
-function streamOf(...chunks) {
+function streamOf(...chunks: unknown[]) {
   return new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } });
 }
 
-async function streamText(stream) {
+async function streamText(stream: ReadableStream | null) {
   return new Response(stream).text();
 }
 
-function mapEntries(value) {
+function mapEntries(value: unknown) {
   return value instanceof Map ? { map: [...value.entries()] } : value;
 }
 
-async function kvContracts(kv) {
-  const results = {};
-  const record = async (name, callback) => { results[name] = mapEntries(await outcome(callback)); };
+// The cursor of a listing that has more keys after it.
+function cursorOf(listing: KVNamespaceListResult<unknown> | R2Objects) {
+  return "cursor" in listing ? listing.cursor : undefined;
+}
+
+async function kvContracts(kv: KVNamespace) {
+  const results: Record<string, unknown> = {};
+  const record = async (name: string, callback: () => unknown) => { results[name] = mapEntries(await outcome(callback)); };
   const now = () => Math.floor(Date.now() / 1000);
   await record("putText", () => kv.put("text", "héllo"));
   await record("getText", () => kv.get("text"));
   await record("getTypes", async () => ({
     text: await kv.get("text", "text"),
-    buffer: [...new Uint8Array(await kv.get("text", "arrayBuffer"))],
+    buffer: [...new Uint8Array(present(await kv.get("text", "arrayBuffer")))],
     stream: await streamText(await kv.get("text", { type: "stream" })),
     missing: await kv.get("missing"),
   }));
@@ -137,22 +143,26 @@ async function kvContracts(kv) {
   await record("withoutMetadata", () => kv.getWithMetadata("text"));
   await record("missingWithMetadata", () => kv.getWithMetadata("missing"));
   await record("badJson", () => kv.get("text", "json").then(() => "parsed", error => error.name));
+  // @ts-expect-error "blob" is not a value type.
   await record("unknownType", () => kv.get("text", "blob"));
+  // @ts-expect-error "blob" is not a value type.
   await record("unknownTypeMissing", () => kv.get("missing", "blob"));
   await record("cacheTtl", () => kv.get("text", { cacheTtl: 10 }));
   await record("putBuffer", async () => {
     await kv.put("buffer", new Uint8Array([0, 255, 1]).buffer);
     await kv.put("view", new Uint8Array([9, 8, 7, 6]).subarray(1, 3));
     await kv.put("stream", streamOf(new TextEncoder().encode("ab"), new TextEncoder().encode("cd")));
+    // @ts-expect-error A number is not a value.
     await kv.put("number", 42);
     return [
-      [...new Uint8Array(await kv.get("buffer", "arrayBuffer"))],
-      [...new Uint8Array(await kv.get("view", "arrayBuffer"))],
+      [...new Uint8Array(present(await kv.get("buffer", "arrayBuffer")))],
+      [...new Uint8Array(present(await kv.get("view", "arrayBuffer")))],
       await kv.get("stream"),
       await kv.get("number"),
       await kv.get("buffer"),
     ];
   });
+  // @ts-expect-error An object is not a value.
   await record("putObject", () => kv.put("object", {}));
   await record("emptyKey", () => kv.get(""));
   await record("dotKey", () => kv.put(".", "x"));
@@ -165,7 +175,7 @@ async function kvContracts(kv) {
   await record("expirationPast", () => kv.put("ttl", "x", { expiration: 1000 }));
   await record("expirationSoon", async () => {
     try { await kv.put("ttl", "x", { expiration: now() + 10 }); return "stored"; }
-    catch (error) { return error.message.replace(/of \d+\./, "of N."); }
+    catch (error) { return String(member(error, "message")).replace(/of \d+\./, "of N."); }
   });
   await record("metadataLarge", () => kv.put("meta", "x", { metadata: "m".repeat(1100) }));
   await record("valueLarge", () => kv.put("large", new Uint8Array(25 * 1024 * 1024 + 1)));
@@ -179,8 +189,8 @@ async function kvContracts(kv) {
     const { keys } = await kv.list({ prefix: "expir" });
     const absolute = (await kv.list({ prefix: "absolute" })).keys[0];
     return {
-      keys: keys.map(({ expiration, ...key }) => ({ ...key, ttl: Math.abs(expiration - now() - 3600) <= 2 })),
-      absolute: Math.abs(absolute.expiration - now() - 120) <= 2,
+      keys: keys.map(({ expiration, ...key }) => ({ ...key, ttl: Math.abs(present(expiration) - now() - 3600) <= 2 })),
+      absolute: Math.abs(present(absolute.expiration) - now() - 120) <= 2,
       value: await kv.get("expiring"),
     };
   });
@@ -191,9 +201,9 @@ async function kvContracts(kv) {
   });
   await record("listPages", async () => {
     const first = await kv.list({ prefix: "list/", limit: 2 });
-    const second = await kv.list({ prefix: "list/", limit: 2, cursor: first.cursor });
-    const rest = await kv.list({ prefix: "list/", cursor: second.cursor });
-    return { first: { ...first, cursor: typeof first.cursor }, second: second.keys.map(key => key.name), rest: rest.keys.map(key => key.name), complete: rest.list_complete };
+    const second = await kv.list({ prefix: "list/", limit: 2, cursor: cursorOf(first) });
+    const rest = await kv.list({ prefix: "list/", cursor: cursorOf(second) });
+    return { first: { ...first, cursor: typeof cursorOf(first) }, second: second.keys.map(key => key.name), rest: rest.keys.map(key => key.name), complete: rest.list_complete };
   });
   await record("listAll", async () => (await kv.list()).keys.map(key => key.name));
   await record("listLimitZero", async () => (await kv.list({ limit: 0, prefix: "list/" })).keys.length);
@@ -212,12 +222,17 @@ async function kvContracts(kv) {
   });
   await record("bulkTooMany", () => kv.get(Array.from({ length: 101 }, (_, index) => `k${index}`)));
   await record("bulkEmpty", () => kv.get([]));
+  // @ts-expect-error A bulk read cannot return buffers.
   await record("bulkType", () => kv.get(["list/a"], "arrayBuffer"));
   await record("bulkBadJson", () => kv.get(["list/a"], "json"));
   await record("bulkBadKey", () => kv.get(["ok", ""]));
   await record("invalidText", async () => { await kv.put("invalid", new Uint8Array([0xff, 0x61])); return kv.get("invalid"); });
-  await record("valueBytes", () => byteOutcomes(async value => { await kv.put("bytes", value); return bytesOf(kv.get("bytes", "arrayBuffer")); }));
-  await record("streamBytes", () => byteOutcomes(async value => { await kv.put("bytes", streamOf(value)); return bytesOf(kv.get("bytes", "arrayBuffer")); }));
+  await record("valueBytes", () => byteOutcomes(async value => {
+    // @ts-expect-error Some inputs are not bytes.
+    await kv.put("bytes", value);
+    return bytesOf(present(await kv.get("bytes", "arrayBuffer")));
+  }));
+  await record("streamBytes", () => byteOutcomes(async value => { await kv.put("bytes", streamOf(value)); return bytesOf(present(await kv.get("bytes", "arrayBuffer"))); }));
   await record("shape", () => Object.getOwnPropertyNames(Object.getPrototypeOf(kv)).sort());
   return results;
 }
@@ -227,7 +242,7 @@ const MIB = 1024 * 1024;
 // An object's metadata as JSON, with its random version and upload time
 // reduced to their types. Local Cloudflare reports no storage class, which
 // Cloudflare and tokamak do, so it is left out.
-function r2Object(object) {
+function r2Object(object: R2Object | null) {
   if (object === null || typeof object !== "object" || !("etag" in object)) return object;
   const { version, uploaded, storageClass, ...fields } = JSON.parse(JSON.stringify(object));
   return {
@@ -238,31 +253,37 @@ function r2Object(object) {
   };
 }
 
-async function r2Body(object) {
+async function r2Body(object: R2ObjectBody | R2Object | null) {
   if (object === null || !("body" in object)) return r2Object(object);
   return { ...r2Object(object), text: await object.text() };
 }
 
 // A listing's keys and prefixes, with the cursor reduced to the key it follows.
-function r2Keys(listing) {
+function r2Keys(listing: R2Objects) {
+  const cursor = cursorOf(listing);
   return {
     objects: listing.objects.map(object => object.key),
     delimitedPrefixes: listing.delimitedPrefixes,
     truncated: listing.truncated,
-    cursor: listing.cursor === undefined ? null : new TextDecoder().decode(Uint8Array.from(atob(listing.cursor), character => character.charCodeAt(0))),
+    cursor: cursor === undefined ? null : new TextDecoder().decode(Uint8Array.from(atob(cursor), character => character.charCodeAt(0))),
   };
 }
 
-function sized(length, fill) {
+function sized(length: number, fill: number) {
   return new Uint8Array(length).fill(fill);
 }
 
-async function r2Contracts(r2) {
-  const results = {};
-  const record = async (name, callback) => { results[name] = await outcome(callback); };
-  const written = await r2.put("a", "hello", { httpMetadata: { contentType: "text/plain", cacheExpiry: new Date(1000) }, customMetadata: { b: "1", a: "2", 10: 3 } });
+async function r2Contracts(r2: R2Bucket) {
+  const results: Record<string, unknown> = {};
+  const record = async (name: string, callback: () => unknown) => { results[name] = await outcome(callback); };
+  // @ts-expect-error Custom metadata values are converted to strings.
+  const written = present(await r2.put("a", "hello", { httpMetadata: { contentType: "text/plain", cacheExpiry: new Date(1000) }, customMetadata: { b: "1", a: "2", 10: 3 } }));
   await record("put", () => r2Object(written));
-  await record("valueBytes", () => byteOutcomes(async value => { await r2.put("bytes", value); return bytesOf((await r2.get("bytes")).arrayBuffer()); }));
+  await record("valueBytes", () => byteOutcomes(async value => {
+    // @ts-expect-error Some inputs are not bytes.
+    await r2.put("bytes", value);
+    return bytesOf(present(await r2.get("bytes")).arrayBuffer());
+  }));
   await record("shape", async () => {
     const object = await r2.get("a");
     const upload = await r2.createMultipartUpload("shape");
@@ -277,71 +298,96 @@ async function r2Contracts(r2) {
       bucketType: Object.prototype.toString.call(r2),
       key: Object.getOwnPropertyDescriptor(written, "key"),
       checksumTypes: [written.checksums.md5 instanceof ArrayBuffer, written.checksums.sha1],
-      md5: [...new Uint8Array(written.checksums.md5)],
+      md5: [...new Uint8Array(present(written.checksums.md5))],
     };
   });
   await record("head", async () => r2Object(await r2.head("a")));
   await record("metadataKeys", async () => {
-    const object = await r2.head("a");
-    return { http: Object.keys(object.httpMetadata), checksums: Object.keys(object.checksums.toJSON()), custom: Object.keys(object.customMetadata) };
+    const object = present(await r2.head("a"));
+    return { http: Object.keys(present(object.httpMetadata)), checksums: Object.keys(object.checksums.toJSON()), custom: Object.keys(present(object.customMetadata)) };
   });
   await record("nullOptions", async () => ({
-    get: (await r2.get("a", null)).key,
-    getFields: (await r2.get("a", { range: null, onlyIf: null })).key,
-    rangeOffset: (await r2.get("a", { range: { offset: null } })).range,
-    put: (await r2.put("n", "x", null)).key,
-    putHttp: (await r2.put("n", "x", { httpMetadata: null })).key,
+    // @ts-expect-error Null options are absent options.
+    get: present(await r2.get("a", null)).key,
+    // @ts-expect-error Null options are absent options.
+    getFields: present(await r2.get("a", { range: null, onlyIf: null })).key,
+    // @ts-expect-error Null options are absent options.
+    rangeOffset: present(await r2.get("a", { range: { offset: null } })).range,
+    // @ts-expect-error Null options are absent options.
+    put: present(await r2.put("n", "x", null)).key,
+    // @ts-expect-error Null options are absent options.
+    putHttp: present(await r2.put("n", "x", { httpMetadata: null })).key,
+    // @ts-expect-error Null options are absent options.
     list: (await r2.list(null)).truncated,
+    // @ts-expect-error A null limit is not a number.
     listLimit: await r2.list({ limit: null }).catch(error => error.message),
+    // @ts-expect-error Null options are absent options.
     upload: (await r2.createMultipartUpload("n", null)).key,
+    // @ts-expect-error An undefined key is the key "undefined".
     deleteUndefined: await r2.delete([undefined]).then(() => "deleted"),
   }));
-  const typeError = promise => promise.then(() => "accepted", error => [error.name, error.message]);
+  const typeError = (promise: Promise<unknown>) => promise.then(() => "accepted", error => [member(error, "name"), member(error, "message")]);
   await record("optionTypes", async () => ({
+    // @ts-expect-error The option has the wrong type.
     get: await typeError(r2.get("a", "x")),
+    // @ts-expect-error The option has the wrong type.
     put: await typeError(r2.put("a", "x", "x")),
+    // @ts-expect-error The option has the wrong type.
     list: await typeError(r2.list("x")),
+    // @ts-expect-error The option has the wrong type.
     onlyIf: await typeError(r2.get("a", { onlyIf: "x" })),
+    // @ts-expect-error The option has the wrong type.
     range: await typeError(r2.get("a", { range: 5 })),
+    // @ts-expect-error The option has the wrong type.
     customNull: await typeError(r2.put("t", "x", { customMetadata: null })),
+    // @ts-expect-error The option has the wrong type.
     customArray: await typeError(r2.put("t", "x", { customMetadata: [1] })),
+    // @ts-expect-error The option has the wrong type.
     customText: await typeError(r2.createMultipartUpload("t", { customMetadata: "ab" })),
+    // @ts-expect-error The option has the wrong type.
     http: await typeError(r2.put("t", "x", { httpMetadata: "x" })),
+    // @ts-expect-error The option has the wrong type.
     uploadHttp: await typeError(r2.createMultipartUpload("t", { httpMetadata: "x" })),
+    // @ts-expect-error The option has the wrong type.
     md5: await typeError(r2.put("t", "x", { md5: null })),
+    // @ts-expect-error The option has the wrong type.
     cacheExpiry: await typeError(r2.put("t", "x", { httpMetadata: { cacheExpiry: "2020" } })),
+    // @ts-expect-error The option has the wrong type.
     include: await typeError(r2.list({ include: [5] })),
+    // @ts-expect-error The option has the wrong type.
     cursor: await typeError(r2.list({ cursor: null })),
+    // @ts-expect-error The option has the wrong type.
     delete: await typeError(r2.delete()),
+    // @ts-expect-error The option has the wrong type.
     head: await typeError(r2.head()),
   }));
   await record("get", async () => r2Body(await r2.get("a")));
   await record("missing", async () => [await r2.head("missing"), await r2.get("missing"), await r2.get("missing", { onlyIf: { etagMatches: "x" } })]);
   await record("bodyTypes", async () => {
     await r2.put("json", "[1, \"é\"]", { httpMetadata: { contentType: "application/json" } });
-    const blob = await (await r2.get("json")).blob();
+    const blob = await present(await r2.get("json")).blob();
     return {
-      json: await (await r2.get("json")).json(),
-      bytes: Object.prototype.toString.call(await (await r2.get("json")).bytes()),
-      buffer: (await (await r2.get("json")).arrayBuffer()).byteLength,
+      json: await present(await r2.get("json")).json(),
+      bytes: Object.prototype.toString.call(await present(await r2.get("json")).bytes()),
+      buffer: (await present(await r2.get("json")).arrayBuffer()).byteLength,
       blob: [blob.size, blob.type],
-      stream: await new Response((await r2.get("json")).body).text(),
+      stream: await new Response(present(await r2.get("json")).body).text(),
     };
   });
   await record("blobTypes", async () => {
-    const types = {};
-    for (const [name, contentType] of [["mixedCase", "Text/Plain; Charset=UTF-8"], ["nonAscii", "text/pl\u00e4in"], ["none", undefined]]) {
+    const types: Record<string, unknown> = {};
+    for (const [name, contentType] of [["mixedCase", "Text/Plain; Charset=UTF-8"], ["nonAscii", "text/pl\u00e4in"], ["none", undefined]] as const) {
       try {
         await r2.put(`typed-${name}`, "x", contentType === undefined ? {} : { httpMetadata: { contentType } });
-        types[name] = (await (await r2.get(`typed-${name}`)).blob()).type;
+        types[name] = (await present(await r2.get(`typed-${name}`)).blob()).type;
       } catch (error) {
-        types[name] = error.name;
+        types[name] = member(error, "name");
       }
     }
     return types;
   });
   await record("bodyUsed", async () => {
-    const object = await r2.get("a");
+    const object = present(await r2.get("a"));
     const before = object.bodyUsed;
     const reader = object.body.getReader();
     await reader.read();
@@ -354,20 +400,22 @@ async function r2Contracts(r2) {
     writer.close();
     const sizes = [];
     for (const value of [null, undefined, new Uint8Array([1, 2]).buffer, new Uint8Array([9, 8, 7]).subarray(1), new Blob(["xyz"]), new Response("abcd").body, new Request("http://x", { method: "POST", body: "abcdef" }).body, fixed.readable]) {
-      sizes.push((await r2.put("value", value)).size);
+      // @ts-expect-error undefined is not a value.
+      sizes.push(present(await r2.put("value", value)).size);
     }
-    sizes.push((await r2.put("copy", (await r2.get("a")).body)).size);
-    const [first, second] = new Response("abcde").body.tee();
+    sizes.push(present(await r2.put("copy", present(await r2.get("a")).body)).size);
+    const [first, second] = present(new Response("abcde").body).tee();
     const cloned = new Response("abc");
     cloned.clone();
     const textChunks = new FixedLengthStream(2);
     const textWriter = textChunks.writable.getWriter();
+    // @ts-expect-error A string is not bytes.
     textWriter.write("ab").catch(() => {});
     textWriter.close().catch(() => {});
     for (const value of [first, second, new Response("abc").clone().body, cloned.body, new Blob(["xy"]).stream(), textChunks.readable]) {
-      sizes.push((await r2.put("value", value)).size);
+      sizes.push(present(await r2.put("value", value)).size);
     }
-    return { sizes, copy: await (await r2.get("copy")).text() };
+    return { sizes, copy: await present(await r2.get("copy")).text() };
   });
   await record("streamedChunks", async () => {
     const length = 2.5 * MIB;
@@ -382,15 +430,18 @@ async function r2Contracts(r2) {
       }
       await writer.close();
     })();
-    const object = await r2.put("streamed", fixed.readable);
+    const object = present(await r2.put("streamed", fixed.readable));
     await writing;
     return [object.size, object.etag];
   });
+  // @ts-expect-error A number is not a value.
   await record("valueNumber", () => r2.put("n", 5));
+  // @ts-expect-error An object is not a value.
   await record("valueObject", () => r2.put("n", {}));
   await record("valueStream", () => r2.put("n", new ReadableStream({ start(controller) { controller.close(); } })));
-  await record("keyNumber", async () => (await r2.put(5, "x")).key);
-  await record("keyEmpty", async () => (await r2.put("", "x")).key);
+  // @ts-expect-error Keys are converted to strings.
+  await record("keyNumber", async () => present(await r2.put(5, "x")).key);
+  await record("keyEmpty", async () => present(await r2.put("", "x")).key);
   await record("keyLong", () => r2.put("k".repeat(1025), "x"));
   await record("keyLongHead", () => r2.head("k".repeat(1025)));
   await record("keyLongDelete", () => r2.delete(["ok", "k".repeat(1025)]));
@@ -402,11 +453,12 @@ async function r2Contracts(r2) {
     object.writeHttpMetadata(headers);
     return { object: r2Object(object), headers: [...headers] };
   });
+  // @ts-expect-error A plain object is not Headers.
   await record("writeHttpMetadataBad", () => written.writeHttpMetadata({}));
   await record("checksums", async () => {
     const sha1 = await r2.put("c", "x", { sha1: "11F6AD8EC52A2984ABAAFD7C3B516503785C2072" });
     const md5 = await r2.put("c", "x", { md5: new Uint8Array([0x9d, 0xd4, 0xe4, 0x61, 0x26, 0x8c, 0x80, 0x34, 0xf5, 0xc8, 0x56, 0x4e, 0x15, 0x5c, 0x67, 0xa6]) });
-    return { sha1: sha1.checksums.toJSON(), md5: JSON.stringify(md5.checksums), head: JSON.stringify((await r2.head("c")).checksums) };
+    return { sha1: sha1.checksums.toJSON(), md5: JSON.stringify(md5.checksums), head: JSON.stringify(present(await r2.head("c")).checksums) };
   });
   await record("checksumMismatch", () => r2.put("c", "x", { sha256: "0".repeat(64) }));
   await record("checksumTwo", () => r2.put("c", "x", { md5: "0".repeat(32), sha1: "0".repeat(40) }));
@@ -414,27 +466,35 @@ async function r2Contracts(r2) {
   await record("checksumBytes", () => r2.put("c", "x", { sha384: new Uint8Array(4) }));
   await record("checksumHex", () => r2.put("c", "x", { md5: "z".repeat(32) }));
   await r2.put("r", "0123456789");
-  const ranges = {
+  const ranges: Record<string, R2Range> = {
     offset: { offset: 2 }, offsetLength: { offset: 2, length: 3 }, length: { length: 4 }, suffix: { suffix: 3 }, longSuffix: { suffix: 30 },
     zeroSuffix: { suffix: 0 }, atEnd: { offset: 10 }, pastEnd: { offset: 11 }, zeroLength: { offset: 1, length: 0 }, longLength: { offset: 8, length: 10 },
     negative: { offset: -1 }, fraction: { offset: 1.5 }, negativeLength: { length: -2 }, suffixOffset: { suffix: 1, offset: 1 }, suffixLength: { suffix: 1, length: 1 },
-    negativeSuffix: { suffix: -1 }, empty: {}, text: { offset: "2" },
+    negativeSuffix: { suffix: -1 },
+    // @ts-expect-error A range needs an offset, a length or a suffix.
+    empty: {},
+    // @ts-expect-error An offset is a number.
+    text: { offset: "2" },
   };
   for (const [name, range] of Object.entries(ranges)) await record(`range_${name}`, async () => r2Body(await r2.get("r", { range })));
   for (const header of ["bytes=1-3", "bytes=-2", "bytes=5-", "bytes=1-2,4-5", "bytes=20-", "items=1-2", "bytes=3-1", "bytes=-0", "bytes=-20", "Bytes = 2-4"]) {
     await record(`rangeHeader_${header}`, async () => r2Body(await r2.get("r", { range: new Headers({ range: header }) })));
   }
   await record("rangeHeaderNone", async () => r2Body(await r2.get("r", { range: new Headers() })));
-  const r = await r2.head("r");
+  const r = present(await r2.head("r"));
   const before = new Date(r.uploaded.getTime() - 5000);
   const after = new Date(r.uploaded.getTime() + 5000);
   const endOfUploadSecond = new Date(Math.floor(r.uploaded.getTime() / 1000) * 1000 + 999);
-  const conditions = {
+  const conditions: Record<string, R2Conditional> = {
     match: { etagMatches: r.etag }, noMatch: { etagMatches: "x" }, wildcard: { etagMatches: "*" }, notMatch: { etagDoesNotMatch: r.etag }, notMatchOther: { etagDoesNotMatch: "x" },
     after: { uploadedAfter: before }, afterLater: { uploadedAfter: after }, before: { uploadedBefore: after }, beforeEarlier: { uploadedBefore: before },
     same: { uploadedBefore: r.uploaded }, sameSecond: { uploadedBefore: endOfUploadSecond, secondsGranularity: true },
     afterOverridden: { uploadedAfter: after, etagDoesNotMatch: "x" }, beforeOverridden: { uploadedBefore: before, etagMatches: r.etag },
-    quoted: { etagMatches: `"${r.etag}"` }, dateText: { uploadedAfter: "2020-01-01" }, etagNumber: { etagMatches: 5 },
+    quoted: { etagMatches: `"${r.etag}"` },
+    // @ts-expect-error A date is a Date.
+    dateText: { uploadedAfter: "2020-01-01" },
+    // @ts-expect-error An etag is a string.
+    etagNumber: { etagMatches: 5 },
   };
   for (const [name, onlyIf] of Object.entries(conditions)) await record(`onlyIf_${name}`, async () => r2Body(await r2.get("r", { onlyIf })));
   const headerConditions = {
@@ -446,7 +506,7 @@ async function r2Contracts(r2) {
   for (const [name, headers] of Object.entries(headerConditions)) await record(`onlyIfHeaders_${name}`, async () => r2Body(await r2.get("r", { onlyIf: new Headers(headers) })));
   await record("onlyIfWithRange", async () => r2Body(await r2.get("r", { onlyIf: { etagMatches: "x" }, range: { offset: 1 } })));
   await record("putConditions", async () => {
-    const outcomes = {};
+    const outcomes: Record<string, unknown> = {};
     outcomes.fails = await r2.put("r", "changed", { onlyIf: { etagMatches: "x" } });
     outcomes.holds = r2Object(await r2.put("r", "changed", { onlyIf: { etagMatches: r.etag } }));
     outcomes.create = r2Object(await r2.put("new", "x", { onlyIf: { etagDoesNotMatch: "*" } }));
@@ -454,13 +514,14 @@ async function r2Contracts(r2) {
     outcomes.missingMatch = await r2.put("new2", "x", { onlyIf: { etagMatches: "x" } });
     outcomes.missingAfter = await r2.put("new3", "x", { onlyIf: { uploadedAfter: before } });
     outcomes.missingBefore = r2Object(await r2.put("new4", "x", { onlyIf: { uploadedBefore: before } }));
-    outcomes.text = await (await r2.get("r")).text();
+    outcomes.text = await present(await r2.get("r")).text();
     return outcomes;
   });
   await record("delete", async () => {
     await r2.put("d1", "x");
     await r2.put("d2", "x");
     await r2.delete("d1");
+    // @ts-expect-error Keys are converted to strings.
     await r2.delete(["d2", "d3", 5]);
     await r2.delete([]);
     return [await r2.head("d1"), await r2.head("d2")];
@@ -476,11 +537,11 @@ async function r2Contracts(r2) {
   await record("listEmptyDelimiter", async () => r2Keys(await r2.list({ prefix: "l/", delimiter: "" })));
   await record("listPages", async () => {
     const pages = [];
-    let cursor;
+    let cursor: string | undefined;
     do {
       const page = await r2.list({ prefix: "l/", delimiter: "/", limit: 2, cursor });
       pages.push(r2Keys(page));
-      cursor = page.cursor;
+      cursor = cursorOf(page);
     } while (cursor);
     return pages;
   });
@@ -488,21 +549,25 @@ async function r2Contracts(r2) {
   await record("listStartAfterDelimiter", async () => r2Keys(await r2.list({ prefix: "l/", startAfter: "l/b/2", delimiter: "/" })));
   await record("listStartAfterCursor", async () => {
     const page = await r2.list({ prefix: "l/", limit: 3 });
-    return [r2Keys(await r2.list({ prefix: "l/", cursor: page.cursor, startAfter: "l/c" })), r2Keys(await r2.list({ prefix: "l/", cursor: page.cursor, startAfter: "l/a" }))];
+    return [r2Keys(await r2.list({ prefix: "l/", cursor: cursorOf(page), startAfter: "l/c" })), r2Keys(await r2.list({ prefix: "l/", cursor: cursorOf(page), startAfter: "l/a" }))];
   });
   await record("listInclude", async () => (await r2.list({ prefix: "l/b/", include: ["httpMetadata", "customMetadata"] })).objects.map(r2Object));
   await record("listIncludeCustom", async () => (await r2.list({ prefix: "l/b/c", include: ["customMetadata"] })).objects.map(object => object.customMetadata));
+  // @ts-expect-error "x" is not a metadata kind.
   await record("listIncludeBad", () => r2.list({ include: ["x"] }));
+  // @ts-expect-error The kinds are an array.
   await record("listIncludeText", () => r2.list({ include: "httpMetadata" }));
   await record("listLimits", async () => ({
     zero: await r2.list({ limit: 0 }).catch(error => error.message),
     large: await r2.list({ limit: 1001 }).catch(error => error.message),
+    // @ts-expect-error A limit is a number.
     text: (await r2.list({ prefix: "l/", limit: "2" })).objects.length,
     fraction: (await r2.list({ prefix: "l/", limit: 1.5 })).objects.length,
     notNumber: await r2.list({ limit: NaN }).catch(error => error.message),
     minusOne: (await r2.list({ prefix: "l/", limit: -1 })).objects.length,
     huge: await r2.list({ limit: 2 ** 32 + 5 }).catch(error => [error.name, error.message]),
   }));
+  // @ts-expect-error A prefix is a string.
   await record("listPrefixNumber", () => r2.list({ prefix: 5 }));
   await record("listPrefixLong", async () => r2Keys(await r2.list({ prefix: "k".repeat(1100) })));
   await record("multipart", async () => {
@@ -510,7 +575,7 @@ async function r2Contracts(r2) {
     const second = await upload.uploadPart(2, "tail");
     const first = await upload.uploadPart(1, sized(5 * MIB, 1));
     const object = await upload.complete([first, second]);
-    const tail = await r2.get("big", { range: { offset: 5 * MIB - 2 } });
+    const tail = present(await r2.get("big", { range: { offset: 5 * MIB - 2 } }));
     return {
       upload: { key: upload.key, id: typeof upload.uploadId, json: Object.keys(JSON.parse(JSON.stringify(upload))) },
       part: { keys: Object.keys(first), number: first.partNumber, etag: typeof first.etag },
@@ -527,13 +592,13 @@ async function r2Contracts(r2) {
     const parts = [await upload.uploadPart(1, sized(5 * MIB, 1)), await upload.uploadPart(2, sized(5 * MIB, 2)), await upload.uploadPart(3, "end")];
     const misordered = await upload.complete([parts[2], parts[1], parts[0]]).catch(error => error.message);
     const object = await upload.complete([parts[1], parts[0], parts[2]]);
-    const bytes = new Uint8Array(await (await r2.get("ordered")).arrayBuffer());
+    const bytes = new Uint8Array(await present(await r2.get("ordered")).arrayBuffer());
     return { misordered, size: object.size, etag: object.etag.slice(-2), bytes: [bytes[0], bytes[5 * MIB], bytes[bytes.length - 1]] };
   });
   await record("multipartSingle", async () => {
     const upload = await r2.createMultipartUpload("single");
     const object = await upload.complete([await upload.uploadPart(1, "abc")]);
-    return { object: r2Object(object), text: await (await r2.get("single")).text() };
+    return { object: r2Object(object), text: await present(await r2.get("single")).text() };
   });
   await record("multipartEmpty", async () => r2Object(await (await r2.createMultipartUpload("empty")).complete([])));
   await record("multipartSubset", async () => {
@@ -552,7 +617,7 @@ async function r2Contracts(r2) {
     await r2.put("replacedObject", "old");
     const upload = await r2.createMultipartUpload("replacedObject");
     await upload.complete([await upload.uploadPart(1, "new")]);
-    return (await r2.get("replacedObject")).text();
+    return present(await r2.get("replacedObject")).text();
   });
   await record("multipartSmall", async () => {
     const upload = await r2.createMultipartUpload("small");
@@ -580,7 +645,7 @@ async function r2Contracts(r2) {
     const unknown = r2.resumeMultipartUpload("k", "nope");
     const upload = await r2.createMultipartUpload("states");
     const other = r2.resumeMultipartUpload("other", upload.uploadId);
-    const outcomes = {
+    const outcomes: Record<string, unknown> = {
       resumed: [unknown.key, unknown.uploadId],
       unknownPart: await unknown.uploadPart(1, "x").catch(error => error.message),
       unknownComplete: await unknown.complete([]).catch(error => error.message),
@@ -598,12 +663,16 @@ async function r2Contracts(r2) {
     const upload = await r2.createMultipartUpload("arguments");
     return {
       zero: await upload.uploadPart(0, "a").catch(error => [error.name, error.message]),
+      // @ts-expect-error Part numbers are converted to numbers.
       text: (await upload.uploadPart("2", "a")).partNumber,
       stream: await upload.uploadPart(1, new ReadableStream({ start(controller) { controller.close(); } })).catch(error => [error.name, error.message]),
+      // @ts-expect-error A part needs a value.
       nothing: await upload.uploadPart(1, null).catch(error => [error.name, error.message]),
+      // @ts-expect-error Completing needs the parts.
       completeNothing: await upload.complete().catch(error => [error.name, error.message]),
       completeZero: await upload.complete([{ partNumber: 0, etag: "x" }]).catch(error => [error.name, error.message]),
-      resume: (() => { try { return r2.resumeMultipartUpload("k").uploadId; } catch (error) { return [error.name, error.message]; } })(),
+      // @ts-expect-error Resuming needs the upload ID.
+      resume: (() => { try { return r2.resumeMultipartUpload("k").uploadId; } catch (error) { return [member(error, "name"), member(error, "message")]; } })(),
       longKey: await r2.createMultipartUpload("k".repeat(1025)).catch(error => error.message),
     };
   });
@@ -614,4 +683,4 @@ export default {
   async fetch(request, env) {
     return Response.json({ d1: await d1Contracts(env.DB), kv: await kvContracts(env.KV), r2: await r2Contracts(env.R2) });
   },
-};
+} satisfies ExportedHandler<{ DB: D1Database; KV: KVNamespace; R2: R2Bucket }>;

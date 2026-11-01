@@ -40,8 +40,9 @@ declare global {
     readonly _disturbed?: boolean;
   }
 
+  // The standard read options, which workers-types leaves out.
   interface ReadableStreamBYOBReader {
-    read<T extends ArrayBufferView>(view: T, options: { min: number }): Promise<ReadableStreamReadResult<T>>;
+    read<T extends ArrayBufferView>(view: T, options?: { min?: number }): Promise<ReadableStreamReadResult<T>>;
   }
 
   interface ReadableStreamBYOBRequest {

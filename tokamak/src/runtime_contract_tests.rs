@@ -338,7 +338,7 @@ fn streaming_fetch_matches_cloudflare() -> TestResult {
     use std::io::BufRead;
     use std::process::Stdio;
     let mut reference = Command::new("node")
-        .arg(fixture_root().join("http-reference.ts"))
+        .arg(fixture_root().join("http-reference.mts"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
@@ -504,7 +504,7 @@ export default class App extends WorkerEntrypoint {
 
 #[test]
 fn worker_matches_cloudflare_node_compat() -> TestResult {
-    let expected = node_reference("workerd-reference.ts")?;
+    let expected = node_reference("workerd-reference.mts")?;
     let directory = tempfile::tempdir()?;
     let worker = entry_worker(&fixture_root().join("startup.ts"), directory.path())?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
@@ -513,7 +513,7 @@ fn worker_matches_cloudflare_node_compat() -> TestResult {
 
 #[test]
 fn text_and_data_modules_match_cloudflare() -> TestResult {
-    let expected = node_reference("modules-reference.ts")?;
+    let expected = node_reference("modules-reference.mts")?;
     let directory = tempfile::tempdir()?;
     let worker = module_worker(
         &fixture_root().join("modules"),
@@ -598,7 +598,7 @@ fn report_contract_difference(
 
 #[test]
 fn storage_bindings_match_cloudflare() -> TestResult {
-    let expected = node_reference("storage-reference.ts")?;
+    let expected = node_reference("storage-reference.mts")?;
     let directory = tempfile::tempdir()?;
     let worker = entry_worker(
         &fixture_root().join("storage.ts"),
@@ -715,7 +715,7 @@ export default {{ async fetch() {{
 
 #[test]
 fn request_boundary_matches_cloudflare() -> TestResult {
-    let expected = node_reference("boundary-reference.ts")?;
+    let expected = node_reference("boundary-reference.mts")?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let upstream = thread::spawn(move || serve_gzip_upstream(&listener));
@@ -766,7 +766,7 @@ fn response_encoding_matches_cloudflare() -> TestResult {
     use tokio::io::AsyncReadExt;
 
     let reference = Command::new("node")
-        .arg(fixture_root().join("encoding-reference.ts"))
+        .arg(fixture_root().join("encoding-reference.mts"))
         .output()?;
     assert!(
         reference.status.success(),
@@ -937,7 +937,7 @@ fn http_request(method: &str, target: &str, body: Option<Vec<u8>>) -> HttpReques
     }
 }
 
-/// One asset configuration's answers in `assets-reference.ts`.
+/// One asset configuration's answers in `assets-reference.mts`.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AssetsContract {
@@ -952,7 +952,7 @@ struct AssetsContract {
 #[test]
 fn assets_match_cloudflare() -> TestResult {
     let contracts: Vec<AssetsContract> =
-        serde_json::from_value(node_reference("assets-reference.ts")?)?;
+        serde_json::from_value(node_reference("assets-reference.mts")?)?;
     let fixture = fixture_root().join("assets");
     let directory = tempfile::tempdir()?;
     let worker = entry_worker(&fixture.join("worker.ts"), directory.path())?;

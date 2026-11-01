@@ -159,7 +159,7 @@ fn frontend_rpc_uses_the_packaged_native_worker_and_owns_its_streams() -> TestRe
     package_modules(&app.tokamak_worker(), &modules, &json!({}))?;
     let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
     let output = Command::new("node")
-        .arg(fixtures.join("rpc-client.ts"))
+        .arg(fixtures.join("rpc-client.mts"))
         .arg(runtime.port().to_string())
         .arg(directory.path().join("state"))
         .output()?;

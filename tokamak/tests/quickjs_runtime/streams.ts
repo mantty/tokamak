@@ -1,7 +1,9 @@
 import { Readable, Writable, Duplex } from "node:stream";
-import { asyncOutcome } from "./outcome.ts";
+// The global ReadableStream, which @types/node declares apart from workers-types.
+import { ReadableStream as NodeReadableStream } from "node:stream/web";
+import { asyncOutcome, member } from "./outcome.ts";
 
-async function compress(format, bytes) {
+async function compress(format: "gzip" | "deflate" | "deflate-raw", bytes: Uint8Array) {
   const stream = new CompressionStream(format);
   const writer = stream.writable.getWriter();
   await writer.write(bytes);
@@ -9,8 +11,14 @@ async function compress(format, bytes) {
   return new Response(stream.readable).bytes();
 }
 
+// The bytes a read filled, which a read that is not done always has.
+function readBytes(view: Uint8Array | undefined) {
+  if (view === undefined) throw new TypeError("The read has no view");
+  return [...view];
+}
+
 export async function streamContracts() {
-  const result = {};
+  const result: Record<string, unknown> = {};
   result.encoding = await asyncOutcome(async () => {
     const stream = new TextEncoderStream();
     const output = new Response(stream.readable).text();
@@ -19,9 +27,10 @@ export async function streamContracts() {
     await writer.close();
     return output;
   });
-  result.identity = {};
-  for (const [name, make] of [["identity", () => new IdentityTransformStream()], ["fixed", () => new FixedLengthStream(3)]]) {
-    result.identity[name] = await asyncOutcome(async () => {
+  const identity: Record<string, unknown> = {};
+  result.identity = identity;
+  for (const [name, make] of [["identity", () => new IdentityTransformStream()], ["fixed", () => new FixedLengthStream(3)]] as const) {
+    identity[name] = await asyncOutcome(async () => {
       const stream = make();
       const reader = stream.readable.getReader({ mode: "byob" });
       const writer = stream.writable.getWriter();
@@ -31,10 +40,10 @@ export async function streamContracts() {
       const { value } = await read;
       await writer.close();
       const end = await reader.read(new Uint8Array(8));
-      return { bytes: [...value], inputLength: input.byteLength, done: end.done };
+      return { bytes: readBytes(value), inputLength: input.byteLength, done: end.done };
     });
   }
-  result.identity.partialRead = await asyncOutcome(async () => {
+  identity.partialRead = await asyncOutcome(async () => {
     const stream = new IdentityTransformStream();
     const reader = stream.readable.getReader({ mode: "byob" });
     const writer = stream.writable.getWriter();
@@ -46,16 +55,16 @@ export async function streamContracts() {
     const second = await reader.read(new Uint8Array(2));
     await writing;
     await writer.close();
-    return { first: [...first.value], second: [...second.value], afterFirst, written };
+    return { first: readBytes(first.value), second: readBytes(second.value), afterFirst, written };
   });
-  result.identity.cancelPending = await asyncOutcome(async () => {
+  identity.cancelPending = await asyncOutcome(async () => {
     const stream = new IdentityTransformStream();
     const writer = stream.writable.getWriter();
-    const writing = writer.write(new Uint8Array([1])).then(() => "written", error => error.message);
+    const writing = writer.write(new Uint8Array([1])).then(() => "written", error => member(error, "message"));
     await stream.readable.cancel(new Error("cancelled"));
     return writing;
   });
-  result.identity.switchReaders = await asyncOutcome(async () => {
+  identity.switchReaders = await asyncOutcome(async () => {
     const stream = new IdentityTransformStream();
     const writer = stream.writable.getWriter();
     const writing = writer.write(new Uint8Array([1, 2, 3, 4]));
@@ -66,9 +75,9 @@ export async function streamContracts() {
     const rest = await reader.read();
     await writing;
     await writer.close();
-    return [...first.value, ...rest.value];
+    return [...readBytes(first.value), ...readBytes(rest.value)];
   });
-  result.identity.fixedErrors = await Promise.all([1, 3].map(length => asyncOutcome(async () => {
+  identity.fixedErrors = await Promise.all([1, 3].map(length => asyncOutcome(async () => {
     const stream = new FixedLengthStream(length);
     const body = new Response(stream.readable).bytes();
     body.catch(() => {});
@@ -77,12 +86,14 @@ export async function streamContracts() {
     await writer.close();
     return [...await body];
   })));
-  result.decompression = {};
-  for (const format of ["gzip", "deflate", "deflate-raw"]) {
+  const decompression: Record<string, Record<string, unknown>> = {};
+  result.decompression = decompression;
+  for (const format of ["gzip", "deflate", "deflate-raw"] as const) {
     const bytes = await compress(format, new TextEncoder().encode("incremental codec"));
-    result.decompression[format] = {};
+    const formatResults: Record<string, unknown> = {};
+    decompression[format] = formatResults;
     for (const variant of ["valid", "truncated", "trailing", "invalid"]) {
-      result.decompression[format][variant] = await asyncOutcome(async () => {
+      formatResults[variant] = await asyncOutcome(async () => {
         const input = variant === "truncated" ? bytes.subarray(0, bytes.length - 1)
           : variant === "trailing" ? new Uint8Array([...bytes, 1])
           : variant === "invalid" ? new Uint8Array([255, 255, 255, 255]) : bytes;
@@ -95,7 +106,7 @@ export async function streamContracts() {
         return output;
       });
     }
-    result.decompression[format].incremental = await asyncOutcome(async () => {
+    formatResults.incremental = await asyncOutcome(async () => {
       const stream = new DecompressionStream(format);
       const reader = stream.readable.getReader({ mode: "byob" });
       const writer = stream.writable.getWriter();
@@ -105,7 +116,7 @@ export async function streamContracts() {
       await writer.close();
       return { value: new TextDecoder().decode(chunk.value), done: (await reader.read(new Uint8Array(1))).done };
     });
-    result.decompression[format].splitInput = await asyncOutcome(async () => {
+    formatResults.splitInput = await asyncOutcome(async () => {
       const stream = new DecompressionStream(format);
       const text = new Response(stream.readable).text();
       const writer = stream.writable.getWriter();
@@ -116,19 +127,19 @@ export async function streamContracts() {
   }
   result.adapters = {
     duplexFrom: await asyncOutcome(async () => {
-      const writes = [];
+      const writes: number[][] = [];
       const duplex = Duplex.fromWeb({
-        readable: new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1, 2])); c.close(); } }),
+        readable: new NodeReadableStream({ start(c) { c.enqueue(new Uint8Array([1, 2])); c.close(); } }),
         writable: new WritableStream({ write(chunk) { writes.push([...chunk]); } }),
       });
-      const finished = new Promise((resolve, reject) => { duplex.on("error", reject); duplex.end(new Uint8Array([3, 4]), resolve); });
-      const reads = [];
+      const finished = new Promise<void>((resolve, reject) => { duplex.on("error", reject); duplex.end(new Uint8Array([3, 4]), resolve); });
+      const reads: number[] = [];
       for await (const chunk of duplex) reads.push(...chunk);
       await finished;
       return { reads, writes, halfOpen: duplex.allowHalfOpen };
     }),
     duplexTo: await asyncOutcome(async () => {
-      const writes = [];
+      const writes: number[][] = [];
       const duplex = new Duplex({
         read() { this.push(new Uint8Array([5, 6])); this.push(null); },
         write(chunk, encoding, callback) { writes.push([...chunk]); callback(); },
@@ -143,8 +154,8 @@ export async function streamContracts() {
       return { reads: [...await output], writes };
     }),
     readableCancel: await asyncOutcome(async () => {
-      let reason;
-      const stream = Readable.fromWeb(new ReadableStream({ cancel(value) { reason = value.message; } }));
+      let reason: unknown;
+      const stream = Readable.fromWeb(new NodeReadableStream({ cancel(value) { reason = member(value, "message"); } }));
       const closed = new Promise(resolve => stream.on("close", resolve));
       stream.on("error", () => {});
       stream.destroy(new Error("cancelled"));
@@ -152,8 +163,8 @@ export async function streamContracts() {
       return reason;
     }),
     writableAbort: await asyncOutcome(async () => {
-      let reason;
-      const stream = Writable.fromWeb(new WritableStream({ abort(value) { reason = value.message; } }));
+      let reason: unknown;
+      const stream = Writable.fromWeb(new WritableStream({ abort(value) { reason = member(value, "message"); } }));
       const closed = new Promise(resolve => stream.on("close", resolve));
       stream.on("error", () => {});
       stream.destroy(new Error("aborted"));
@@ -161,8 +172,11 @@ export async function streamContracts() {
       return reason;
     }),
     invalid: await Promise.all([null, {}, 1].flatMap(value => [
+      // @ts-expect-error The values are not streams.
       asyncOutcome(() => Readable.fromWeb(value)), asyncOutcome(() => Writable.fromWeb(value)),
+      // @ts-expect-error The values are not streams.
       asyncOutcome(() => Duplex.fromWeb(value)), asyncOutcome(() => Readable.toWeb(value)),
+      // @ts-expect-error The values are not streams.
       asyncOutcome(() => Writable.toWeb(value)), asyncOutcome(() => Duplex.toWeb(value)),
     ])),
   };

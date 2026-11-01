@@ -6,11 +6,11 @@ export default {
     if (url.pathname !== "/binding") {
       return new Response(`Worker ${request.method} ${url.pathname}`);
     }
-    const answers = [];
-    for (const [method, path] of await request.json()) {
+    const answers: unknown[] = [];
+    for (const [method, path] of await request.json<[string, string][]>()) {
       const response = await env.STATIC.fetch(new URL(path, url), { method });
       answers.push({ status: response.status, statusText: response.statusText, body: await response.text() });
     }
     return Response.json(answers);
   },
-};
+} satisfies ExportedHandler<{ STATIC: Fetcher }>;

@@ -1018,7 +1018,7 @@ pnpm --dir examples/astro install --frozen-lockfile
 pnpm --dir examples/astro run build
 cargo fmt --all --check
 cargo test -p tokamak --features native
-node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
+node --test tokamak/tests/quickjs_runtime/runtime.test.mts
 cargo test -p tokamak-cli --lib --bin tok --test cli --test platform_pack
 cargo test -p xtask
 bash platforms/android/tests/pack.sh

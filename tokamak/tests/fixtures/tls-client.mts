@@ -3,7 +3,7 @@ import net from 'node:net'
 import tls from 'node:tls'
 
 const [port, host, authority, certificate, key] = process.argv.slice(2)
-const fail = (error) => {
+const fail = (error: unknown): never => {
   console.error(error instanceof Error ? error.message : error)
   process.exit(1)
 }
@@ -25,7 +25,7 @@ socket.on('data', (chunk) => {
   socket.removeAllListeners('data')
   const remainder = response.subarray(end + 4)
   if (remainder.length > 0) socket.unshift(remainder)
-  const options = { socket, servername: host, ca: fs.readFileSync(authority) }
+  const options: tls.ConnectionOptions = { socket, servername: host, ca: fs.readFileSync(authority) }
   if (certificate) options.cert = fs.readFileSync(certificate)
   if (key) options.key = fs.readFileSync(key)
   const secure = tls.connect(options)

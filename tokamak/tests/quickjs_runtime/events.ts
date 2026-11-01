@@ -1,16 +1,17 @@
 import events, { EventEmitter, EventEmitterAsyncResource } from "node:events";
+import { member } from "./outcome.ts";
 
 // The name, code and message of a thrown error.
-function failure(error) {
-  return { error: error.name, code: error.code ?? null, message: error.message };
+function failure(error: unknown) {
+  return { error: member(error, "name"), code: member(error, "code") ?? null, message: member(error, "message") };
 }
 
-function attempt(callback) {
+function attempt<T>(callback: () => T) {
   try { return callback(); }
   catch (error) { return failure(error); }
 }
 
-async function asyncAttempt(callback) {
+async function asyncAttempt<T>(callback: () => T | Promise<T>) {
   try { return await callback(); }
   catch (error) { return failure(error); }
 }
@@ -18,15 +19,16 @@ async function asyncAttempt(callback) {
 const turn = () => new Promise(resolve => setTimeout(resolve, 1));
 
 // An emitter's own state: its property names and their values.
-function ownState(emitter) {
+function ownState(emitter: EventEmitter) {
+  const listeners = member(emitter, "_events");
   return {
     names: Object.getOwnPropertyNames(emitter),
     keys: Object.keys(emitter),
-    events: Object.keys(emitter._events ?? {}),
-    eventsPrototype: emitter._events && Object.getPrototypeOf(emitter._events),
-    eventsCount: emitter._eventsCount,
-    maxListeners: emitter._maxListeners ?? "undefined",
-    domain: emitter.domain,
+    events: Object.keys(listeners ?? {}),
+    eventsPrototype: listeners && Object.getPrototypeOf(listeners),
+    eventsCount: member(emitter, "_eventsCount"),
+    maxListeners: member(emitter, "_maxListeners") ?? "undefined",
+    domain: member(emitter, "domain"),
   };
 }
 
@@ -40,7 +42,8 @@ function shapeContracts() {
       emitter.on("a", listener);
       emitter.on("a", () => {});
       emitter.on(Symbol.for("b"), listener);
-      return { ...ownState(emitter), single: typeof emitter._events[Symbol.for("b")], list: Array.isArray(emitter._events.a) };
+      const listeners = member(emitter, "_events");
+      return { ...ownState(emitter), single: typeof member(listeners, Symbol.for("b")), list: Array.isArray(member(listeners, "a")) };
     })(),
     afterRemoval: (() => {
       const emitter = new EventEmitter();
@@ -50,12 +53,12 @@ function shapeContracts() {
       return ownState(emitter);
     })(),
     prototypeNames: Object.getOwnPropertyNames(prototype).sort(),
-    prototypeValues: { events: prototype._events ?? "undefined", count: prototype._eventsCount, max: prototype._maxListeners ?? "undefined" },
-    methods: Object.fromEntries(["emit", "on", "addListener", "once", "off", "removeListener", "prependListener", "listeners", "getMaxListeners"]
+    prototypeValues: { events: member(prototype, "_events") ?? "undefined", count: member(prototype, "_eventsCount"), max: member(prototype, "_maxListeners") ?? "undefined" },
+    methods: Object.fromEntries((["emit", "on", "addListener", "once", "off", "removeListener", "prependListener", "listeners", "getMaxListeners"] as const)
       .map(name => [name, [prototype[name].name, prototype[name].length]])),
     aliases: { on: prototype.on === prototype.addListener, off: prototype.off === prototype.removeListener },
     statics: Object.keys(EventEmitter).sort(),
-    staticNames: { getMaxListeners: EventEmitter.getMaxListeners.name, listenerCount: EventEmitter.listenerCount.name, init: typeof EventEmitter.init },
+    staticNames: { getMaxListeners: EventEmitter.getMaxListeners.name, listenerCount: EventEmitter.listenerCount.name, init: typeof member(EventEmitter, "init") },
     exports: Object.keys(events).sort(),
     captureSymbol: EventEmitter.captureRejectionSymbol === Symbol.for("nodejs.rejection"),
     errorMonitor: String(EventEmitter.errorMonitor),
@@ -64,15 +67,15 @@ function shapeContracts() {
 }
 
 function listenerContracts() {
-  const calls = [];
+  const calls: [string, string | symbol][] = [];
   class Recording extends EventEmitter {
-    on(name, listener) { calls.push(["on", name]); return super.on(name, listener); }
-    prependListener(name, listener) { calls.push(["prependListener", name]); return super.prependListener(name, listener); }
+    on(name: string | symbol, listener: (...args: unknown[]) => void) { calls.push(["on", name]); return super.on(name, listener); }
+    prependListener(name: string | symbol, listener: (...args: unknown[]) => void) { calls.push(["prependListener", name]); return super.prependListener(name, listener); }
   }
   const recording = new Recording();
   recording.once("a", () => {});
   recording.prependOnceListener("b", () => {});
-  const order = [];
+  const order: unknown[] = [];
   const emitter = new EventEmitter();
   const original = () => order.push("original");
   emitter.on("newListener", (name, listener) => order.push(["newListener", name, listener === original]));
@@ -83,7 +86,7 @@ function listenerContracts() {
   emitter.emit("x");
   emitter.emit("x");
   const duplicates = new EventEmitter();
-  const marks = [];
+  const marks: string[] = [];
   const repeated = () => marks.push("repeated");
   duplicates.on("y", repeated);
   duplicates.on("y", () => marks.push("other"));
@@ -91,21 +94,21 @@ function listenerContracts() {
   duplicates.removeListener("y", repeated);
   duplicates.emit("y");
   const removing = new EventEmitter();
-  const removed = [];
+  const removed: string[] = [];
   removing.on("removeListener", name => removed.push(String(name)));
   removing.on("p", () => {});
   removing.on("q", () => {});
   removing.on("q", () => {});
   removing.removeAllListeners();
   const during = new EventEmitter();
-  const seen = [];
+  const seen: number[] = [];
   during.on("z", () => { seen.push(1); during.on("z", () => seen.push(3)); });
   during.on("z", () => seen.push(2));
   during.emit("z");
   return {
     calls,
     order,
-    raw: { wrapped: raw !== original, listener: raw.listener === original, name: raw.name, unwrapped },
+    raw: { wrapped: raw !== original, listener: member(raw, "listener") === original, name: raw.name, unwrapped },
     duplicates: { marks, count: duplicates.listenerCount("y") },
     removed,
     removingState: ownState(removing),
@@ -118,17 +121,18 @@ function listenerContracts() {
       return named.eventNames().map(String);
     })(),
     emitResult: [new EventEmitter().emit("none"), (() => { const one = new EventEmitter(); one.on("v", () => {}); return one.emit("v"); })()],
+    // @ts-expect-error The listeners are not functions.
     notFunction: [attempt(() => new EventEmitter().on("a", 5)), attempt(() => new EventEmitter().once("a", "x")), attempt(() => new EventEmitter().removeListener("a", null))],
   };
 }
 
 function errorContracts() {
-  const monitored = [];
+  const monitored: unknown[] = [];
   const monitor = new EventEmitter();
   monitor.on(EventEmitter.errorMonitor, error => monitored.push(error.message));
   const unhandledObject = attempt(() => new EventEmitter().emit("error", { reason: 1 }));
-  let context;
-  try { new EventEmitter().emit("error", "text"); } catch (error) { context = error.context; }
+  let context: unknown;
+  try { new EventEmitter().emit("error", "text"); } catch (error) { context = member(error, "context"); }
   return {
     thrownError: attempt(() => new EventEmitter().emit("error", new TypeError("boom"))),
     unhandledObject,
@@ -136,20 +140,24 @@ function errorContracts() {
     unhandledNone: attempt(() => new EventEmitter().emit("error")),
     context,
     monitored: [attempt(() => monitor.emit("error", new Error("seen"))), monitored],
+    // @ts-expect-error A string is not a number.
     maxListeners: [attempt(() => new EventEmitter().setMaxListeners(-1)), attempt(() => new EventEmitter().setMaxListeners("3")), attempt(() => new EventEmitter().setMaxListeners(NaN))],
     defaultMaxListeners: attempt(() => { EventEmitter.defaultMaxListeners = -1; }),
+    // @ts-expect-error An object is not an emitter or event target.
     staticSetMaxListeners: [attempt(() => events.setMaxListeners(-1)), attempt(() => events.setMaxListeners(1, {}))],
+    // @ts-expect-error The values are not booleans.
     captureRejections: [attempt(() => { EventEmitter.captureRejections = "yes"; }), attempt(() => new EventEmitter({ captureRejections: 1 }))],
     // Only the class: the message is the engine's own wording.
+    // @ts-expect-error The class needs new.
     bare: attempt(() => EventEmitter()).error,
   };
 }
 
 async function warningContracts() {
-  const logged = [];
-  const warnings = [];
+  const logged: string[][] = [];
+  const warnings: unknown[] = [];
   const log = console.log;
-  const onWarning = warning => warnings.push({ name: warning.name, message: warning.message, type: warning.type, count: warning.count });
+  const onWarning = (warning: Error) => warnings.push({ name: warning.name, message: warning.message, type: member(warning, "type"), count: member(warning, "count") });
   process.on("warning", onWarning);
   console.log = (...args) => logged.push(args.map(String));
   try {
@@ -162,7 +170,7 @@ async function warningContracts() {
     unlimited.setMaxListeners(0);
     for (let index = 0; index < 20; index++) unlimited.on("many", () => {});
     await turn();
-    return { logged, warnings, warned: emitter._events.leak.warned, max: emitter.getMaxListeners() };
+    return { logged, warnings, warned: member(member(member(emitter, "_events"), "leak"), "warned"), max: emitter.getMaxListeners() };
   } finally {
     console.log = log;
     process.off("warning", onWarning);
@@ -170,26 +178,27 @@ async function warningContracts() {
 }
 
 async function rejectionContracts() {
-  const emitted = [];
+  const emitted: unknown[] = [];
   const capturing = new EventEmitter({ captureRejections: true });
   capturing.on("error", error => emitted.push(["error", error.message]));
   capturing.on("work", async () => { throw new Error("rejected"); });
   capturing.emit("work");
-  const handled = [];
-  const handler = new EventEmitter({ captureRejections: true });
-  handler[Symbol.for("nodejs.rejection")] = (error, name, ...args) => handled.push([error.message, name, args]);
+  const handled: unknown[] = [];
+  const handler = Object.assign(new EventEmitter({ captureRejections: true }), {
+    [Symbol.for("nodejs.rejection")]: (error: Error, name: string | symbol, ...args: unknown[]) => handled.push([error.message, name, args]),
+  });
   handler.on("job", async () => { throw new Error("handled"); });
   handler.emit("job", 1, 2);
   const ignored = new EventEmitter();
   ignored.on("work", async () => { throw new Error("ignored"); });
   ignored.emit("work");
   const unhandled = await new Promise(resolve => {
-    const listener = event => { event.preventDefault(); resolve(event.reason?.message); };
+    const listener = (event: PromiseRejectionEvent) => { event.preventDefault(); resolve(member(event.reason, "message")); };
     globalThis.addEventListener("unhandledrejection", listener, { once: true });
     setTimeout(() => { globalThis.removeEventListener("unhandledrejection", listener); resolve("none"); }, 50);
   });
   await turn();
-  return { emitted, handled, unhandled, capture: [capturing[Symbol.for("nodejs.rejection")] === undefined, EventEmitter.captureRejections] };
+  return { emitted, handled, unhandled, capture: [member(capturing, Symbol.for("nodejs.rejection")) === undefined, EventEmitter.captureRejections] };
 }
 
 async function helperContracts() {
@@ -208,7 +217,7 @@ async function helperContracts() {
   const target = new EventTarget();
   setTimeout(() => target.dispatchEvent(new Event("ping")), 1);
   const [event] = await events.once(target, "ping");
-  const iterated = [];
+  const iterated: unknown[] = [];
   const source = new EventEmitter();
   const iterator = events.on(source, "item");
   source.emit("item", "a");
@@ -235,9 +244,13 @@ async function helperContracts() {
   return {
     resolved, rejected, abortedOnce, lateAbort, event: event.type, iterated, iteratorShape, iteratorError, afterError, abortedOn,
     abortListener: { before, after: abortCalls, prototype: Object.getPrototypeOf(disposable), dispose: typeof disposable[Symbol.dispose] },
+    // @ts-expect-error The signal and listener are invalid.
     abortListenerErrors: [attempt(() => events.addAbortListener(undefined, () => {})), attempt(() => events.addAbortListener(new AbortController().signal, 5))],
+    // @ts-expect-error The options are null.
     onceOptions: await asyncAttempt(() => events.once(emitter, "x", null)),
+    // @ts-expect-error An object is not an emitter or event target.
     getEventListeners: [events.getEventListeners(target, "ping"), events.getEventListeners(emitter, "ready").length, attempt(() => events.getEventListeners({}, "x"))],
+    // @ts-expect-error The listener count reads _events from any object.
     listenerCount: [events.listenerCount(emitter, "ready"), events.listenerCount({ _events: { a: [1, 2] } }, "a")],
   };
 }

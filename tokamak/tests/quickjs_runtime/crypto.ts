@@ -1,8 +1,10 @@
+// Imported, since workers-types declares the global Buffer as any.
+import { Buffer } from "node:buffer";
 import * as nodeCrypto from "node:crypto";
-import { asyncOutcome, outcome } from "./outcome.ts";
+import { asyncOutcome, member, outcome, present } from "./outcome.ts";
 
 export async function cryptoContracts() {
-  const result = {};
+  const result: Record<string, unknown> = {};
   result.hashes = Object.fromEntries(nodeCrypto.getHashes().map(name => [name,
     outcome(() => nodeCrypto.createHash(name).update("abc").digest("hex")),
   ]));
@@ -13,6 +15,7 @@ export async function cryptoContracts() {
     ["", new Uint8Array()].map(key => outcome(() => nodeCrypto.createHmac(name, key).update("a").update("").update("bc").digest("hex"))),
   ]));
   result.hashConstruction = ["missing", "SHA-256", "sha224", undefined, null, 123].map(name => outcome(() => {
+    // @ts-expect-error Some names are not strings.
     nodeCrypto.createHash(name);
     return true;
   }));
@@ -23,7 +26,7 @@ export async function cryptoContracts() {
   });
   result.hashStream = await asyncOutcome(async () => {
     const hash = nodeCrypto.createHash("sha256");
-    const output = [];
+    const output: string[] = [];
     const complete = new Promise((resolve, reject) => {
       hash.on("data", chunk => output.push(chunk.toString("hex")));
       hash.on("end", resolve);
@@ -35,7 +38,7 @@ export async function cryptoContracts() {
   });
   result.hmacStream = await asyncOutcome(async () => {
     const hash = nodeCrypto.createHmac("sha256", "secret");
-    const output = [];
+    const output: string[] = [];
     const complete = new Promise((resolve, reject) => {
       hash.on("data", chunk => output.push(chunk.toString("hex")));
       hash.on("end", resolve);
@@ -69,18 +72,31 @@ export async function cryptoContracts() {
 
 const fixtures = {"rsaPrivateJwk":{"kty":"RSA","n":"jv04g0luIKANQemjF6MQqKsE4_ILCXgqsB0dXJEy82xmopockdyGvsvmWZVBO7uA1N2VEqBxjBrvaHU61WQKbJNIromdrdnwT6a0kSOrW1xrStndwFSL7oJDB13HKdolu7Q8a5eKYQarU-XcUJCBXs4yMArxa7tM9zzSNu-_EkqIL6C9IVvxcFqBj8xyNvESpaRIoduZcstZiFQJdxjoOwAuW7SRrFiK_O8ZuusBmAePnMylwLYWss5bHlVxSIOVEsIW9L8iotFHOTKiwF4a7S2xpQ8zpOCKfDPzLbdvfD4h-2PvKX_uWcGqZdlXKBEyeesFM7ubqURbvKMkT6zMnw","e":"AQAB","d":"Huknx93eZEglRYvz2V7Dcary1jITZ7smA0dv-vxaltvmvhzxsyiIqoNaqyAEZ5zLp3i1Sr8LfN2vxpWdH9dOF5WpXy3Zu-UCub1QiJW86_WpLhe2A-djDq7zPYrszKPfh1nZu-qZHAt8ixkETRhIF04c9FzRPthRNZtc2EpwtEu8tF8cljFC3sKYLOa-pEB_uR7P0ktKAqfFXZ0mA7fcxPBQJSZlXEKiqPy8njtaMYhORaLGOFhODROayKkQ7fsRIEGHmhJSZNpRAUIbTlhCMzFsU0ZKNQCjW6H_uX5tZNxxTc4F83pPaR5ShFqYZGhGDR5pxHFzclEPOHhJy8B1ZQ","p":"wqZj5l5ZI8srT85O9wuj-YDr1K-mWjPMcapY1Pb3ZD-lnHSQxpIdoqwPNFE3Ji0bPw_2XNKoNCTzFX1ZiWAD3uR1cHaxmAiOoZp2KZ0FzWLPDNCEgVgHXcdXXsb-lGTmOc-rpoIoz_i-0cXvQsDN5aSipeBUedXNcgt9bHFXlU0","q":"vA6A8-cEaQ1D9Ri0RGQ1ZoYmmMUYbgCBl9t6d2fEMhp30F6yMvjo9GAHGuiGKR5jv6t0fHZHqgaYIx7LuMzTUUG4qdxLvxLFb87DVFTRcK_Feiod8gRf0C01D0h_gVNa8IqiFv1UFcLV13JsHNLfec0UbK6IVj2rBAJ8tYu7g5s","dp":"kHewU62Y2VEUn1HPF9qC5E7EOgH4JKCnT4GQFtgJu1Tl1N5LCaYu6qprSngwx1vZChAN2Mzc3H7EECINz0D8_nRvmX3ux5kqS1T5-F67jLmWVLt6bQlpxjeKaCSnlHniyeuRSa73HYxQDB-tOc0hxBxSP2zlJdwCdG-EsnTY_U0","dq":"UajSohaMublC6ykBDjmdXpmeJPRg-VNK8tAhS7xJW6BWqqqUIsInFgakzzBtIWnK0q329Ry_XbtjUMzMlcCLeltZfpjkY2IZTcWw1-vEznPlAnlLa44utM0Mn0hR5ax2bsEkRWtXmeNyzA0pmRKQa-l7lv3qwdghbKpP0N2OXUU","qi":"p6aEAkLzd6zrfr9pXyac8uZy0wMrRjesWSGtA98yfLDUe3Pgq4DshAVmSHAxf_d3coC1IfV00cyx56RA2oSavA7gfjRZ8fD5gepwclI41EHAIxcdS4aiAcivlgxbLiXmFo6JwhyNzntx6fheibilNG7qLYHOzFpMm3VY_MAFohE"},"rsaPublicJwk":{"kty":"RSA","n":"jv04g0luIKANQemjF6MQqKsE4_ILCXgqsB0dXJEy82xmopockdyGvsvmWZVBO7uA1N2VEqBxjBrvaHU61WQKbJNIromdrdnwT6a0kSOrW1xrStndwFSL7oJDB13HKdolu7Q8a5eKYQarU-XcUJCBXs4yMArxa7tM9zzSNu-_EkqIL6C9IVvxcFqBj8xyNvESpaRIoduZcstZiFQJdxjoOwAuW7SRrFiK_O8ZuusBmAePnMylwLYWss5bHlVxSIOVEsIW9L8iotFHOTKiwF4a7S2xpQ8zpOCKfDPzLbdvfD4h-2PvKX_uWcGqZdlXKBEyeesFM7ubqURbvKMkT6zMnw","e":"AQAB"},"rsaPrivatePem":"-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCO/TiDSW4goA1B\n6aMXoxCoqwTj8gsJeCqwHR1ckTLzbGaimhyR3Ia+y+ZZlUE7u4DU3ZUSoHGMGu9o\ndTrVZApsk0iuiZ2t2fBPprSRI6tbXGtK2d3AVIvugkMHXccp2iW7tDxrl4phBqtT\n5dxQkIFezjIwCvFru0z3PNI2778SSogvoL0hW/FwWoGPzHI28RKlpEih25lyy1mI\nVAl3GOg7AC5btJGsWIr87xm66wGYB4+czKXAthayzlseVXFIg5USwhb0vyKi0Uc5\nMqLAXhrtLbGlDzOk4Ip8M/Mtt298PiH7Y+8pf+5Zwapl2VcoETJ56wUzu5upRFu8\noyRPrMyfAgMBAAECggEAHuknx93eZEglRYvz2V7Dcary1jITZ7smA0dv+vxaltvm\nvhzxsyiIqoNaqyAEZ5zLp3i1Sr8LfN2vxpWdH9dOF5WpXy3Zu+UCub1QiJW86/Wp\nLhe2A+djDq7zPYrszKPfh1nZu+qZHAt8ixkETRhIF04c9FzRPthRNZtc2EpwtEu8\ntF8cljFC3sKYLOa+pEB/uR7P0ktKAqfFXZ0mA7fcxPBQJSZlXEKiqPy8njtaMYhO\nRaLGOFhODROayKkQ7fsRIEGHmhJSZNpRAUIbTlhCMzFsU0ZKNQCjW6H/uX5tZNxx\nTc4F83pPaR5ShFqYZGhGDR5pxHFzclEPOHhJy8B1ZQKBgQDCpmPmXlkjyytPzk73\nC6P5gOvUr6ZaM8xxqljU9vdkP6WcdJDGkh2irA80UTcmLRs/D/Zc0qg0JPMVfVmJ\nYAPe5HVwdrGYCI6hmnYpnQXNYs8M0ISBWAddx1dexv6UZOY5z6umgijP+L7Rxe9C\nwM3lpKKl4FR51c1yC31scVeVTQKBgQC8DoDz5wRpDUP1GLREZDVmhiaYxRhuAIGX\n23p3Z8QyGnfQXrIy+Oj0YAca6IYpHmO/q3R8dkeqBpgjHsu4zNNRQbip3Eu/EsVv\nzsNUVNFwr8V6Kh3yBF/QLTUPSH+BU1rwiqIW/VQVwtXXcmwc0t95zRRsrohWPasE\nAny1i7uDmwKBgQCQd7BTrZjZURSfUc8X2oLkTsQ6AfgkoKdPgZAW2Am7VOXU3ksJ\npi7qqmtKeDDHW9kKEA3YzNzcfsQQIg3PQPz+dG+Zfe7HmSpLVPn4XruMuZZUu3pt\nCWnGN4poJKeUeeLJ65FJrvcdjFAMH605zSHEHFI/bOUl3AJ0b4SydNj9TQKBgFGo\n0qIWjLm5QuspAQ45nV6ZniT0YPlTSvLQIUu8SVugVqqqlCLCJxYGpM8wbSFpytKt\n9vUcv127Y1DMzJXAi3pbWX6Y5GNiGU3FsNfrxM5z5QJ5S2uOLrTNDJ9IUeWsdm7B\nJEVrV5njcswNKZkSkGvpe5b96sHYIWyqT9Ddjl1FAoGBAKemhAJC83es636/aV8m\nnPLmctMDK0Y3rFkhrQPfMnyw1Htz4KuA7IQFZkhwMX/3d3KAtSH1dNHMseekQNqE\nmrwO4H40WfHw+YHqcHJSONRBwCMXHUuGogHIr5YMWy4l5haOicIcjc57cen4Xom4\npTRu6i2BzsxaTJt1WPzABaIR\n-----END PRIVATE KEY-----\n","rsaPublicPem":"-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjv04g0luIKANQemjF6MQ\nqKsE4/ILCXgqsB0dXJEy82xmopockdyGvsvmWZVBO7uA1N2VEqBxjBrvaHU61WQK\nbJNIromdrdnwT6a0kSOrW1xrStndwFSL7oJDB13HKdolu7Q8a5eKYQarU+XcUJCB\nXs4yMArxa7tM9zzSNu+/EkqIL6C9IVvxcFqBj8xyNvESpaRIoduZcstZiFQJdxjo\nOwAuW7SRrFiK/O8ZuusBmAePnMylwLYWss5bHlVxSIOVEsIW9L8iotFHOTKiwF4a\n7S2xpQ8zpOCKfDPzLbdvfD4h+2PvKX/uWcGqZdlXKBEyeesFM7ubqURbvKMkT6zM\nnwIDAQAB\n-----END PUBLIC KEY-----\n","rsaPssSignature":"5c61178defc8e4a37fc1f99d3632c555d20a36b882acb2f10acb086adc13187c05f3dd529c3487d71dfd2d116002a655f632bb4c903b1c7cc24629afda2ae5bad816d169349cc3ab7b180ffa74a0ab43786822aa003d31afd71274bb6e13a712cc763edfa844897402dc85950ded1d7d5e0ebcb691914058068c5f526e36576485388ae85cd56952946c836b6d3d6ac73f89b23e6aebcb13c0ac301e7ee988e4545533624f8d66b98305607d685057be6b7ec484ac9d27cbbacf899e7dd3f80c38cef182209b7edbc7f11f627b4c6f501db2d540a825a0021c55aca7c925b75b486810fd0540571c389a56d5e95bc285049e59cbb952415c7f845429d5ee0439","rsaOaepCiphertext":"26c555ab6b8cdc0ae1461aa63ac6bd1288be1763f1a67737a5bf2b3da30ceea6a673c20616980aba92b8919554c9b4a3d4650f94da78334d5e828187c5ab5f7524e9c61717b307cacf1d0fbf08438e4d0e029cbf58cde616215d10851babd2edb6a68bc16f8c7ca290b9927bdbbe2c6650cdccf0629ca862b4f050a2d006a92b74900567b61324dad182c61dafac6e306c7aafaa41d69eb241831ae5a5302e8c03ad655572428858086906e5d5198cc8367e29f4f4cd9abac11e8356cab7017cdf7b3dab984017a353b79d821af93ec850e6901c0bc95c111cc4c132534aa722e6d902f5fb5505ef0d1e6e8411b80cab74fed2b681783ae3c0d7c64bb55b39db","rsaPublicEncrypt":"8bacc10ccc925b08ba580bb820c862c34e3b64a503400438219fde3d68401cb796b79845079a42c1e7fcbf752d249946db1e7dd7ec69e4058247bd869c55b16364b84790a7c411ad1076bcb1ba1b52c13a65bb7a396b0bc2006dea7079befbef88bdb4fb91db3fabebb0acd686d03acda689724ec6438558d4b97f732b1ea60cd6fae0dc78f3ca8e558bc86d9a367729b01ad9d98f4637611b315d76dac5904057609f8cfd57d2c577bce3ebf0f97f207878920daa3e80482a692fe0f98dd78bad56efaa72293ce11e3f1bfd36e486bf69dc79627fe44813784eb1c74199629d4c1d7ec63d29239889e5addecd21f50a19e207d6f1f8768e6fd39c2abe54ae68","ecP-256":{"a":{"kty":"EC","x":"_MZcRBQBf3P3UXxV9TkEJ37qpikycCDKsBsS2Cx_Ag8","y":"2UYLvDCQEwTOCKf3cccJQg0ytP8pblYd3jsk9qfeG84","crv":"P-256","d":"nMn6mC714AM544pSqLig9MV5wnGy8UV7JCudwQEnbg0"},"b":{"kty":"EC","x":"6mOJtfbSMuJPUPR3kvC5LBM3fjMd4jEGiCZ5RWN4pUI","y":"FxlvFOp19fhITHktidbAKfWbjvtP4lCgqt-z0w_kcxc","crv":"P-256","d":"bmbqliynYmPJKyBRXfjti9VClv2yudYLQEEXOMbyZ8Y"},"signature":"aa64f0b773ca7b5d43c8eb35c8195ab4f98b52a6a6346bc7048c3497cc1dd12c2fec7f34217b987d15e654531f843748d90ec39ebed8eca476855c65f4e8eb10"},"ecP-384":{"a":{"kty":"EC","x":"d0ee2cL9IhsRRvvR3RdkfoeQ8eBBPjDUmY6VO4FRFXB1VptuG0IfEaWwDumXHboq","y":"i04hwWhWT7kG3V3DWt3Le9DpJRD9tkkBoSAqOeaGkNj6IZV8XLAnYc2C_PA2RzF6","crv":"P-384","d":"0bDWVTpdvRcPL7gdW2JWjhcSJSkPUevXhwvNrvLVZygOEAQgVHsQQL-GZxU9vdzO"},"b":{"kty":"EC","x":"NkKqP10EKxt6PJXw3crXG7mV5Z-I5nGlP8z3hGxqemBTqy8FR0B2K5b7Y-aG5_H3","y":"tZp0N4bJElN4Bh5Tjk3hTlziy4WbORCsAFb7zqBicYyAC7UzLsRVGQLg3hoKqwY1","crv":"P-384","d":"Nm0NnqZtPQihBkft038BLZ96BUPuurZyxrRvXmYxocCPvpUB56JXSO601B1rujJL"},"signature":"5b88ff9fcb7ebe4958cbdabc70bc245056bc207c3c19a8119e159f9cad6129e7f9f7634d11a4ecce89d1c4c63f2013ff4eb9228bafc079c3050e99a7f07810d334a31bdf9d9c25a9061c527dc62a7d5c622c631a4344a7c7c270621cf1897c61"},"ecP-521":{"a":{"kty":"EC","x":"ABvWSnVYMxFWJiG077IJ7lnrAcBBlvk7rJkyLue34fCg_U69qeUqjHvv1hCiztXrWGy7FmnDBen4FcAgQNQ9oroZ","y":"Aetc7IFv6PYLURthb3RvKCHgmv5E3EGDW_YdFf3s6SqHPws22UGF6J_6yRwj9YvQPyrQKPg9NtWjhxc_6pZ8zsgM","crv":"P-521","d":"ACrkADQioZ6bcgi9DwZ6zWtIxn0_wM7Ms84iMzByh3MAWmI4Ff7bG9lOQp66hKtYaVyE49zM1VLFHnUJ2w67YPXj"},"b":{"kty":"EC","x":"AV9F18kQMJbS1RCmPS378KambvyFKJNkFf8dTcrWB-lQeEjKdCn28nrgGG3eBjxAmCfEd1a_VC03MjrxQFSA9lYQ","y":"Aek8uRYV5ebORsbtv1mRnNxZ5YLZzG5IXlH0o7X1aWWC0lAZrwkVbY9fr1D2bpPwVtpQY1eszb7pZbM07cU68BpU","crv":"P-521","d":"AQg1sQpT3gxh9ZcHRROXcpBckdnTi-AiIHgbpkCR8ZVdWTWVpmAdKr4Et6xkF-v4_633mwlR3BwPFbn8xZr8osHg"},"signature":"01a086c74476a32e57aa2210518fb98501d151dc6ee87ad2265a3b7b20e314a3bb3c757efa8b5e06ca0c679c53cc9014b0b9bcfbe78a7de4cad1ef62a00f3abff43800f044cba0f47d20e21f9343957fb50fa4e4ab508d6d8afe95a4c7878b70c192b188e02c778e9affa5fdd854d03dd4296bcc7a8d06f1f880b058f76622716aa7e68a"},"ed25519Jwk":{"crv":"Ed25519","d":"ahV441A6ToRRIVmAvepDAwsdorKHTK80dDltyqN3jOo","x":"Km00Uwd1zuZ1L_DWqR4ZrfBFiuozQan7pWVnaCILvZc","kty":"OKP"},"x25519":{"a":{"crv":"X25519","d":"6D0lLbl2Rhx52FM9fXFXYjuT6iU1HIIKGPb_MNY2_l8","x":"p4EgXxTojlPidoXCpvNNsUUoo6UV86bTjQH3Ozrhnk0","kty":"OKP"},"b":{"crv":"X25519","d":"-JZw_34ZDQRid0DuN7AW4P9x5WHdUZjW0r8C1uIDYlU","x":"LLIg1LyW3AtSu463h4WnVAMmQpddhTDSAtCiHvDj5C4","kty":"OKP"}}};
 const encoder = new TextEncoder();
-const text = value => encoder.encode(value);
-const hex = buffer => [...new Uint8Array(buffer)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-const fromHex = value => new Uint8Array(value.match(/../g).map(byte => parseInt(byte, 16)));
-const definedKeys = jwk => Object.keys(jwk).filter(key => jwk[key] !== undefined).sort();
-const publicJwk = jwk => Object.fromEntries(Object.entries(jwk).filter(([key]) => !["d", "p", "q", "dp", "dq", "qi"].includes(key)));
+const text = (value: string) => encoder.encode(value);
+const hex = (buffer: ArrayBuffer) => [...new Uint8Array(buffer)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+const fromHex = (value: string) => new Uint8Array(present(value.match(/../g)).map(byte => parseInt(byte, 16)));
+const definedKeys = (jwk: object) => Object.entries(jwk).filter(([, value]) => value !== undefined).map(([key]) => key).sort();
+const publicJwk = ({ d, p, q, dp, dq, qi, ...jwk }: JsonWebKey) => jwk;
+
+// The pair that generating an asymmetric key gives.
+function keyPair(key: CryptoKey | CryptoKeyPair) {
+  if (key instanceof CryptoKey) throw new TypeError("The generated key is not a pair");
+  return key;
+}
+
+// The key that generating a symmetric key gives.
+function secretKey(key: CryptoKey | CryptoKeyPair) {
+  if (!(key instanceof CryptoKey)) throw new TypeError("The generated key is a pair");
+  return key;
+}
 
 async function webCryptoContracts() {
-  const result = {};
+  const result: Record<string, unknown> = {};
   const subtle = crypto.subtle;
-  result.digests = {};
+  const digests: Record<string, string> = {};
+  result.digests = digests;
   for (const name of ["SHA-1", "SHA-256", "SHA-384", "SHA-512"]) {
-    result.digests[name] = hex(await subtle.digest(name, text("abc")));
+    digests[name] = hex(await subtle.digest(name, text("abc")));
   }
   const hmacKey = await subtle.importKey("raw", text("key"), { name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
   const hmacSignature = await subtle.sign("HMAC", hmacKey, text("abc"));
@@ -91,9 +107,10 @@ async function webCryptoContracts() {
     jwk: await subtle.exportKey("jwk", hmacKey),
   };
   const pbkdfKey = await subtle.importKey("raw", text("password"), "PBKDF2", false, ["deriveBits"]);
-  result.pbkdf2 = {};
+  const pbkdf2: Record<string, string> = {};
+  result.pbkdf2 = pbkdf2;
   for (const hash of ["SHA-1", "SHA-256", "SHA-512"]) {
-    result.pbkdf2[hash] = hex(await subtle.deriveBits({ name: "PBKDF2", salt: text("salt"), iterations: 1000, hash }, pbkdfKey, 256));
+    pbkdf2[hash] = hex(await subtle.deriveBits({ name: "PBKDF2", salt: text("salt"), iterations: 1000, hash }, pbkdfKey, 256));
   }
   const hkdfKey = await subtle.importKey("raw", fromHex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"), "HKDF", false, ["deriveBits"]);
   result.hkdf = {
@@ -155,17 +172,17 @@ async function webCryptoContracts() {
     reimported: await subtle.exportKey("jwk", rsaReimport),
     spkiJwk: await subtle.exportKey("jwk", await subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"])),
   };
-  const exportedAlg = async (algorithm, usages, key) => {
-    const generated = key ? await subtle.importKey("spki", key, algorithm, true, usages) : await subtle.generateKey(algorithm, true, usages);
+  const exportedAlg = async (algorithm: SubtleCryptoImportKeyAlgorithm, usages: string[], key?: ArrayBuffer) => {
+    const generated = key ? await subtle.importKey("spki", key, algorithm, true, usages) : secretKey(await subtle.generateKey(algorithm, true, usages));
     return (await subtle.exportKey("jwk", generated)).alg;
   };
   result.jwkAlgorithms = await Promise.all([
-    [{ name: "HMAC", hash: "SHA-1" }, ["sign"]], [{ name: "HMAC", hash: "SHA-512" }, ["sign"]],
-    [{ name: "AES-GCM", length: 128 }, ["encrypt"]], [{ name: "AES-CBC", length: 192 }, ["encrypt"]],
-    [{ name: "AES-CTR", length: 256 }, ["encrypt"]], [{ name: "AES-KW", length: 128 }, ["wrapKey"]],
-    [{ name: "RSASSA-PKCS1-v1_5", hash: "SHA-1" }, ["verify"], spki], [{ name: "RSA-PSS", hash: "SHA-384" }, ["verify"], spki],
-    [{ name: "RSA-OAEP", hash: "SHA-512" }, ["encrypt"], spki],
-  ].map(([algorithm, usages, key]) => exportedAlg(algorithm, usages, key)));
+    exportedAlg({ name: "HMAC", hash: "SHA-1" }, ["sign"]), exportedAlg({ name: "HMAC", hash: "SHA-512" }, ["sign"]),
+    exportedAlg({ name: "AES-GCM", length: 128 }, ["encrypt"]), exportedAlg({ name: "AES-CBC", length: 192 }, ["encrypt"]),
+    exportedAlg({ name: "AES-CTR", length: 256 }, ["encrypt"]), exportedAlg({ name: "AES-KW", length: 128 }, ["wrapKey"]),
+    exportedAlg({ name: "RSASSA-PKCS1-v1_5", hash: "SHA-1" }, ["verify"], spki), exportedAlg({ name: "RSA-PSS", hash: "SHA-384" }, ["verify"], spki),
+    exportedAlg({ name: "RSA-OAEP", hash: "SHA-512" }, ["encrypt"], spki),
+  ]);
   const pssPrivate = await subtle.importKey("jwk", { ...fixtures.rsaPrivateJwk, alg: "PS256" }, { name: "RSA-PSS", hash: "SHA-256" }, true, ["sign"]);
   const pssPublic = await subtle.importKey("jwk", { ...fixtures.rsaPublicJwk, alg: "PS256" }, { name: "RSA-PSS", hash: "SHA-256" }, true, ["verify"]);
   const pssSignature = await subtle.sign({ name: "RSA-PSS", saltLength: 32 }, pssPrivate, text("abc"));
@@ -185,15 +202,17 @@ async function webCryptoContracts() {
     wrongLabel: await asyncOutcome(() => subtle.decrypt({ name: "RSA-OAEP" }, oaepPrivate, fromHex(fixtures.rsaOaepCiphertext))),
   };
 
-  result.ecdsa = {};
-  result.ecdh = {};
-  for (const curve of ["P-256", "P-384", "P-521"]) {
+  const ecdsa: Record<string, unknown> = {};
+  const ecdh: Record<string, string> = {};
+  result.ecdsa = ecdsa;
+  result.ecdh = ecdh;
+  for (const curve of ["P-256", "P-384", "P-521"] as const) {
     const pair = fixtures[`ec${curve}`];
     const signKey = await subtle.importKey("jwk", pair.a, { name: "ECDSA", namedCurve: curve }, true, ["sign"]);
     const verifyKey = await subtle.importKey("jwk", publicJwk(pair.a), { name: "ECDSA", namedCurve: curve }, true, ["verify"]);
     const signature = await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signKey, text("abc"));
     const raw = await subtle.exportKey("raw", verifyKey);
-    result.ecdsa[curve] = {
+    ecdsa[curve] = {
       length: signature.byteLength,
       roundTrip: await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, verifyKey, signature, text("abc")),
       reference: await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, verifyKey, fromHex(pair.signature), text("abc")),
@@ -208,7 +227,7 @@ async function webCryptoContracts() {
     };
     const dhPrivate = await subtle.importKey("jwk", pair.a, { name: "ECDH", namedCurve: curve }, true, ["deriveBits"]);
     const dhPublic = await subtle.importKey("jwk", publicJwk(pair.b), { name: "ECDH", namedCurve: curve }, true, []);
-    result.ecdh[curve] = hex(await subtle.deriveBits({ name: "ECDH", public: dhPublic }, dhPrivate, { "P-256": 256, "P-384": 384, "P-521": 528 }[curve]));
+    ecdh[curve] = hex(await subtle.deriveBits({ name: "ECDH", public: dhPublic }, dhPrivate, { "P-256": 256, "P-384": 384, "P-521": 528 }[curve]));
   }
   const edPrivate = await subtle.importKey("jwk", fixtures.ed25519Jwk, "Ed25519", true, ["sign"]);
   const edPublic = await subtle.importKey("jwk", publicJwk(fixtures.ed25519Jwk), "Ed25519", true, ["verify"]);
@@ -232,66 +251,69 @@ async function webCryptoContracts() {
     jwk: await subtle.exportKey("jwk", xPrivate),
   };
 
-  const generated = await subtle.generateKey({ name: "RSA-PSS", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  const generated = keyPair(await subtle.generateKey({ name: "RSA-PSS", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]));
   const generatedJwk = await subtle.exportKey("jwk", generated.privateKey);
   const generatedSignature = await subtle.sign({ name: "RSA-PSS", saltLength: 16 }, generated.privateKey, text("abc"));
-  result.generated = {
-    rsa: { n: generatedJwk.n.length, e: generatedJwk.e, fields: definedKeys(generatedJwk), verifies: await subtle.verify({ name: "RSA-PSS", saltLength: 16 }, generated.publicKey, generatedSignature, text("abc")) },
-  };
-  const ecPair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
+  const rsa = { n: present(generatedJwk.n).length, e: generatedJwk.e, fields: definedKeys(generatedJwk), verifies: await subtle.verify({ name: "RSA-PSS", saltLength: 16 }, generated.publicKey, generatedSignature, text("abc")) };
+  const ecPair = keyPair(await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]));
   const ecSignature = await subtle.sign({ name: "ECDSA", hash: "SHA-512" }, ecPair.privateKey, text("abc"));
-  result.generated.ec = { length: ecSignature.byteLength, verifies: await subtle.verify({ name: "ECDSA", hash: "SHA-512" }, ecPair.publicKey, ecSignature, text("abc")), fields: definedKeys(await subtle.exportKey("jwk", ecPair.privateKey)) };
-  const edPair = await subtle.generateKey("Ed25519", true, ["sign", "verify"]);
-  result.generated.ed25519 = await subtle.verify("Ed25519", edPair.publicKey, await subtle.sign("Ed25519", edPair.privateKey, text("abc")), text("abc"));
-  const xPairA = await subtle.generateKey("X25519", true, ["deriveBits"]);
-  const xPairB = await subtle.generateKey("X25519", true, ["deriveBits"]);
+  const ec = { length: ecSignature.byteLength, verifies: await subtle.verify({ name: "ECDSA", hash: "SHA-512" }, ecPair.publicKey, ecSignature, text("abc")), fields: definedKeys(await subtle.exportKey("jwk", ecPair.privateKey)) };
+  const edPair = keyPair(await subtle.generateKey("Ed25519", true, ["sign", "verify"]));
+  const ed25519 = await subtle.verify("Ed25519", edPair.publicKey, await subtle.sign("Ed25519", edPair.privateKey, text("abc")), text("abc"));
+  const xPairA = keyPair(await subtle.generateKey("X25519", true, ["deriveBits"]));
+  const xPairB = keyPair(await subtle.generateKey("X25519", true, ["deriveBits"]));
   const sharedA = hex(await subtle.deriveBits({ name: "X25519", public: xPairB.publicKey }, xPairA.privateKey, 256));
   const sharedB = hex(await subtle.deriveBits({ name: "X25519", public: xPairA.publicKey }, xPairB.privateKey, 256));
-  result.generated.x25519 = { agree: sharedA === sharedB, length: sharedA.length };
+  result.generated = { rsa, ec, ed25519, x25519: { agree: sharedA === sharedB, length: sharedA.length } };
   return result;
 }
 
 // HMAC, AES, HKDF and PBKDF2 keys through every operation, including the order of validation errors.
 async function secretKeyContracts() {
   const subtle = crypto.subtle;
-  const describe = value => {
+  const describe = (value: unknown) => {
     if (value instanceof CryptoKey) return { type: value.type, algorithm: value.algorithm, usages: value.usages, extractable: value.extractable };
     return value instanceof ArrayBuffer ? hex(value) : value;
   };
-  const attempt = callback => asyncOutcome(async () => describe(await callback()));
-  const all = async cases => Object.fromEntries(await Promise.all(Object.entries(cases).map(async ([name, callback]) => [name, await attempt(callback)])));
-  const oct = (k, fields = {}) => ({ kty: "oct", k, ...fields });
+  const attempt = (callback: () => unknown) => asyncOutcome(async () => describe(await callback()));
+  const all = async (cases: Record<string, () => unknown>) => Object.fromEntries(await Promise.all(Object.entries(cases).map(async ([name, callback]) => [name, await attempt(callback)])));
+  const oct = (k: string, fields: Partial<JsonWebKey> = {}): JsonWebKey => ({ kty: "oct", k, ...fields });
   const k128 = "AAAAAAAAAAAAAAAAAAAAAA";
   const sha256 = { name: "HMAC", hash: "SHA-256" };
-  const hmacRaw = (bytes, fields = {}, usages = ["sign"]) => () => subtle.importKey("raw", bytes, { ...sha256, ...fields }, true, usages);
-  const hmacJwk = (jwk, fields = {}, usages = ["sign"], extractable = true) => () => subtle.importKey("jwk", jwk, { ...sha256, ...fields }, extractable, usages);
-  const aesJwk = (jwk, usages = ["encrypt"], name = "AES-GCM") => () => subtle.importKey("jwk", jwk, name, true, usages);
-  const exportRaw = make => async () => hex(await subtle.exportKey("raw", await make()));
+  const hmacRaw = (bytes: BufferSource, fields: Partial<SubtleCryptoImportKeyAlgorithm> = {}, usages = ["sign"]) => () => subtle.importKey("raw", bytes, { ...sha256, ...fields }, true, usages);
+  const hmacJwk = (jwk: JsonWebKey, fields: Partial<SubtleCryptoImportKeyAlgorithm> = {}, usages = ["sign"], extractable = true) => () => subtle.importKey("jwk", jwk, { ...sha256, ...fields }, extractable, usages);
+  const aesJwk = (jwk: JsonWebKey, usages = ["encrypt"], name = "AES-GCM") => () => subtle.importKey("jwk", jwk, name, true, usages);
+  const exportRaw = (make: () => Promise<CryptoKey>) => async () => hex(await subtle.exportKey("raw", await make()));
   const ones = () => new Uint8Array([255, 255, 255]);
   const hkdf = (usages = ["deriveBits", "deriveKey"]) => subtle.importKey("raw", new Uint8Array(8), "HKDF", false, usages);
   const pbkdf2 = () => subtle.importKey("raw", new Uint8Array(8), "PBKDF2", false, ["deriveBits", "deriveKey"]);
   const hkdfParams = { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array() };
   const pbkdf2Params = { name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(), iterations: 2 };
-  const hkdfBits = (fields, length) => async () => subtle.deriveBits({ ...hkdfParams, ...fields }, await hkdf(), length);
-  const pbkdf2Bits = (fields, length) => async () => subtle.deriveBits({ ...pbkdf2Params, ...fields }, await pbkdf2(), length);
-  const hkdfKey = (derived, usages = ["sign"]) => async () => subtle.deriveKey(hkdfParams, await hkdf(), derived, true, usages);
+  const hkdfBits = (fields: Partial<SubtleCryptoDeriveKeyAlgorithm>, length: number | null) => async () => subtle.deriveBits({ ...hkdfParams, ...fields }, await hkdf(), length);
+  const pbkdf2Bits = (fields: Partial<SubtleCryptoDeriveKeyAlgorithm>, length: number | null) => async () => subtle.deriveBits({ ...pbkdf2Params, ...fields }, await pbkdf2(), length);
+  const hkdfKey = (derived: string | SubtleCryptoImportKeyAlgorithm, usages = ["sign"]) => async () => subtle.deriveKey(hkdfParams, await hkdf(), derived, true, usages);
   const hmacKey = (usages = ["sign", "verify"]) => subtle.importKey("raw", new Uint8Array([1, 2, 3]), sha256, true, usages);
-  const aesKey = (name, usages = name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt", "wrapKey", "unwrapKey"], extractable = true) => subtle.importKey("raw", new Uint8Array(16), name, extractable, usages);
+  const aesKey = (name: string, usages = name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt", "wrapKey", "unwrapKey"], extractable = true) => subtle.importKey("raw", new Uint8Array(16), name, extractable, usages);
   const gcm = { name: "AES-GCM", iv: new Uint8Array(12) };
   const ctr = { name: "AES-CTR", counter: new Uint8Array(16), length: 64 };
-  const gcmUnwrap = (text, algorithm, usages = ["sign"], format = "jwk") => async () => {
+  const gcmUnwrap = (text: BufferSource, algorithm: string | SubtleCryptoImportKeyAlgorithm, usages = ["sign"], format = "jwk") => async () => {
     const key = await aesKey("AES-GCM");
     return subtle.unwrapKey(format, await subtle.encrypt(gcm, key, text), key, gcm, algorithm, true, usages);
   };
-  const result = {};
+  const result: Record<string, unknown> = {};
   result.usages = await all({
     order: hmacRaw(new Uint8Array(3), {}, ["verify", "sign", "verify"]),
     derivation: () => hkdf(["deriveBits", "deriveKey"]),
     generated: () => subtle.generateKey({ name: "AES-CBC", length: 192 }, false, ["wrapKey", "encrypt", "encrypt"]),
+    // @ts-expect-error Usages are strings.
     stringified: hmacRaw(new Uint8Array(3), {}, [{ toString: () => "sign" }]),
+    // @ts-expect-error Usages are strings.
     number: hmacRaw(new Uint8Array(3), {}, [1]),
+    // @ts-expect-error Usages are an array.
     string: hmacRaw(new Uint8Array(3), {}, "sign"),
+    // @ts-expect-error Usages are an array.
     set: hmacRaw(new Uint8Array(3), {}, new Set(["sign"])),
+    // @ts-expect-error Importing needs usages.
     missing: () => subtle.importKey("raw", new Uint8Array(3), sha256, true),
     aesWrap: () => Promise.all(["AES-CTR", "AES-CBC", "AES-GCM"].map(name => aesKey(name).then(describe))),
     kwEncrypt: () => aesKey("AES-KW", ["encrypt"]),
@@ -319,7 +341,7 @@ async function secretKeyContracts() {
     derived: hkdfKey({ name: "AES-GCM", length: 128 }, []),
     unwrapped: gcmUnwrap(text('{"kty":"oct","k":"AAAA"}'), sha256, []),
     privateKey: async () => {
-      const pair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      const pair = keyPair(await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]));
       return subtle.importKey("pkcs8", await subtle.exportKey("pkcs8", pair.privateKey), { name: "ECDSA", namedCurve: "P-256" }, true, []);
     },
   });
@@ -328,6 +350,7 @@ async function secretKeyContracts() {
     upperAes: () => subtle.importKey("RAW", new Uint8Array(16), "AES-GCM", true, ["encrypt"]),
     upperHkdf: () => subtle.importKey("RAW", new Uint8Array(3), "HKDF", false, ["sign"]),
     upperJwk: () => subtle.importKey("JWK", oct("AAAA"), sha256, true, ["sign"]),
+    // @ts-expect-error A format is a string.
     number: () => subtle.importKey(5, new Uint8Array(3), sha256, true, ["sign"]),
     spkiHmac: () => subtle.importKey("spki", new Uint8Array(3), sha256, true, ["sign"]),
     spkiHmacNoHash: () => subtle.importKey("spki", new Uint8Array(3), { name: "HMAC" }, true, ["sign"]),
@@ -346,28 +369,44 @@ async function secretKeyContracts() {
     md5Sign: async () => hex(await subtle.sign("HMAC", await hmacRaw(new Uint8Array(3), { hash: "md5" })(), new Uint8Array(1))),
     md5Jwk: async () => subtle.exportKey("jwk", await hmacRaw(new Uint8Array(3), { hash: "MD5" })()),
     sha224: hmacRaw(new Uint8Array(3), { hash: "SHA-224" }),
+    // @ts-expect-error A hash is a name or an algorithm.
     hashNull: hmacRaw(new Uint8Array(3), { hash: null }),
+    // @ts-expect-error A hash algorithm needs a name.
     hashEmpty: hmacRaw(new Uint8Array(3), { hash: {} }),
+    // @ts-expect-error An algorithm needs a name.
     empty: () => subtle.importKey("raw", new Uint8Array(3), {}, true, ["sign"]),
+    // @ts-expect-error An algorithm is a name or an object.
     null: () => subtle.importKey("raw", new Uint8Array(3), null, true, ["sign"]),
+    // @ts-expect-error An algorithm is a name or an object.
     number: () => subtle.importKey("raw", new Uint8Array(3), 5, true, ["sign"]),
+    // @ts-expect-error An algorithm name is a string.
     symbolName: () => subtle.importKey("raw", new Uint8Array(3), { name: Symbol("HMAC") }, true, ["sign"]),
     unknown: () => subtle.importKey("jwk", oct("AAAA"), "FOO", false, ["sign"]),
     extFalseUnknown: () => subtle.importKey("jwk", { kty: "oct", ext: false }, "FOO", true, ["sign"]),
     aesIgnoresLength: () => subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM", length: 256, hash: "SHA-999" }, true, ["encrypt"]),
     aesHugeLength: () => subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM", length: 2 ** 40 }, true, ["encrypt"]),
+    // @ts-expect-error An algorithm needs a name.
     digestEmpty: () => subtle.digest({}, new Uint8Array()),
+    // @ts-expect-error An algorithm is a name or an object.
     digestNull: () => subtle.digest(null, new Uint8Array()),
+    // @ts-expect-error An algorithm is a name or an object.
     digestNumber: () => subtle.digest(5, new Uint8Array()),
+    // @ts-expect-error The data is not bytes.
     digestDataBeforeName: () => subtle.digest("SHA-999", "x"),
+    // @ts-expect-error An algorithm needs a name.
     digestStreamEmpty: () => new crypto.DigestStream({}),
+    // @ts-expect-error An algorithm is a name or an object.
     digestStreamNull: () => new crypto.DigestStream(null),
+    // @ts-expect-error An algorithm is a name or an object.
     digestStreamNumber: () => new crypto.DigestStream(5),
   });
-  result.hmacLengths = await all(Object.fromEntries([24, 20, 17, 16, 25, 0, -1, 20.5, "20", true, NaN, null, Infinity, -Infinity, -0.5, 2 ** 31 - 1, 2 ** 31, -(2 ** 31) - 1, [20], { valueOf: () => 20 }]
+  const hmacLengths = await all(Object.fromEntries([24, 20, 17, 16, 25, 0, -1, 20.5, "20", true, NaN, null, Infinity, -Infinity, -0.5, 2 ** 31 - 1, 2 ** 31, -(2 ** 31) - 1, [20], { valueOf: () => 20 }]
+    // @ts-expect-error Most of the lengths are not numbers.
     .map(length => [String(length), hmacRaw(new Uint8Array(3), { length })])));
-  Object.assign(result.hmacLengths, await all({
+  result.hmacLengths = { ...hmacLengths, ...await all({
+    // @ts-expect-error A length is a number.
     bigint: hmacRaw(new Uint8Array(3), { length: 20n }),
+    // @ts-expect-error A length is a number.
     symbol: hmacRaw(new Uint8Array(3), { length: Symbol("length") }),
     hugeBeforeUsages: hmacRaw(new Uint8Array(3), { length: 2 ** 40 }, ["encrypt"]),
     emptyBeforeHash: hmacRaw(new Uint8Array(), { hash: "SHA-999" }),
@@ -380,13 +419,13 @@ async function secretKeyContracts() {
       hex(await subtle.sign("HMAC", await hmacRaw(ones(), { length: 20 })(), new Uint8Array(1))),
       hex(await subtle.sign("HMAC", await hmacRaw(new Uint8Array([255, 255, 240]))(), new Uint8Array(1))),
     ],
-  }));
+  }) };
   result.hmacJwk = await all({
-    ...Object.fromEntries([
+    ...Object.fromEntries(([
       ["SHA-256", "HS256"], ["SHA-1", "HS1"], ["SHA-384", "HS384"], ["SHA-512", "HS512"], ["SHA-256", "HS512"], ["SHA-256", "hs256"],
       ["SHA-256", "XYZ"], ["SHA-512", ""], ["SHA-1", "HS160"], ["SHA-999", "HS256"], ["SHA-999", "HS999"], ["sha-256", "HS256"],
       ["sha-256", "XYZ"], ["MD5", "HS"], ["MD5", "HS5"], ["XXX-256", "HS256"], [{ name: "SHA-256" }, "HS256"], [{ name: "sha-256" }, "HS256"],
-    ].map(([hash, alg]) => [`${JSON.stringify(hash)}:${alg}`, hmacJwk(oct("AAAA", { alg }), { hash })])),
+    ] as const).map(([hash, alg]) => [`${JSON.stringify(hash)}:${alg}`, hmacJwk(oct("AAAA", { alg }), { hash })])),
     algBeforeLength: hmacJwk(oct("", { alg: "HS512" })),
     algAfterKeyType: hmacJwk({ kty: "RSA", alg: "HS512" }),
     algAfterKeyData: hmacJwk(oct("@@", { alg: "HS512" })),
@@ -395,18 +434,29 @@ async function secretKeyContracts() {
     noHash: () => subtle.importKey("jwk", { kty: "RSA" }, { name: "HMAC" }, false, ["sign"]),
     keyOpsIgnored: hmacJwk(oct("AAAA", { key_ops: ["verify", "verify"] })),
     useIgnored: hmacJwk(oct("AAAA", { use: "enc" })),
+    // @ts-expect-error A JWK needs a key type.
     noKeyType: hmacJwk({ k: "AAAA" }),
+    // @ts-expect-error A key type is a string.
     keyTypeArray: hmacJwk({ kty: ["oct"], k: "AAAA" }),
+    // @ts-expect-error Key data is a string.
     keyDataArray: hmacJwk({ kty: "oct", k: ["AAAA"] }),
     noKeyData: hmacJwk({ kty: "oct" }),
+    // @ts-expect-error Key data is a string.
     numericKeyData: hmacJwk({ kty: "oct", k: 5 }),
+    // @ts-expect-error An array is not a JWK.
     array: hmacJwk([]),
+    // @ts-expect-error null is not a JWK.
     null: hmacJwk(null),
+    // @ts-expect-error A string is not a JWK.
     string: hmacJwk("oct"),
     inherited: aesJwk(Object.create(oct(k128))),
+    // @ts-expect-error Key operations are an array.
     keyOpsString: hmacJwk(oct("AAAA", { key_ops: "sign" })),
+    // @ts-expect-error Key operations are an array.
     keyOpsNull: hmacJwk(oct("AAAA", { key_ops: null })),
+    // @ts-expect-error Other primes are an array.
     othString: hmacJwk(oct("AAAA", { oth: "x" })),
+    // @ts-expect-error Most of the values are not booleans.
     ...Object.fromEntries([false, "", null, 0, true, "no"].map(ext => [`ext:${JSON.stringify(ext)}`, hmacJwk(oct("AAAA", { ext }))])),
     extFalseNotExtractable: hmacJwk(oct("AAAA", { ext: false }), {}, ["sign"], false),
     extBeforeUsages: hmacJwk(oct("AAAA", { ext: false }), {}, ["encrypt"]),
@@ -420,7 +470,9 @@ async function secretKeyContracts() {
     alg: aesJwk(oct(k128, { alg: "A128GCM" })),
     algMismatch: aesJwk(oct(k128, { alg: "A256GCM" })),
     algLower: aesJwk(oct(k128, { alg: "a128gcm" })),
+    // @ts-expect-error An algorithm is a string.
     algNumber: aesJwk(oct(k128, { alg: 5 })),
+    // @ts-expect-error An algorithm is a string.
     algNull: aesJwk(oct(k128, { alg: null })),
     algCbc: aesJwk(oct(k128, { alg: "A128CBC" }), ["encrypt"], "AES-CBC"),
     algCbcMismatch: aesJwk(oct(k128, { alg: "A128GCM" }), ["encrypt"], "AES-CBC"),
@@ -429,6 +481,7 @@ async function secretKeyContracts() {
     useEnc: aesJwk(oct(k128, { use: "enc" })),
     useSig: aesJwk(oct(k128, { use: "sig" })),
     useEmpty: aesJwk(oct(k128, { use: "" })),
+    // @ts-expect-error A use is a string.
     useNull: aesJwk(oct(k128, { use: null })),
     useSigWithoutUsages: aesJwk(oct(k128, { use: "sig" }), []),
     keyOps: aesJwk(oct(k128, { key_ops: ["encrypt"] })),
@@ -437,6 +490,7 @@ async function secretKeyContracts() {
     keyOpsPartial: aesJwk(oct(k128, { key_ops: ["encrypt"] }), ["encrypt", "decrypt"]),
     keyOpsEmpty: aesJwk(oct(k128, { key_ops: [] })),
     keyOpsDuplicate: aesJwk(oct(k128, { key_ops: ["encrypt", "encrypt"] })),
+    // @ts-expect-error Key operations are strings.
     keyOpsNumbers: aesJwk(oct(k128, { key_ops: [1] })),
     duplicateBeforeMissing: aesJwk(oct(k128, { key_ops: ["decrypt", "decrypt"] })),
     useBeforeKeyOps: aesJwk(oct(k128, { use: "sig", key_ops: ["decrypt"] })),
@@ -466,13 +520,13 @@ async function secretKeyContracts() {
   });
   result.generate = await all({
     hmac20: async () => {
-      const key = await subtle.generateKey({ ...sha256, length: 20 }, true, ["sign"]);
+      const key = secretKey(await subtle.generateKey({ ...sha256, length: 20 }, true, ["sign"]));
       const bytes = new Uint8Array(await subtle.exportKey("raw", key));
       return [describe(key), bytes.length, bytes[2] & 0x0f];
     },
-    hmac1: async () => { const bytes = new Uint8Array(await subtle.exportKey("raw", await subtle.generateKey({ ...sha256, length: 1 }, true, ["sign"]))); return [bytes.length, bytes[0] & 0x7f]; },
+    hmac1: async () => { const bytes = new Uint8Array(await subtle.exportKey("raw", secretKey(await subtle.generateKey({ ...sha256, length: 1 }, true, ["sign"])))); return [bytes.length, bytes[0] & 0x7f]; },
     hmacLarge: async () => {
-      const key = await subtle.generateKey({ ...sha256, length: 2 ** 20 + 3 }, true, ["sign"]);
+      const key = secretKey(await subtle.generateKey({ ...sha256, length: 2 ** 20 + 3 }, true, ["sign"]));
       const bytes = new Uint8Array(await subtle.exportKey("raw", key));
       return [describe(key), bytes.length, bytes[bytes.length - 1] & 0x1f];
     },
@@ -480,6 +534,7 @@ async function secretKeyContracts() {
     hmacFraction: () => subtle.generateKey({ ...sha256, length: 20.5 }, true, ["sign"]),
     hmacNegative: () => subtle.generateKey({ ...sha256, length: -8 }, true, ["sign"]),
     hmacZero: () => subtle.generateKey({ ...sha256, length: 0 }, true, ["sign"]),
+    // @ts-expect-error A length is a number.
     hmacNaN: () => subtle.generateKey({ ...sha256, length: "abc" }, true, ["sign"]),
     hmacHuge: () => subtle.generateKey({ name: "HMAC", hash: "SHA-999", length: 2 ** 31 }, true, ["sign"]),
     hmacSha1: () => subtle.generateKey({ name: "HMAC", hash: "sha-1" }, true, ["verify", "sign"]),
@@ -488,33 +543,44 @@ async function secretKeyContracts() {
     hmacMd5: () => subtle.generateKey({ name: "HMAC", hash: "MD5" }, true, ["sign"]),
     hmacNoHash: () => subtle.generateKey({ name: "HMAC", length: 0 }, true, ["encrypt"]),
     hmacBadHash: () => subtle.generateKey({ name: "HMAC", hash: "SHA-999" }, true, ["sign"]),
-    hmacJwk: async () => subtle.exportKey("jwk", await subtle.generateKey({ ...sha256, length: 24 }, true, ["verify", "sign"])).then(jwk => [jwk.key_ops, jwk.alg, jwk.k.length]),
+    hmacJwk: async () => subtle.exportKey("jwk", secretKey(await subtle.generateKey({ ...sha256, length: 24 }, true, ["verify", "sign"]))).then(jwk => [jwk.key_ops, jwk.alg, present(jwk.k).length]),
+    // @ts-expect-error A length is a number.
     aesString: () => subtle.generateKey({ name: "AES-GCM", length: "128" }, true, ["encrypt"]),
     aesFraction: () => subtle.generateKey({ name: "AES-GCM", length: 128.5 }, true, ["encrypt"]),
     aes100: () => subtle.generateKey({ name: "AES-GCM", length: 100 }, true, ["encrypt"]),
+    // @ts-expect-error A length is a number.
     aesZero: () => subtle.generateKey({ name: "AES-GCM", length: "abc" }, true, ["encrypt"]),
     aesHuge: () => subtle.generateKey({ name: "AES-GCM", length: 2 ** 31 }, true, ["encrypt"]),
     aesNoLength: () => subtle.generateKey({ name: "AES-GCM" }, true, ["encrypt"]),
     aesLower: () => subtle.generateKey({ name: "aes-kw", length: 256 }, true, ["wrapKey"]),
+    // @ts-expect-error A hash is a name or an algorithm.
     aesHashNull: () => subtle.generateKey({ name: "AES-GCM", length: 128, hash: null }, true, ["encrypt"]),
+    // @ts-expect-error An exponent is bytes.
     aesExponent: () => subtle.generateKey({ name: "AES-GCM", length: 128, publicExponent: "x" }, true, ["encrypt"]),
     hkdf: () => subtle.generateKey({ name: "HKDF" }, false, ["sign"]),
     pbkdf2: () => subtle.generateKey("PBKDF2", false, ["deriveBits"]),
     unknown: () => subtle.generateKey("FOO", false, ["sign"]),
+    // @ts-expect-error Usages are an array.
     usagesNull: () => subtle.generateKey({ name: "AES-GCM", length: 128 }, false, null),
+    // @ts-expect-error An algorithm is a name or an object.
     algorithmNull: () => subtle.generateKey(null, false, ["sign"]),
   });
   result.deriveBits = await all({
     hkdfNoSalt: hkdfBits({ salt: undefined }, 256),
     hkdfNoInfo: hkdfBits({ info: undefined }, 256),
     hkdfNoHash: hkdfBits({ hash: undefined }, 256),
+    // @ts-expect-error A hash is a name or an algorithm.
     hkdfHashNull: hkdfBits({ hash: null }, 256),
     hkdfBadHash: hkdfBits({ hash: "SHA-999", salt: undefined }, 256),
     hkdfMd5: hkdfBits({ hash: "MD5" }, 128),
+    // @ts-expect-error A salt is bytes.
     hkdfSaltString: hkdfBits({ salt: "abc" }, 256),
+    // @ts-expect-error A salt is bytes.
     hkdfSaltNull: hkdfBits({ salt: null }, 256),
+    // @ts-expect-error Info is bytes.
     hkdfInfoString: hkdfBits({ info: "abc" }, 256),
     hkdfIterations: hkdfBits({ iterations: 2 ** 40 }, 16),
+    // @ts-expect-error A public key is a CryptoKey.
     hkdfPublic: hkdfBits({ public: {} }, 16),
     hkdfLengthNull: hkdfBits({}, null),
     hkdfLengthMissing: async () => subtle.deriveBits(hkdfParams, await hkdf()),
@@ -522,6 +588,7 @@ async function secretKeyContracts() {
     hkdfLengthNegative: hkdfBits({ salt: undefined }, -8),
     hkdfLength20: hkdfBits({}, 20),
     hkdfLengthHuge: hkdfBits({}, 2 ** 32),
+    // @ts-expect-error A length is a number.
     hkdfLengthString: hkdfBits({}, "16"),
     hkdfLengthFraction: hkdfBits({}, 16.9),
     hkdfLengthNaN: hkdfBits({}, NaN),
@@ -531,9 +598,12 @@ async function secretKeyContracts() {
     hkdfEmptyKey: async () => subtle.deriveBits(hkdfParams, await subtle.importKey("raw", new Uint8Array(), "HKDF", false, ["deriveBits"]), 16),
     wrongAlgorithm: async () => subtle.deriveBits({ ...hkdfParams, name: "PBKDF2" }, await hkdf(), 16),
     unknownAlgorithm: async () => subtle.deriveBits({ ...hkdfParams, name: "FOO" }, await hkdf(), 16),
+    // @ts-expect-error An algorithm needs a name.
     emptyAlgorithm: async () => subtle.deriveBits({}, await hkdf(), 16),
+    // @ts-expect-error An algorithm is a name or an object.
     nullAlgorithm: async () => subtle.deriveBits(null, await hkdf(), 16),
     noUsage: async () => subtle.deriveBits(hkdfParams, await hkdf(["deriveKey"]), 16),
+    // @ts-expect-error A plain object is not a CryptoKey.
     notKey: () => subtle.deriveBits(hkdfParams, {}, -8),
     hmacKey: async () => subtle.deriveBits({ ...hkdfParams, name: "HMAC" }, await hmacKey(), 16),
     pbkdf2NoIterations: pbkdf2Bits({ iterations: undefined }, null),
@@ -542,6 +612,7 @@ async function secretKeyContracts() {
     pbkdf2Md5: pbkdf2Bits({ hash: "MD5" }, 16),
     pbkdf2IterationsZero: pbkdf2Bits({ iterations: 0 }, 256),
     pbkdf2IterationsNegative: pbkdf2Bits({ iterations: -1 }, 256),
+    // @ts-expect-error Iterations are a number.
     pbkdf2IterationsString: pbkdf2Bits({ iterations: "3" }, 16),
     pbkdf2IterationsFraction: pbkdf2Bits({ iterations: 2.9 }, 16),
     pbkdf2IterationsNaN: pbkdf2Bits({ iterations: NaN }, 16),
@@ -555,12 +626,14 @@ async function secretKeyContracts() {
     aesNoLength: hkdfKey({ name: "AES-GCM" }, ["encrypt"]),
     aesString: hkdfKey("AES-GCM", ["encrypt"]),
     aes100: hkdfKey({ name: "AES-GCM", length: 100 }, ["encrypt"]),
+    // @ts-expect-error A length is a number.
     aesLengthString: hkdfKey({ name: "AES-GCM", length: "128" }, ["encrypt"]),
     aesLowerName: hkdfKey({ name: "aes-gcm", length: 128 }, ["encrypt"]),
     aesBadUsage: hkdfKey({ name: "AES-GCM", length: 128 }, ["sign"]),
     lengthBeforeUsages: hkdfKey({ name: "AES-GCM", length: 100 }, ["sign"]),
     kwZero: hkdfKey({ name: "AES-KW", length: 0 }, ["wrapKey"]),
     huge: hkdfKey({ name: "AES-GCM", length: 2 ** 40 }, ["encrypt"]),
+    // @ts-expect-error An algorithm is a name or an object.
     nullAlgorithm: hkdfKey(null),
     hmacZero: hkdfKey({ ...sha256, length: 0 }),
     hmacNegative: hkdfKey({ ...sha256, length: -8 }),
@@ -584,6 +657,7 @@ async function secretKeyContracts() {
     wrongAlgorithm: async () => subtle.deriveKey({ ...hkdfParams, name: "PBKDF2" }, await hkdf(), { name: "AES-GCM", length: 128 }, true, ["encrypt"]),
     pbkdf2Hmac20: async () => subtle.deriveKey(pbkdf2Params, await pbkdf2(), { ...sha256, length: 20 }, true, ["sign"]),
     pbkdf2Aes: async () => subtle.deriveKey(pbkdf2Params, await pbkdf2(), { name: "AES-CBC", length: 256 }, true, ["decrypt", "encrypt"]),
+    // @ts-expect-error Usages are an array.
     usagesNull: async () => subtle.deriveKey(hkdfParams, await hkdf(), { name: "AES-GCM", length: 128 }, true, null),
   });
   result.export = await all({
@@ -591,12 +665,14 @@ async function secretKeyContracts() {
     aesJwk: async () => { const jwk = await subtle.exportKey("jwk", await aesKey("AES-GCM", ["unwrapKey", "decrypt"])); return [Object.keys(jwk), jwk]; },
     kwJwk: async () => subtle.exportKey("jwk", await aesKey("AES-KW", ["wrapKey", "unwrapKey"])),
     ctrJwk: async () => subtle.exportKey("jwk", await subtle.importKey("raw", new Uint8Array(32), "AES-CTR", true, ["encrypt"])),
-    ecJwkFields: async () => Object.keys(await subtle.exportKey("jwk", (await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"])).privateKey)),
+    ecJwkFields: async () => Object.keys(await subtle.exportKey("jwk", keyPair(await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"])).privateKey)),
     upperRaw: async () => subtle.exportKey("RAW", await hmacKey()),
     hmacSpki: async () => subtle.exportKey("spki", await hmacKey()),
     aesSpki: async () => subtle.exportKey("spki", await aesKey("AES-GCM")),
+    // @ts-expect-error A format is a string.
     aesNumber: async () => subtle.exportKey(5, await aesKey("AES-GCM")),
     extractableBeforeFormat: async () => subtle.exportKey("foo", await aesKey("AES-GCM", ["encrypt"], false)),
+    // @ts-expect-error A plain object is not a CryptoKey.
     notKey: () => subtle.exportKey("raw", {}),
   });
   result.wrap = await all({
@@ -611,9 +687,11 @@ async function secretKeyContracts() {
     hmacWrapping: async () => subtle.wrapKey("raw", await aesKey("AES-GCM"), await hmacKey(), "HMAC"),
     notExtractable: async () => subtle.wrapKey("foo", await aesKey("AES-GCM", ["encrypt"], false), await aesKey("AES-KW"), "AES-KW"),
     badFormat: async () => subtle.wrapKey("RAW", await aesKey("AES-GCM"), await aesKey("AES-KW"), "AES-KW"),
+    // @ts-expect-error A plain object is not a CryptoKey.
     notKey: async () => subtle.wrapKey("raw", {}, await aesKey("AES-KW"), "AES-KW"),
     gcmNoIv: async () => subtle.wrapKey("raw", await hmacKey(), await aesKey("AES-GCM"), "AES-GCM"),
     ctrNoLength: async () => subtle.wrapKey("raw", await hmacKey(), await aesKey("AES-CTR"), { name: "AES-CTR", counter: new Uint8Array(16) }),
+    // @ts-expect-error An IV is bytes.
     kwIvString: async () => subtle.wrapKey("raw", await aesKey("AES-GCM"), await aesKey("AES-KW"), { name: "AES-KW", iv: "x" }),
     unwrapJson: gcmUnwrap(text("{"), sha256),
     unwrapBom: gcmUnwrap(text('﻿{"kty":"oct","k":"AAAA"}'), sha256),
@@ -632,6 +710,7 @@ async function secretKeyContracts() {
     unwrapNoUsage: async () => subtle.unwrapKey("raw", new Uint8Array(24), await aesKey("AES-KW", ["wrapKey"]), "AES-KW", "AES-GCM", true, ["encrypt"]),
     unwrapCorrupt: async () => subtle.unwrapKey("raw", new Uint8Array(24), await aesKey("AES-KW"), "AES-KW", "AES-GCM", true, ["encrypt"]),
     unwrapShort: async () => subtle.unwrapKey("raw", new Uint8Array(16), await aesKey("AES-KW"), "AES-KW", "AES-GCM", true, ["encrypt"]),
+    // @ts-expect-error A string is not bytes.
     unwrapNotBytes: async () => subtle.unwrapKey("raw", "abc", await aesKey("AES-KW"), "AES-KW", "AES-GCM", true, ["encrypt"]),
     roundTrip: async () => {
       const kek = await aesKey("AES-KW");
@@ -641,11 +720,15 @@ async function secretKeyContracts() {
   });
   result.operations = await all({
     signWrongAlgorithm: async () => subtle.sign("AES-GCM", await hmacKey(), new Uint8Array(1)),
+    // @ts-expect-error An algorithm needs a name.
     signEmptyAlgorithm: async () => subtle.sign({}, await hmacKey(), new Uint8Array(1)),
+    // @ts-expect-error An algorithm is a name or an object.
     signNullAlgorithm: async () => subtle.sign(null, await hmacKey(), new Uint8Array(1)),
     signNoUsage: async () => subtle.sign("HMAC", await hmacKey(["verify"]), new Uint8Array(1)),
+    // @ts-expect-error A plain object is not a CryptoKey.
     signNotKey: () => subtle.sign("HMAC", {}, new Uint8Array(1)),
     signLowerName: async () => hex(await subtle.sign({ name: "hmac" }, await hmacKey(), new Uint8Array(1))),
+    // @ts-expect-error A string is not bytes.
     verifyNotBytes: async () => subtle.verify("HMAC", await hmacKey(), "x", new Uint8Array(1)),
     verifyLength20: async () => {
       const key = await subtle.importKey("raw", ones(), { name: "HMAC", hash: "SHA-1", length: 20 }, false, ["sign", "verify"]);
@@ -655,10 +738,14 @@ async function secretKeyContracts() {
     encryptWrongAlgorithm: async () => subtle.encrypt({ name: "AES-CBC", iv: new Uint8Array(16) }, await aesKey("AES-GCM"), new Uint8Array(1)),
     encryptNoUsage: async () => subtle.encrypt(gcm, await aesKey("AES-GCM", ["decrypt"]), new Uint8Array(1)),
     encryptKw: async () => subtle.encrypt("AES-KW", await aesKey("AES-KW"), new Uint8Array(16)),
+    // @ts-expect-error An IV is bytes.
     gcmIvString: async () => subtle.encrypt({ name: "AES-GCM", iv: "abc" }, await aesKey("AES-GCM"), new Uint8Array(1)),
+    // @ts-expect-error Additional data is bytes.
     gcmAdditionalDataNull: async () => subtle.encrypt({ ...gcm, additionalData: null }, await aesKey("AES-GCM"), new Uint8Array(1)),
     gcmTagHuge: async () => subtle.encrypt({ ...gcm, tagLength: 2 ** 40 }, await aesKey("AES-GCM"), new Uint8Array(1)),
+    // @ts-expect-error A tag length is a number.
     gcmTagString: async () => hex(await subtle.encrypt({ ...gcm, tagLength: "96" }, await aesKey("AES-GCM"), new Uint8Array(1))),
+    // @ts-expect-error A tag length is a number.
     gcmTagNaN: async () => subtle.encrypt({ ...gcm, tagLength: "abc" }, await aesKey("AES-GCM"), new Uint8Array(1)),
     ctrNoCounter: async () => subtle.encrypt({ name: "AES-CTR", length: 64 }, await aesKey("AES-CTR"), new Uint8Array(1)),
     ctrLengthZero: async () => subtle.encrypt({ ...ctr, length: 0 }, await aesKey("AES-CTR"), new Uint8Array(1)),
@@ -668,7 +755,7 @@ async function secretKeyContracts() {
 }
 
 function nodeCryptoContracts() {
-  const result = {};
+  const result: Record<string, unknown> = {};
   const key = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
   const iv = Buffer.from("cafebabefacedbaddecaf888", "hex");
   const cipher = nodeCrypto.createCipheriv("aes-256-gcm", key, iv);
@@ -720,6 +807,7 @@ function nodeCryptoContracts() {
     uncompressed: ecdh.getPublicKey("hex"),
     compressed: ecdh.getPublicKey("hex", "compressed"),
     secret: ecdh.computeSecret(peer.getPublicKey()).toString("hex"),
+    // @ts-expect-error The key is a Buffer, so its encoding is not used.
     converted: nodeCrypto.ECDH.convertKey(peer.getPublicKey(), "prime256v1", "buffer", "hex", "compressed"),
   };
   // RFC 2409 group 2 (1024-bit MODP).
@@ -734,8 +822,8 @@ function nodeCryptoContracts() {
     symmetric: alice.computeSecret(bob.getPublicKey()).equals(bob.computeSecret(alice.getPublicKey())),
     generated: (() => { const p = nodeCrypto.createDiffieHellman(256); return { primeBits: p.getPrime().length * 8, generator: p.getGenerator("hex"), safe: nodeCrypto.checkPrimeSync(p.getPrime()) }; })(),
   };
-  const toBuffer = value => { let digits = value.toString(16); if (digits.length % 2) digits = "0" + digits; return Buffer.from(digits, "hex"); };
-  const toBigInt = buffer => BigInt("0x" + Buffer.from(buffer).toString("hex"));
+  const toBuffer = (value: bigint) => { let digits = value.toString(16); if (digits.length % 2) digits = "0" + digits; return Buffer.from(digits, "hex"); };
+  const toBigInt = (buffer: ArrayBuffer) => BigInt("0x" + Buffer.from(buffer).toString("hex"));
   result.primes = {
     known: [2n, 3n, 4n, 97n, 561n, 7919n, 2n ** 61n - 1n, 2n ** 61n + 1n].map(value => nodeCrypto.checkPrimeSync(toBuffer(value))),
     generated: nodeCrypto.checkPrimeSync(nodeCrypto.generatePrimeSync(64)),
@@ -748,10 +836,10 @@ function nodeCryptoContracts() {
     scryptLimit: outcome(() => nodeCrypto.scryptSync("password", "salt", 16, { N: 2 ** 20, maxmem: 1024 })),
     pbkdf2: nodeCrypto.pbkdf2Sync("password", "salt", 2, 20, "sha1").toString("hex"),
     hkdf: Buffer.from(nodeCrypto.hkdfSync("sha256", "key", "salt", "info", 42)).toString("hex"),
-    hkdfTooLong: (() => { try { return nodeCrypto.hkdfSync("sha256", "key", "salt", "info", 255 * 32 + 1); } catch (error) { return [error.name, error.message]; } })(),
+    hkdfTooLong: (() => { try { return nodeCrypto.hkdfSync("sha256", "key", "salt", "info", 255 * 32 + 1); } catch (error) { return [member(error, "name"), member(error, "message")]; } })(),
   };
   const ecPair = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
-  const details = keyObject => {
+  const details = (keyObject: nodeCrypto.KeyObject) => {
     const value = keyObject.asymmetricKeyDetails;
     return value && Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, String(entry)]));
   };

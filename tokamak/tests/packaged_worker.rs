@@ -45,7 +45,7 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
     let host = HOST;
     let client = (state.join("client.cert.pem"), state.join("client.key.pem"));
     let foreign = write_foreign_client(temporary.path())?;
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls-client.ts");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls-client.mts");
     let authority = state.join("ca.cert.pem");
 
     for (authority, client, accepted) in [

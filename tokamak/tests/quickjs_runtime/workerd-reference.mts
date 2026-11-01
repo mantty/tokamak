@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { esModule } from "./reference.ts";
+import { esModule } from "./reference.mts";
 
 const root = import.meta.dirname;
 const state = await mkdtemp(join(tmpdir(), "tokamak-workerd-"));

@@ -1,16 +1,22 @@
+// Imported, since workers-types declares the global Buffer as any.
+import { Buffer } from "node:buffer";
+import type { EventEmitter } from "node:events";
 import fs from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
+// The global URL, which @types/node declares apart from workers-types.
+import { URL } from "node:url";
 import { byteInputs } from "./bytes.ts";
-import { failure as namedFailure } from "./outcome.ts";
+import { failure as namedFailure, isObject, member, present } from "./outcome.ts";
 
 const SIZE_LIMIT = 128 * 1024 * 1024;
 
 // The name and code of a thrown error and, for a system error, its system
 // call details, message and enumerable property names.
-function failure(error) {
-  const details = namedFailure(error);
-  if (!Object.hasOwn(error, "syscall")) return details;
+function failure(error: unknown) {
+  const details: Record<string, unknown> = namedFailure(error);
+  if (!isObject(error) || !Object.hasOwn(error, "syscall")) return details;
   for (const key of ["errno", "syscall", "path", "dest", "message"]) {
     if (Object.hasOwn(error, key)) details[key] = error[key];
   }
@@ -19,12 +25,12 @@ function failure(error) {
 }
 
 // What `run` returns, or the failure it throws.
-function attempt(run) {
+function attempt<T>(run: () => T) {
   try { return run(); } catch (error) { return { thrown: failure(error) }; }
 }
 
 // The trailing arguments each write of [1, 2, 3, 4] takes after its data.
-const bufferArguments = {
+const bufferArguments: Record<string, unknown[]> = {
   none: [],
   emptyOptions: [{}],
   undefinedOptions: [undefined],
@@ -81,7 +87,7 @@ const bufferArguments = {
 };
 
 // The trailing arguments each write of "abcd" takes after its data.
-const stringArguments = {
+const stringArguments: Record<string, unknown[]> = {
   none: [],
   position: [1],
   nullPosition: [null],
@@ -97,50 +103,57 @@ const stringArguments = {
 };
 
 // More data, each with the trailing argument lists to write it with.
-const otherWrites = {
+const otherWrites: Record<string, [() => unknown, unknown[][]]> = {
   middleView: [() => Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]).subarray(2, 6), [[], [1], [{ offset: 1, length: 2 }]]],
   tailView: [() => Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]).subarray(5, 7), [[], [0, 1]]],
   oddHex: [() => "abc", [[null, "hex"]]],
 };
 
-function bufferOutcome(buffer, data) {
+function bufferOutcome(buffer: unknown, data: unknown) {
   if (buffer === data) return "data";
-  return { tag: Object.prototype.toString.call(buffer), constructor: buffer?.constructor?.name ?? null };
+  return { tag: Object.prototype.toString.call(buffer), constructor: member(member(buffer, "constructor"), "name") ?? null };
 }
+
+// A write of `data` with `args` to the file at `path`, and what it reports.
+type Write = (path: string, data: unknown, args: unknown[]) => Promise<object>;
 
 // The sync, callback and file handle forms of a write, by their function names
 // and the name of the data a file handle write reports back.
-function writeForms(syncName, callbackName, handleName, reportedName) {
-  return {
+function writeForms(syncName: "writeSync" | "writevSync", callbackName: "write" | "writev", handleName: "write" | "writev", reportedName: "buffer" | "buffers") {
+  const forms: Record<"sync" | "callback" | "handle", Write> = {
     sync: (path, data, args) => withDescriptor(path, fd => {
+      // @ts-expect-error The data and arguments include invalid ones.
       try { return { written: fs[syncName](fd, data, ...args) }; }
       catch (error) { return { thrown: failure(error) }; }
     }),
     callback: (path, data, args) => withDescriptor(path, fd => new Promise(resolve => {
       try {
-        fs[callbackName](fd, data, ...args, (error, written, reported) =>
+        // @ts-expect-error The data and arguments include invalid ones.
+        fs[callbackName](fd, data, ...args, (error: NodeJS.ErrnoException | null, written: number, reported: unknown) =>
           resolve(error ? { error: failure(error) } : { written, reported: bufferOutcome(reported, data) }));
       } catch (error) { resolve({ thrown: failure(error) }); }
     })),
     handle: async (path, data, args) => {
       const handle = await fs.promises.open(path, "r+");
       try {
-        let pending;
+        let pending: Promise<object>;
+        // @ts-expect-error The data and arguments include invalid ones.
         try { pending = handle[handleName](data, ...args); }
         catch (error) { return { thrown: failure(error) }; }
         return await pending.then(
-          result => ({ written: result.bytesWritten, reported: bufferOutcome(result[reportedName], data) }),
+          result => ({ written: member(result, "bytesWritten"), reported: bufferOutcome(member(result, reportedName), data) }),
           error => ({ error: failure(error) }));
       } finally { await handle.close(); }
     },
   };
+  return forms;
 }
 
 const writers = writeForms("writeSync", "write", "write", "buffer");
 const vectorWriters = writeForms("writevSync", "writev", "writev", "buffers");
 
 // The trailing arguments each vector write of [[1, 2]] takes after its buffers.
-const vectorArguments = {
+const vectorArguments: Record<string, unknown[]> = {
   none: [],
   undefinedPosition: [undefined],
   nullPosition: [null],
@@ -157,7 +170,7 @@ const vectorArguments = {
 };
 
 // Other buffers, each with the trailing arguments to write them with.
-const otherVectorWrites = {
+const otherVectorWrites: Record<string, [() => unknown, unknown[]]> = {
   views: [() => [Uint8Array.from([1, 2, 3, 4]).subarray(1, 3), new DataView(Uint8Array.from([5, 6, 7]).buffer, 1, 1)], []],
   emptyWithBigint: [() => [], [-1n]],
   emptyWithNegative: [() => [], [-1]],
@@ -166,14 +179,14 @@ const otherVectorWrites = {
   stringBeforeBadPosition: [() => [Uint8Array.from([1]), "x"], [-1]],
 };
 
-async function withDescriptor(path, use) {
+async function withDescriptor<T>(path: string, use: (fd: number) => T) {
   const fd = fs.openSync(path, "r+");
   try { return await use(fd); }
   finally { fs.closeSync(fd); }
 }
 
 // What `write` reports for `data` and `args` over a file of six 9s, and the file it leaves.
-async function writeOutcome(write, data, args) {
+async function writeOutcome(write: Write, data: unknown, args: unknown[]) {
   const path = "/tmp/filesystem-contract.bin";
   fs.writeFileSync(path, new Uint8Array(6).fill(9));
   const outcome = await write(path, data, args);
@@ -181,8 +194,8 @@ async function writeOutcome(write, data, args) {
 }
 
 // The outcome of each write with `write`, one at a time.
-async function writerOutcomes(write) {
-  const outcomes = { buffer: {}, string: {}, data: {}, other: {} };
+async function writerOutcomes(write: Write) {
+  const outcomes: Record<string, Record<string, unknown>> = { buffer: {}, string: {}, data: {}, other: {} };
   for (const [name, args] of Object.entries(bufferArguments)) {
     outcomes.buffer[name] = await writeOutcome(write, Uint8Array.from([1, 2, 3, 4]), args);
   }
@@ -193,15 +206,16 @@ async function writerOutcomes(write) {
     outcomes.data[name] = await writeOutcome(write, input(), []);
   }
   for (const [name, [data, argumentLists]] of Object.entries(otherWrites)) {
-    outcomes.other[name] = [];
-    for (const args of argumentLists) outcomes.other[name].push(await writeOutcome(write, data(), args));
+    const other: unknown[] = [];
+    outcomes.other[name] = other;
+    for (const args of argumentLists) other.push(await writeOutcome(write, data(), args));
   }
   return outcomes;
 }
 
 // The outcome of each vector write with `write`, one at a time.
-async function vectorOutcomes(write) {
-  const outcomes = {};
+async function vectorOutcomes(write: Write) {
+  const outcomes: Record<string, unknown> = {};
   for (const [name, args] of Object.entries(vectorArguments)) {
     outcomes[name] = await writeOutcome(write, [Uint8Array.from([1, 2])], args);
   }
@@ -212,11 +226,11 @@ async function vectorOutcomes(write) {
 }
 
 // A write at `position` through a descriptor opened for appending.
-function appendOutcome(position) {
+function appendOutcome(position: number) {
   const path = "/tmp/filesystem-append.bin";
   fs.writeFileSync(path, Uint8Array.from([9]));
   const fd = fs.openSync(path, "a");
-  let outcome;
+  let outcome: object;
   try { outcome = { written: fs.writeSync(fd, Uint8Array.from([1]), 0, 1, position) }; }
   catch (error) { outcome = { thrown: failure(error) }; }
   fs.closeSync(fd);
@@ -225,7 +239,7 @@ function appendOutcome(position) {
 
 // The data each whole-file write is given, made fresh for every use, and the
 // encoding it writes the data in.
-const fileWriteData = {
+const fileWriteData: Record<string, [() => unknown, unknown]> = {
   utf8: [() => "h\u00e9llo", "utf8"],
   latin1: [() => "h\u00e9llo", "latin1"],
   binary: [() => "h\u00e9llo", "binary"],
@@ -247,39 +261,44 @@ const fileWriteData = {
   viewUnknown: [() => Uint8Array.from([1, 2]), "nope"],
   viewNumberEncoding: [() => Uint8Array.from([1, 2]), 5],
   nullData: [() => null, undefined],
-  ...Object.fromEntries(Object.entries(byteInputs).map(([name, input]) => [name, [input, undefined]])),
+  ...Object.fromEntries(Object.entries(byteInputs).map(([name, input]): [string, [() => unknown, unknown]] => [name, [input, undefined]])),
 };
 
 // A write stream's write of `data` in `encoding` to `path`, by `write` or by
 // `end`, once the stream finishes.
-async function streamWrite(path, data, encoding, method = "write") {
+async function streamWrite(path: string, data: FileData, encoding: BufferEncoding | null, method = "write") {
   const stream = fs.createWriteStream(path);
   try {
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       stream.on("error", reject);
+      // @ts-expect-error The encodings include null.
       if (method === "end") stream.end(data, encoding, resolve);
+      // @ts-expect-error The encodings include null.
       else { stream.write(data, encoding); stream.end(resolve); }
     });
   } finally { stream.destroy(); }
 }
 
-// The file handle method `name` applied to `path`.
-async function withHandle(path, name, ...args) {
+// A use of a file handle opened on `path`.
+async function withHandle(path: string, use: (handle: FileHandle) => Promise<unknown>) {
   const handle = await fs.promises.open(path, "r+");
-  try { await handle[name](...args); }
+  try { await use(handle); }
   finally { await handle.close(); }
 }
 
+// The data that every whole-file write takes.
+type FileData = string | Uint8Array;
+
 // Each whole-file write of `data` in `encoding` to `path`.
-const fileWrites = {
+const fileWrites: Record<string, (path: string, data: FileData, encoding: BufferEncoding | null) => unknown> = {
   writeFileSync: (path, data, encoding) => fs.writeFileSync(path, data, encoding),
   writeFileSyncOptions: (path, data, encoding) => fs.writeFileSync(path, data, { encoding }),
   appendFileSync: (path, data, encoding) => fs.appendFileSync(path, data, encoding),
-  writeFile: (path, data, encoding) => new Promise((resolve, reject) => fs.writeFile(path, data, encoding, error => error ? reject(error) : resolve())),
-  appendFile: (path, data, encoding) => new Promise((resolve, reject) => fs.appendFile(path, data, encoding, error => error ? reject(error) : resolve())),
+  writeFile: (path, data, encoding) => new Promise<void>((resolve, reject) => fs.writeFile(path, data, encoding, error => error ? reject(error) : resolve())),
+  appendFile: (path, data, encoding) => new Promise<void>((resolve, reject) => fs.appendFile(path, data, encoding, error => error ? reject(error) : resolve())),
   promisesWriteFile: (path, data, encoding) => fs.promises.writeFile(path, data, encoding),
-  handleWriteFile: (path, data, encoding) => withHandle(path, "writeFile", data, encoding),
-  handleAppendFile: (path, data, encoding) => withHandle(path, "appendFile", data, encoding),
+  handleWriteFile: (path, data, encoding) => withHandle(path, handle => handle.writeFile(data, encoding)),
+  handleAppendFile: (path, data, encoding) => withHandle(path, handle => handle.appendFile(data, encoding)),
   streamWrite,
   streamEnd: (path, data, encoding) => streamWrite(path, data, encoding, "end"),
 };
@@ -288,18 +307,27 @@ const fileWrites = {
 // file holding [9], or the error it fails with.
 async function fileWriteContracts() {
   const path = "/tmp/filesystem-file-write.bin";
-  const outcomes = {};
+  const outcomes: Record<string, Record<string, unknown>> = {};
   for (const [writeName, write] of Object.entries(fileWrites)) {
-    outcomes[writeName] = {};
+    const writeOutcomes: Record<string, unknown> = {};
+    outcomes[writeName] = writeOutcomes;
     for (const [dataName, [data, encoding]] of Object.entries(fileWriteData)) {
       fs.writeFileSync(path, Uint8Array.from([9]));
       try {
+        // @ts-expect-error The data and encodings include invalid ones.
         await write(path, data(), encoding);
-        outcomes[writeName][dataName] = { contents: [...fs.readFileSync(path)] };
-      } catch (error) { outcomes[writeName][dataName] = { error: failure(error) }; }
+        writeOutcomes[dataName] = { contents: [...fs.readFileSync(path)] };
+      } catch (error) { writeOutcomes[dataName] = { error: failure(error) }; }
     }
   }
   return outcomes;
+}
+
+// What a handle's `writeFile` resolved with, which workerd fills in and Node
+// leaves undefined.
+function writtenOutcome(written: unknown) {
+  const buffer = member(written, "buffer");
+  return { bytesWritten: member(written, "bytesWritten"), isBuffer: Buffer.isBuffer(buffer), bytes: Buffer.isBuffer(buffer) ? [...buffer] : buffer };
 }
 
 // What `FileHandle.writeFile` resolves with for a string, with an encoding
@@ -309,15 +337,17 @@ async function handleWriteFileResult() {
   const path = "/tmp/filesystem-handle-write.bin";
   const handle = await fs.promises.open(path, "w+");
   try {
-    const { bytesWritten, buffer } = await handle.writeFile("6869", "hex");
+    const written = await handle.writeFile("6869", "hex");
     const inOptions = await handle.writeFile("6869", { encoding: "hex" });
     let rejection = "threw";
+    // @ts-expect-error A number is not data.
     try { const pending = handle.writeFile(5); rejection = "rejected"; await pending; }
-    catch (error) { rejection = `${rejection} ${error.code}`; }
+    catch (error) { rejection = `${rejection} ${member(error, "code")}`; }
+    // @ts-expect-error A handle's writeFile declares no flag.
     await handle.writeFile("!", { flag: "a" });
     return {
-      bytesWritten, isBuffer: Buffer.isBuffer(buffer), bytes: [...buffer], rejection,
-      inOptions: { bytesWritten: inOptions.bytesWritten, bytes: [...inOptions.buffer] },
+      ...writtenOutcome(written), rejection,
+      inOptions: writtenOutcome(inOptions),
       appended: fs.readFileSync(path, "utf8"),
     };
   } finally { await handle.close(); }
@@ -327,8 +357,8 @@ async function handleWriteFileResult() {
 // descriptor opened with each flag, and where its next write lands.
 function descriptorWriteFileContracts() {
   const path = "/tmp/filesystem-descriptor-write-file.bin";
-  const outcomes = {};
-  for (const write of ["writeFileSync", "appendFileSync"]) {
+  const outcomes: Record<string, unknown> = {};
+  for (const write of ["writeFileSync", "appendFileSync"] as const) {
     for (const flag of ["r", "r+", "w", "a", "a+"]) {
       fs.writeFileSync(path, "old");
       const fd = fs.openSync(path, flag);
@@ -347,7 +377,7 @@ function descriptorWriteFileContracts() {
 function sizeLimitOutcomes() {
   const path = "/tmp/filesystem-limit.bin";
   fs.writeFileSync(path, "");
-  const attempt = resize => {
+  const attempt = (resize: () => void) => {
     try { resize(); return { size: fs.statSync(path).size }; }
     catch (error) { return { thrown: failure(error) }; }
   };
@@ -362,7 +392,7 @@ function sizeLimitOutcomes() {
 }
 
 // A fresh directory under /tmp holding `names` as files, created in order.
-function directoryOf(name, names) {
+function directoryOf(name: string, names: string[]) {
   const root = `/tmp/filesystem-order/${name}`;
   fs.mkdirSync(root, { recursive: true });
   for (const entry of names) fs.writeFileSync(`${root}/${entry}`, entry);
@@ -370,7 +400,7 @@ function directoryOf(name, names) {
 }
 
 // What `change` leaves `readdirSync` listing in a directory of `names`.
-function listingAfter(name, names, change) {
+function listingAfter(name: string, names: string[], change: (root: string) => void) {
   const root = directoryOf(name, names);
   change(root);
   return fs.readdirSync(root);
@@ -380,7 +410,7 @@ async function orderContracts() {
   const created = directoryOf("created", ["zeta", "beta", "Capital", "_under", "10", "9"]);
   fs.mkdirSync(`${created}/alpha`);
   const dir = fs.opendirSync(created);
-  const opened = [];
+  const opened: string[] = [];
   for (let entry; (entry = dir.readSync()) !== null;) opened.push(entry.name);
   dir.closeSync();
   const letters = ["a", "b", "c", "d", "e"];
@@ -412,23 +442,23 @@ async function orderContracts() {
 }
 
 // A dirent's visible shape and type.
-function direntOutcome(entry) {
+function direntOutcome(entry: fs.Dirent) {
   return {
     name: entry.name,
     parentPath: entry.parentPath,
     path: entry.path ?? null,
     keys: Reflect.ownKeys(entry).map(String),
     json: JSON.stringify(entry),
-    types: ["isFile", "isDirectory", "isSymbolicLink", "isCharacterDevice", "isBlockDevice", "isFIFO", "isSocket"]
+    types: (["isFile", "isDirectory", "isSymbolicLink", "isCharacterDevice", "isBlockDevice", "isFIFO", "isSocket"] as const)
       .filter(method => entry[method]()),
     prototype: Object.getPrototypeOf(entry) === fs.Dirent.prototype,
   };
 }
 
 // The dirents `opendirSync` reads from `path`.
-function openedDirents(path, options) {
+function openedDirents(path: string, options?: fs.OpenDirOptions) {
   const dir = fs.opendirSync(path, options);
-  const entries = [];
+  const entries: ReturnType<typeof direntOutcome>[] = [];
   for (let entry; (entry = dir.readSync()) !== null;) entries.push(direntOutcome(entry));
   dir.closeSync();
   return entries;
@@ -440,8 +470,9 @@ async function direntContracts() {
   fs.writeFileSync(`${root}/file`, "f");
   fs.writeFileSync(`${root}/sub/inner`, "i");
   fs.symlinkSync(`${root}/file`, `${root}/link`);
-  const typed = (path, options = {}) => fs.readdirSync(path, { ...options, withFileTypes: true }).map(direntOutcome);
+  const typed = (path: string, options = {}) => fs.readdirSync(path, { ...options, withFileTypes: true }).map(direntOutcome);
   const constructed = (() => {
+    // @ts-expect-error The Dirent constructor is undeclared.
     try { return direntOutcome(new fs.Dirent("made", 1, "/somewhere")); }
     catch (error) { return { thrown: failure(error) }; }
   })();
@@ -462,7 +493,7 @@ async function direntContracts() {
     recursiveTypedPromise: (await fs.promises.readdir(root, { recursive: true, withFileTypes: true })).map(direntOutcome),
     recursiveCallback: await new Promise((resolve, reject) =>
       fs.readdir(root, { recursive: true }, (error, names) => error ? reject(error) : resolve(names))),
-    recursiveFromRoot: fs.readdirSync("/", { recursive: true })
+    recursiveFromRoot: fs.readdirSync("/", { recursive: true, encoding: "utf8" })
       .filter(name => name.includes("filesystem-dirents") || name.startsWith("dev")),
     opened: openedDirents(root),
     openedRecursive: openedDirents(root, { recursive: true }),
@@ -473,16 +504,16 @@ async function direntContracts() {
 }
 
 // The kind of data a read returns, and its text.
-function dataOutcome(value) {
+function dataOutcome(value: unknown) {
   return {
     type: typeof value,
     buffer: Buffer.isBuffer(value),
-    constructor: value?.constructor?.name ?? null,
+    constructor: member(member(value, "constructor"), "name") ?? null,
     text: String(value),
   };
 }
 
-function attemptData(read) {
+function attemptData(read: () => unknown) {
   try { return dataOutcome(read()); }
   catch (error) { return { thrown: failure(error) }; }
 }
@@ -515,7 +546,7 @@ async function readDataContracts() {
     namesLatin1: fs.readdirSync(root, { encoding: "latin1" }),
     recursiveNames: fs.readdirSync(root, { recursive: true, encoding: "buffer" }).map(dataOutcome),
     direntNames: fs.readdirSync(root, { withFileTypes: true, encoding: "buffer" }).map(entry => dataOutcome(entry.name)),
-    openedName: dataOutcome(opened.name),
+    openedName: dataOutcome(opened?.name),
     readlinkHex: attemptData(() => fs.readlinkSync(`${root}/link`, "hex")),
   };
 }
@@ -540,11 +571,12 @@ async function globContracts() {
   };
 }
 
+type GlobOptions = fs.GlobOptionsWithFileTypes | fs.GlobOptionsWithoutFileTypes;
+
 // What `globSync` returns for `pattern` and `options`, or throws.
-function globOutcome(pattern, options) {
+function globOutcome(pattern: string | readonly string[], options: GlobOptions = {}) {
   try {
-    const matches = fs.globSync(pattern, options);
-    return options?.withFileTypes ? matches.map(direntOutcome) : matches;
+    return options?.withFileTypes ? fs.globSync(pattern, options).map(direntOutcome) : fs.globSync(pattern, options);
   } catch (error) { return { thrown: failure(error) }; }
 }
 
@@ -558,7 +590,7 @@ async function globDetailContracts() {
   fs.writeFileSync(`${root}/alpha/deep/x.md`, "x");
   for (const name of ["Capital.txt", "_under.txt", "10.txt", "9.txt", "a*b.txt", "a[b].txt"]) fs.writeFileSync(`${root}/${name}`, name);
   fs.symlinkSync(`${root}/beta.txt`, `${root}/link`);
-  const at = (pattern, options = {}) => globOutcome(pattern, { cwd: root, ...options });
+  const at = (pattern: string | readonly string[], options: GlobOptions = {}) => globOutcome(pattern, { cwd: root, ...options });
   return {
     everything: at("**"),
     everythingTwice: at("**/**"),
@@ -569,6 +601,7 @@ async function globDetailContracts() {
     nestedBraces: at("{zeta,alpha/{deep,inner.txt}}"),
     singleBrace: at("{beta}.txt"),
     patterns: at(["zeta/*", "alpha/*", "*.txt"]),
+    // @ts-expect-error A Set is not a pattern list.
     patternSet: at(new Set(["beta.txt", "9.txt"])),
     characterClass: at("[ab]*"),
     negatedClass: at("[!ab_]*"),
@@ -594,6 +627,7 @@ async function globDetailContracts() {
     missingCwd: globOutcome("*", { cwd: "/tmp/filesystem-glob-missing" }),
     empty: at(""),
     slash: at("/"),
+    // @ts-expect-error Globs declare no encoding.
     encoding: at("beta.txt", { encoding: "buffer" }),
     rootDirents: globOutcome("tmp/filesystem-glob-order/*", { cwd: "/", withFileTypes: true }),
     topDirents: globOutcome("tmp/.", { cwd: "/", withFileTypes: true }),
@@ -607,30 +641,43 @@ async function globDetailContracts() {
     excludePatterns: at("**", { exclude: ["alpha/**", "*.{md,txt}"] }),
     excludeMiddle: at("**", { exclude: ["**/deep/**"] }),
     excludeParent: at("**", { exclude: ["zeta/../alpha"] }),
-    excludeNames: at("**", { exclude: name => name.includes("a") }),
+    excludeNames: at("**", { exclude: (name: string) => name.includes("a") }),
     excludeDirents: at("**", { withFileTypes: true, exclude: entry => entry.isDirectory() }),
+    // @ts-expect-error A lone string is not an exclude list.
     excludeString: at("*", { exclude: "beta.txt" }),
+    // @ts-expect-error String objects are not patterns.
     excludeStringObjects: at("**", { exclude: [new String("alpha/**"), new String("*.{md,txt}")] }),
+    // @ts-expect-error A number is not a pattern.
     excludeNumbers: globOutcome("*", { cwd: root, exclude: [5] }),
+    // @ts-expect-error A number is not a pattern.
     numberPattern: globOutcome(5),
+    // @ts-expect-error A number is not a pattern.
     numberInPatterns: globOutcome(["*", 5]),
+    // @ts-expect-error The options are not an object.
     nullOptions: globOutcome("*", null),
+    // @ts-expect-error The options are not an object.
     stringOptions: globOutcome("*", "x"),
+    // @ts-expect-error The options are not an object.
     functionOptions: globOutcome("*", () => {}),
+    // @ts-expect-error A number is not a directory.
     numberCwd: globOutcome("*", { cwd: 5 }),
     callbackRequired: (() => {
+      // @ts-expect-error The callback is missing.
       try { fs.glob("*", { cwd: root }); return "returned"; }
       catch (error) { return failure(error); }
     })(),
+    // @ts-expect-error A number is not a pattern.
     callbackError: await new Promise(resolve => fs.glob(5, (error, matches) =>
       resolve(error ? { error: failure(error) } : { matches }))),
     callbackDefaultOptions: await new Promise(resolve => fs.glob("*.ts", (error, matches) =>
       resolve(error ? { error: failure(error) } : { matches: Array.isArray(matches) }))),
+    // @ts-expect-error A number is not a pattern.
     promiseError: await Array.fromAsync(fs.promises.glob(5)).then(matches => ({ matches }), error => ({ error: failure(error) })),
     promiseDirents: (await Array.fromAsync(fs.promises.glob("zeta/*", { cwd: root, withFileTypes: true }))).map(direntOutcome),
     promiseGenerator: await (async () => {
       const matches = fs.promises.glob("zeta/*", { cwd: root });
       const first = await matches.next();
+      if (matches.return === undefined) throw new TypeError("The glob iterator has no return method");
       const returned = await matches.return("done");
       return [Object.prototype.toString.call(matches), matches[Symbol.asyncIterator]() === matches,
         fs.promises.glob.name, fs.promises.glob.length, first, returned, await matches.next()];
@@ -658,7 +705,9 @@ function pathContracts() {
     driveLetter: attempt(() => fs.readdirSync("/C|/x")),
     emptyPath: attempt(() => fs.statSync("").isDirectory()),
     nullByte: attempt(() => fs.readdirSync("/tmp/\0")),
+    // @ts-expect-error A number is not a path.
     number: attempt(() => fs.readdirSync(5)),
+    // @ts-expect-error A Uint8Array is not a Buffer.
     uint8Array: attempt(() => fs.readdirSync(new Uint8Array([47]))),
     buffer: attempt(() => fs.readdirSync(Buffer.from(root))),
     fileUrl: attempt(() => fs.readdirSync(new URL(`file://${root}`))),
@@ -706,6 +755,7 @@ async function symlinkContracts() {
     readThroughRelative: attempt(() => fs.readFileSync(`${root}/relative/file.txt`, "utf8")),
     readlinkSpaced: attempt(() => { fs.symlinkSync("a b/./c/../d", `${root}/spaced`); return fs.readlinkSync(`${root}/spaced`); }),
     readlinkUrl: attempt(() => { fs.symlinkSync(new URL(`file://${root}/real`), `${root}/url`); return fs.readlinkSync(`${root}/url`); }),
+    // @ts-expect-error A number is not a path.
     numberTarget: attempt(() => fs.symlinkSync(5, `${root}/number`)),
     readThroughLink: attempt(() => fs.readFileSync(`${alias}/file.txt`, "utf8")),
     readdirLink: attempt(() => fs.readdirSync(alias)),
@@ -752,8 +802,8 @@ async function openFlagContracts() {
   const path = "/tmp/filesystem-open-flags.bin";
   const reset = () => fs.writeFileSync(path, Uint8Array.from([9, 9, 9, 9]));
   const { O_WRONLY, O_RDWR, O_CREAT, O_TRUNC } = fs.constants;
-  const flags = { w: "w", "w+": "w+", a: "a", "a+": "a+", "r+": "r+", truncating: O_WRONLY | O_CREAT | O_TRUNC, readTruncating: O_RDWR | O_TRUNC };
-  const outcomes = {};
+  const flags: Record<string, string | number> = { w: "w", "w+": "w+", a: "a", "a+": "a+", "r+": "r+", truncating: O_WRONLY | O_CREAT | O_TRUNC, readTruncating: O_RDWR | O_TRUNC };
+  const outcomes: Record<string, number[]> = {};
   for (const [name, flag] of Object.entries(flags)) {
     reset();
     const fd = fs.openSync(path, flag);
@@ -776,9 +826,11 @@ async function openFlagContracts() {
   return outcomes;
 }
 
+type Tree = [name: string, contents: string | Tree][];
+
 // Each entry under `root` in listing order, with a file's text, a
 // directory's entries or a symbolic link's target.
-function treeOf(root) {
+function treeOf(root: string): Tree {
   return fs.readdirSync(root).map(name => {
     const path = `${root}/${name}`;
     const stats = fs.lstatSync(path);
@@ -791,7 +843,7 @@ function treeOf(root) {
 // tree it leaves there. The directory holds files a and b, a hard link to a,
 // directories empty and full, and symbolic links to b, to full, to nothing
 // and to each other.
-async function overwriteOutcome(name, change) {
+async function overwriteOutcome(name: string, change: (root: string) => unknown) {
   const root = `/tmp/filesystem-overwrite/${name}`;
   fs.mkdirSync(`${root}/full`, { recursive: true });
   fs.mkdirSync(`${root}/empty`);
@@ -803,7 +855,7 @@ async function overwriteOutcome(name, change) {
   fs.symlinkSync(`${root}/nothing`, `${root}/broken`);
   fs.symlinkSync(`${root}/loopB`, `${root}/loopA`);
   fs.symlinkSync(`${root}/loopA`, `${root}/loopB`);
-  let result;
+  let result: unknown;
   try { result = (await change(root)) ?? "done"; }
   catch (error) { result = { thrown: failure(error) }; }
   return { result, tree: treeOf(root) };
@@ -813,14 +865,14 @@ async function overwriteOutcome(name, change) {
 const bundleFile = "/bundle/bundle.txt";
 
 // Writes `text` through a descriptor of `path` opened before `change`.
-function writeAfter(path, change, text) {
+function writeAfter(path: string, change: () => void, text: string) {
   const fd = fs.openSync(path, "r+");
   try { change(); fs.writeSync(fd, text); }
   finally { fs.closeSync(fd); }
 }
 
 // Each rename, by name, from a directory `overwriteOutcome` makes.
-const renames = {
+const renames: Record<string, (root: string) => unknown> = {
   ontoFile: root => fs.renameSync(`${root}/a`, `${root}/b`),
   ontoItself: root => fs.renameSync(`${root}/a`, `${root}/a`),
   ontoHardLink: root => fs.renameSync(`${root}/a`, `${root}/hard`),
@@ -874,12 +926,12 @@ const renames = {
   relative: root => fs.renameSync(`${root}/a`, "c"),
   promise: root => fs.promises.rename(`${root}/a`, `${root}/b`),
   promiseOntoDirectory: root => fs.promises.rename(`${root}/a`, `${root}/empty`),
-  callback: root => new Promise((resolve, reject) => fs.rename(`${root}/a`, `${root}/b`, error => error ? reject(error) : resolve())),
-  callbackOntoDirectory: root => new Promise((resolve, reject) => fs.rename(`${root}/a`, `${root}/empty`, error => error ? reject(error) : resolve())),
+  callback: root => new Promise<void>((resolve, reject) => fs.rename(`${root}/a`, `${root}/b`, error => error ? reject(error) : resolve())),
+  callbackOntoDirectory: root => new Promise<void>((resolve, reject) => fs.rename(`${root}/a`, `${root}/empty`, error => error ? reject(error) : resolve())),
 };
 
 // Each copyFile, by name, from a directory `overwriteOutcome` makes.
-const copies = {
+const copies: Record<string, (root: string) => unknown> = {
   ontoFile: root => fs.copyFileSync(`${root}/a`, `${root}/b`),
   ontoItself: root => fs.copyFileSync(`${root}/a`, `${root}/a`),
   ontoHardLink: root => { fs.copyFileSync(`${root}/b`, `${root}/a`); fs.appendFileSync(`${root}/hard`, "+"); },
@@ -918,27 +970,28 @@ const copies = {
   cloneForce: root => fs.copyFileSync(`${root}/a`, `${root}/b`, fs.constants.COPYFILE_FICLONE_FORCE),
   promise: root => fs.promises.copyFile(`${root}/a`, `${root}/b`),
   promiseMode: root => fs.promises.copyFile(`${root}/a`, `${root}/b`, 3),
-  callback: root => new Promise((resolve, reject) => fs.copyFile(`${root}/a`, `${root}/b`, error => error ? reject(error) : resolve())),
+  callback: root => new Promise<void>((resolve, reject) => fs.copyFile(`${root}/a`, `${root}/b`, error => error ? reject(error) : resolve())),
   callbackExclusive: root => fs.copyFile(`${root}/a`, `${root}/b`, fs.constants.COPYFILE_EXCL, () => {}),
   callbackMode: root => fs.copyFile(`${root}/a`, `${root}/b`, 3, () => {}),
 };
 
 // rename and copyFile onto existing names, and copyFile's modes.
 async function overwriteContracts() {
-  const outcomes = { rename: {}, copyFile: {} };
-  for (const [name, change] of Object.entries(renames)) outcomes.rename[name] = await overwriteOutcome(`rename-${name}`, change);
-  for (const [name, change] of Object.entries(copies)) outcomes.copyFile[name] = await overwriteOutcome(`copy-${name}`, change);
+  const rename: Record<string, unknown> = {};
+  for (const [name, change] of Object.entries(renames)) rename[name] = await overwriteOutcome(`rename-${name}`, change);
+  const copyFile: Record<string, unknown> = {};
+  for (const [name, change] of Object.entries(copies)) copyFile[name] = await overwriteOutcome(`copy-${name}`, change);
   const root = "/tmp/filesystem-overwrite/modes";
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(`${root}/a`, "a");
-  outcomes.copyModes = [3, 5, -1, "1", 1.5, null, undefined, -0].map((mode, index) =>
+  const copyModes = [3, 5, -1, "1", 1.5, null, undefined, -0].map((mode, index) =>
+    // @ts-expect-error The modes include invalid ones.
     attempt(() => fs.copyFileSync(`${root}/a`, `${root}/mode${index}`, mode)) ?? "copied");
-  outcomes.copyModesTree = treeOf(root);
-  return outcomes;
+  return { rename, copyFile, copyModes, copyModesTree: treeOf(root) };
 }
 
 // The trailing arguments each read into a four-byte buffer takes after it.
-const readArguments = {
+const readArguments: Record<string, unknown[]> = {
   none: [],
   emptyOptions: [{}],
   undefinedOptions: [undefined],
@@ -974,17 +1027,22 @@ const readArguments = {
   arrayOptions: [[1]],
 };
 
+type Read = (path: string, buffer: NodeJS.ArrayBufferView | string, args: unknown[]) => Promise<object>;
+
 // The sync, callback and file handle forms of a read of `path` into `buffer`.
-const readers = {
+const readers: Record<string, Read> = {
+  // @ts-expect-error The buffers and arguments include invalid ones.
   sync: (path, buffer, args) => withDescriptor(path, fd => attempt(() => ({ read: fs.readSync(fd, buffer, ...args) }))),
-  callback: (path, buffer, args) => withDescriptor(path, fd => new Promise(resolve => {
-    try { fs.read(fd, buffer, ...args, (error, read) => resolve(error ? { error: failure(error) } : { read })); }
+  callback: (path, buffer, args) => withDescriptor(path, fd => new Promise<object>(resolve => {
+    // @ts-expect-error The buffers and arguments include invalid ones.
+    try { fs.read(fd, buffer, ...args, (error: NodeJS.ErrnoException | null, read: number) => resolve(error ? { error: failure(error) } : { read })); }
     catch (error) { resolve({ thrown: failure(error) }); }
   })),
   handle: async (path, buffer, args) => {
     const handle = await fs.promises.open(path, "r");
     try {
-      let pending;
+      let pending: Promise<{ bytesRead: number }>;
+      // @ts-expect-error The buffers and arguments include invalid ones.
       try { pending = handle.read(buffer, ...args); }
       catch (error) { return { thrown: failure(error) }; }
       return await pending.then(result => ({ read: result.bytesRead }), error => ({ error: failure(error) }));
@@ -992,9 +1050,11 @@ const readers = {
   },
 };
 
+type ReadCallback = (error: NodeJS.ErrnoException | null, read: number, buffer: ArrayBufferView) => void;
+
 // The full argument lists of callback reads given a descriptor and callback,
 // beyond a buffer and the trailing arguments above.
-const callbackReadForms = {
+const callbackReadForms: Record<string, (fd: number, callback: ReadCallback) => unknown[]> = {
   callbackOnly: (fd, callback) => [fd, callback],
   optionsWithoutBuffer: (fd, callback) => [fd, { length: 2 }, callback],
   optionsStringBuffer: (fd, callback) => [fd, { buffer: "abcd" }, callback],
@@ -1009,7 +1069,7 @@ const callbackReadForms = {
 
 // The argument lists of file handle reads beyond a buffer and the trailing
 // arguments above.
-const handleReadForms = {
+const handleReadForms: Record<string, () => unknown[]> = {
   noArguments: () => [],
   nullOptions: () => [null],
   numberOptions: () => [5],
@@ -1020,19 +1080,21 @@ const handleReadForms = {
 
 // What each callback and file handle read form reports over `path`: the
 // count and the size of the buffer it read into, or its failure.
-async function readFormContracts(path) {
-  const callback = {};
+async function readFormContracts(path: string) {
+  const callback: Record<string, unknown> = {};
   for (const [name, form] of Object.entries(callbackReadForms)) {
     callback[name] = await withDescriptor(path, fd => new Promise(resolve => {
-      const done = (error, read, buffer) => resolve(error ? { error: failure(error) } : { read, size: buffer.byteLength });
+      const done: ReadCallback = (error, read, buffer) => resolve(error ? { error: failure(error) } : { read, size: buffer.byteLength });
+      // @ts-expect-error The argument lists include invalid ones.
       try { fs.read(...form(fd, done)); }
       catch (error) { resolve({ thrown: failure(error) }); }
     }));
   }
-  const handle = {};
+  const handle: Record<string, unknown> = {};
   for (const [name, form] of Object.entries(handleReadForms)) {
     const fileHandle = await fs.promises.open(path, "r");
     try {
+      // @ts-expect-error The argument lists include invalid ones.
       handle[name] = await fileHandle.read(...form())
         .then(result => ({ read: result.bytesRead, size: result.buffer.byteLength }), error => ({ error: failure(error) }));
     } finally { await fileHandle.close(); }
@@ -1040,41 +1102,50 @@ async function readFormContracts(path) {
   return { callback, handle };
 }
 
+// A buffer to read into, made fresh for each of its argument lists.
+type ReadCase = [buffer: () => NodeJS.ArrayBufferView | string, argumentLists: unknown[][]];
+
 // What each reader reports for each argument list over a file of [1, ..., 8],
 // with the bytes of the memory under the buffer it read into.
 async function readContracts() {
   const path = "/tmp/filesystem-read.bin";
   fs.writeFileSync(path, Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]));
-  const reads = Object.fromEntries(Object.entries(readArguments).map(([name, args]) => [name, [() => new Uint8Array(4), [args]]]));
-  Object.assign(reads, {
+  const reads: Record<string, ReadCase> = {
+    ...Object.fromEntries(Object.entries(readArguments).map(([name, args]): [string, ReadCase] => [name, [() => new Uint8Array(4), [args]]])),
     middleView: [() => new Uint8Array(8).subarray(2, 6), [[], [1], [0, 6], [-1, 2], [{ offset: 1 }]]],
     data: [() => new DataView(new ArrayBuffer(4)), [[], [1, 2, 0]]],
     string: [() => "abcd", [[]]],
-  });
-  const outcomes = {};
+  };
+  const outcomes: Record<string, unknown> = {};
   for (const [form, read] of Object.entries(readers)) {
-    outcomes[form] = {};
+    const formOutcomes: Record<string, object[]> = {};
+    outcomes[form] = formOutcomes;
     for (const [name, [buffer, argumentLists]] of Object.entries(reads)) {
-      outcomes[form][name] = [];
+      formOutcomes[name] = [];
       for (const args of argumentLists) {
         const view = buffer();
         const outcome = await read(path, view, args);
-        outcomes[form][name].push({ ...outcome, bytes: view.buffer ? [...new Uint8Array(view.buffer)] : null });
+        formOutcomes[name].push({ ...outcome, bytes: typeof view === "string" ? null : [...new Uint8Array(view.buffer)] });
       }
     }
   }
   outcomes.forms = await readFormContracts(path);
   const fd = fs.openSync(path, "r");
   try {
-    const vectors = { none: [], nullPosition: [null], position: [3], negativePosition: [-1], stringPosition: ["1"], bigintPosition: [3n] };
-    outcomes.vector = {};
+    const vectors: Record<string, unknown[]> = { none: [], nullPosition: [null], position: [3], negativePosition: [-1], stringPosition: ["1"], bigintPosition: [3n] };
+    const vector: Record<string, unknown> = {};
+    outcomes.vector = vector;
     for (const [name, args] of Object.entries(vectors)) {
       const buffers = [new Uint8Array(2), new Uint8Array(8).subarray(2, 5)];
+      // @ts-expect-error The positions include invalid ones.
       const outcome = attempt(() => ({ read: fs.readvSync(fd, buffers, ...args) }));
-      outcomes.vector[name] = { ...outcome, bytes: buffers.map(buffer => [...new Uint8Array(buffer.buffer)]) };
+      vector[name] = { ...outcome, bytes: buffers.map(buffer => [...new Uint8Array(buffer.buffer)]) };
     }
-    outcomes.vector.notArray = attempt(() => fs.readvSync(fd, new Uint8Array(2)));
-    outcomes.vector.string = attempt(() => fs.readvSync(fd, ["ab"]));
+    // @ts-expect-error A buffer is not a list of buffers.
+    vector.notArray = attempt(() => fs.readvSync(fd, new Uint8Array(2)));
+    // @ts-expect-error A string is not a buffer.
+    vector.string = attempt(() => fs.readvSync(fd, ["ab"]));
+    // @ts-expect-error A string is not a descriptor.
     outcomes.badDescriptor = ["1", -1, 1.5, 2 ** 31].map(fd => attempt(() => fs.readSync(fd, new Uint8Array(4))));
   } finally { fs.closeSync(fd); }
   return outcomes;
@@ -1094,7 +1165,7 @@ const encodingOptions = {
   numberEncoding: { encoding: 5 },
 };
 
-function encodedOutcome(value, prefix) {
+function encodedOutcome(value: unknown, prefix: string | false) {
   if (value instanceof fs.Dir) { value.closeSync(); return "Dir"; }
   if (prefix) return { type: typeof value, prefixed: String(value).startsWith(prefix) };
   if (Array.isArray(value)) return value.map(dataOutcome);
@@ -1109,18 +1180,22 @@ async function encodingContracts() {
   fs.writeFileSync(`${root}/file`, "abc");
   fs.symlinkSync(`${root}/file`, `${root}/link`);
   const prefix = `${root}/t-`;
-  const reads = { readFile: `${root}/file`, readdir: root, readlink: `${root}/link`, realpath: `${root}/link`, mkdtemp: prefix, opendir: root };
-  const outcomes = {};
-  for (const [name, path] of Object.entries(reads)) {
-    const outcome = value => encodedOutcome(value, name === "mkdtemp" && prefix);
-    outcomes[name] = {};
+  const reads = [["readFile", `${root}/file`], ["readdir", root], ["readlink", `${root}/link`], ["realpath", `${root}/link`], ["mkdtemp", prefix], ["opendir", root]] as const;
+  const outcomes: Record<string, Record<string, unknown>> = {};
+  for (const [name, path] of reads) {
+    const outcome = (value: unknown) => encodedOutcome(value, name === "mkdtemp" && prefix);
+    const readOutcomes: Record<string, unknown> = {};
+    outcomes[name] = readOutcomes;
     for (const [optionName, options] of Object.entries(encodingOptions)) {
-      outcomes[name][optionName] = {
+      readOutcomes[optionName] = {
+        // @ts-expect-error Each read takes its own options, and some given are invalid.
         sync: attempt(() => outcome(fs[`${name}Sync`](path, options))),
         callback: await new Promise(resolve => {
-          try { fs[name](path, options, (error, value) => resolve(error ? { error: failure(error) } : outcome(value))); }
+          // @ts-expect-error Each read takes its own options, and some given are invalid.
+          try { fs[name](path, options, (error: NodeJS.ErrnoException | null, value: unknown) => resolve(error ? { error: failure(error) } : outcome(value))); }
           catch (error) { resolve({ thrown: failure(error) }); }
         }),
+        // @ts-expect-error Each read takes its own options, and some given are invalid.
         promise: await Promise.resolve().then(() => fs.promises[name](path, options)).then(outcome, error => ({ error: failure(error) })),
       };
     }
@@ -1130,18 +1205,18 @@ async function encodingContracts() {
 
 // The own properties of `value` and of each prototype above it, each with
 // its type or "getter".
-function shape(value) {
-  const levels = [];
-  for (let object = value; object && object !== Object.prototype; object = Object.getPrototypeOf(object)) {
+function shape(value: object) {
+  const levels: string[][] = [];
+  for (let object: object | null = value; object && object !== Object.prototype; object = Object.getPrototypeOf(object)) {
     levels.push(Reflect.ownKeys(object).map(key => {
-      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      const descriptor = present(Object.getOwnPropertyDescriptor(object, key));
       return `${String(key)}:${descriptor.get ? "getter" : typeof descriptor.value}`;
     }));
   }
   return levels;
 }
 
-const statFields = ["dev", "ino", "mode", "nlink", "uid", "gid", "rdev", "size", "blksize", "blocks", "atimeMs"];
+const statFields = ["dev", "ino", "mode", "nlink", "uid", "gid", "rdev", "size", "blksize", "blocks", "atimeMs"] as const;
 
 // What Stats and Dir objects look like.
 async function shapeContracts() {
@@ -1149,7 +1224,7 @@ async function shapeContracts() {
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(`${root}/file`, "abc");
   fs.symlinkSync(`${root}/file`, `${root}/link`);
-  const stats = {
+  const stats: Record<string, fs.Stats | fs.BigIntStats> = {
     file: fs.statSync(`${root}/file`),
     bigint: fs.statSync(`${root}/file`, { bigint: true }),
     directory: fs.statSync(root),
@@ -1168,6 +1243,7 @@ async function shapeContracts() {
       values: statFields.map(field => String(stat[field])),
       instance: stat instanceof fs.Stats,
     }])),
+    // @ts-expect-error Node declares the Stats constructor private.
     statsClass: [typeof fs.Stats, fs.Stats.name, attempt(() => new fs.Stats()) ?? null],
     dir: { shape: dirShape, instance: dir instanceof fs.Dir, path: dir.path },
     dirClass: [typeof fs.Dir, fs.Dir.name],
@@ -1181,7 +1257,7 @@ function workingDirectoryContracts() {
   fs.writeFileSync(`${root}/file`, "f");
   fs.writeFileSync(`${root}/inner/nested.txt`, "n");
   fs.symlinkSync(`${root}/inner`, `${root}/link`);
-  const change = directory => ({ result: attempt(() => process.chdir(directory)) ?? null, cwd: process.cwd() });
+  const change = (directory: string) => ({ result: attempt(() => process.chdir(directory)) ?? null, cwd: process.cwd() });
   try {
     return {
       initial: process.cwd(),
@@ -1200,7 +1276,9 @@ function workingDirectoryContracts() {
       empty: change(""),
       escaped: change(`${root}/%69nner`),
       backslash: change("/tmp\\filesystem-cwd"),
+      // @ts-expect-error A number is not a directory.
       number: change(5),
+      // @ts-expect-error chdir takes only strings.
       buffer: change(Buffer.from(root)),
       aboveRoot: change("/../tmp"),
       root: change("/"),
@@ -1212,7 +1290,7 @@ function workingDirectoryContracts() {
 
 // A failing call of each operation: its name and arguments, where `$` starts
 // a path in a fresh tree from `errorTree`.
-const errorCalls = {
+const errorCalls: Record<string, [string, ...unknown[]]> = {
   accessMissing: ["access", "$/missing"],
   appendFileDirectory: ["appendFile", "$/directory", "x"],
   chmodMissing: ["chmod", "$/missing", 0o644],
@@ -1278,7 +1356,7 @@ const errorCalls = {
 };
 
 // Calls that succeed, in the `errorCalls` form.
-const resultCalls = {
+const resultCalls: Record<string, [string, ...unknown[]]> = {
   mkdirRecursive: ["mkdir", "$/directory/new/deeper", { recursive: true }],
   mkdirRecursiveLeaf: ["mkdir", "$/directory/new", { recursive: true }],
   writeFileNew: ["writeFile", "$/new", "data"],
@@ -1288,7 +1366,7 @@ const resultCalls = {
 
 // Makes a file, a directory with an entry and a symbolic link to itself
 // under `root`.
-function errorTree(root) {
+function errorTree(root: string) {
   fs.mkdirSync(`${root}/directory`, { recursive: true });
   fs.writeFileSync(`${root}/file`, "f");
   fs.writeFileSync(`${root}/directory/entry`, "e");
@@ -1298,13 +1376,16 @@ function errorTree(root) {
 // What the sync, callback or promise `form` of `operation` reports for `args`:
 // the value it returns, passes on or resolves with ("ok" for none), the
 // failure it throws, or the failure it reports later.
-async function formOutcome(form, operation, args) {
-  if (form === "promise" && !fs.promises[operation]) return "absent";
-  const settled = Promise.withResolvers();
-  let value;
+async function formOutcome(form: "sync" | "callback" | "promise", operation: string, args: unknown[]) {
+  if (form === "promise" && !member(fs.promises, operation)) return "absent";
+  const settled = Promise.withResolvers<unknown>();
+  let value: unknown;
   try {
+    // @ts-expect-error Each call names its own operation and arguments.
     if (form === "sync") value = fs[`${operation}Sync`](...args);
-    else if (form === "callback") fs[operation](...args, (error, result) => (error ? settled.reject(error) : settled.resolve(result)));
+    // @ts-expect-error Each call names its own operation and arguments.
+    else if (form === "callback") fs[operation](...args, (error: NodeJS.ErrnoException | null, result: unknown) => (error ? settled.reject(error) : settled.resolve(result)));
+    // @ts-expect-error Each call names its own operation and arguments.
     else fs.promises[operation](...args).then(settled.resolve, settled.reject);
   } catch (error) { return { thrown: failure(error) }; }
   try { return (form === "sync" ? value : await settled.promise) ?? "ok"; } catch (error) { return failure(error); }
@@ -1312,31 +1393,32 @@ async function formOutcome(form, operation, args) {
 
 // Each form of each call in `calls`, each in a fresh `errorTree` below
 // `base`.
-async function formContracts(calls, base) {
-  const outcomes = {};
+async function formContracts(calls: Record<string, [string, ...unknown[]]>, base: string) {
+  const outcomes: Record<string, Record<string, unknown>> = {};
   let index = 0;
   for (const [name, [operation, ...args]] of Object.entries(calls)) {
-    outcomes[name] = {};
-    for (const form of ["sync", "callback", "promise"]) {
+    const callOutcomes: Record<string, unknown> = {};
+    outcomes[name] = callOutcomes;
+    for (const form of ["sync", "callback", "promise"] as const) {
       const root = `${base}/${index++}`;
       errorTree(root);
       const resolved = args.map(arg => (typeof arg === "string" ? arg.replace(/^\$/, root) : arg));
-      outcomes[name][form] = await formOutcome(form, operation, resolved);
+      callOutcomes[form] = await formOutcome(form, operation, resolved);
     }
   }
   return outcomes;
 }
 
 // "name", once `emitter` emits `name`, or "timeout" after 100ms.
-function eventOrTimeout(emitter, name) {
-  return new Promise(resolve => {
+function eventOrTimeout(emitter: EventEmitter, name: string) {
+  return new Promise<string>(resolve => {
     const timer = setTimeout(() => resolve("timeout"), 100);
     emitter.once(name, () => { clearTimeout(timer); resolve(name); });
   });
 }
 
 // An event argument as a contract reports it.
-function eventValue(value) {
+function eventValue(value: unknown) {
   if (value instanceof Error) return failure(value);
   if (Buffer.isBuffer(value)) return [...value];
   if (typeof value === "number") return "number";
@@ -1345,34 +1427,38 @@ function eventValue(value) {
 }
 
 // Each event `stream` emits until it closes, with its arguments.
-async function streamEvents(stream, names = ["open", "ready", "data", "end", "finish", "error", "close"]) {
-  const log = [];
-  for (const name of names) stream.on(name, (...args) => log.push([name, ...args.map(eventValue)]));
+async function streamEvents(stream: EventEmitter, names = ["open", "ready", "data", "end", "finish", "error", "close"]) {
+  const log: unknown[][] = [];
+  for (const name of names) stream.on(name, (...args: unknown[]) => log.push([name, ...args.map(eventValue)]));
   const ending = await eventOrTimeout(stream, "close");
   return [...log, ending];
 }
 
 // The properties a file stream reports.
-function streamProperties(stream) {
+// Each is read by name, since read and write streams have different ones.
+function streamProperties(stream: Readable | Writable) {
   return {
-    path: stream.path ?? "none",
-    fd: typeof stream.fd,
-    mode: stream.mode ?? "none",
-    start: stream.start ?? "none",
-    end: stream.end === Infinity ? "Infinity" : stream.end ?? "none",
-    pos: stream.pos ?? "none",
-    bytesRead: stream.bytesRead ?? "none",
-    bytesWritten: stream.bytesWritten ?? "none",
-    pending: stream.pending,
-    autoClose: stream.autoClose,
-    flush: stream.flush ?? "none",
-    highWaterMark: stream.readableHighWaterMark ?? stream.writableHighWaterMark,
-    encoding: stream.readableEncoding ?? "none",
+    path: member(stream, "path") ?? "none",
+    fd: typeof member(stream, "fd"),
+    mode: member(stream, "mode") ?? "none",
+    start: member(stream, "start") ?? "none",
+    end: member(stream, "end") === Infinity ? "Infinity" : member(stream, "end") ?? "none",
+    pos: member(stream, "pos") ?? "none",
+    bytesRead: member(stream, "bytesRead") ?? "none",
+    bytesWritten: member(stream, "bytesWritten") ?? "none",
+    pending: member(stream, "pending"),
+    autoClose: member(stream, "autoClose"),
+    flush: member(stream, "flush") ?? "none",
+    highWaterMark: member(stream, "readableHighWaterMark") ?? member(stream, "writableHighWaterMark"),
+    encoding: member(stream, "readableEncoding") ?? "none",
   };
 }
 
+// The options object a write stream takes.
+type WriteStreamOptions = Exclude<Parameters<typeof fs.createWriteStream>[1], string | undefined>;
+
 // The file a write stream over "abcdef", opened with `options`, leaves after `write`.
-async function writtenFile(options, write) {
+async function writtenFile(options: WriteStreamOptions, write: (stream: fs.WriteStream) => void) {
   const path = "/tmp/filesystem-stream-write.bin";
   fs.writeFileSync(path, "abcdef");
   const stream = fs.createWriteStream(path, { flags: "r+", ...options });
@@ -1385,9 +1471,9 @@ async function writtenFile(options, write) {
 async function writeStreamTiming() {
   const path = "/tmp/filesystem-stream-timing.bin";
   fs.writeFileSync(path, "zz");
-  const log = [];
+  const log: unknown[][] = [];
   const stream = fs.createWriteStream(path, { flags: "r+" });
-  const state = () => [stream.pending, typeof stream.fd, stream.bytesWritten, stream.pos, fs.readFileSync(path, "latin1")];
+  const state = () => [stream.pending, typeof member(stream, "fd"), stream.bytesWritten, member(stream, "pos"), fs.readFileSync(path, "latin1")];
   log.push(["created", ...state()]);
   for (const name of ["open", "ready", "prefinish", "finish", "drain", "error", "close"]) stream.on(name, () => log.push([name, ...state()]));
   log.push(["write", stream.write("ab", error => log.push(["written", eventValue(error), ...state()])), stream.writableLength]);
@@ -1397,7 +1483,7 @@ async function writeStreamTiming() {
   log.push(["tick", ...state()]);
   await new Promise(resolve => setTimeout(resolve, 0));
   log.push(["timer", ...state()]);
-  stream.end("cd", error => log.push(["ended", eventValue(error), ...state()]));
+  stream.end("cd", (error?: Error | null) => log.push(["ended", eventValue(error), ...state()]));
   log.push([await eventOrTimeout(stream, "close"), stream.closed, stream.destroyed, ...state()]);
   return log;
 }
@@ -1406,9 +1492,9 @@ async function writeStreamTiming() {
 async function readStreamTiming() {
   const path = "/tmp/filesystem-stream-timing.bin";
   fs.writeFileSync(path, "abcdef");
-  const log = [];
+  const log: unknown[][] = [];
   const stream = fs.createReadStream(path, { highWaterMark: 4 });
-  const state = () => [stream.pending, typeof stream.fd, stream.bytesRead, stream.pos];
+  const state = () => [stream.pending, typeof member(stream, "fd"), stream.bytesRead, member(stream, "pos")];
   log.push(["created", ...state()]);
   for (const name of ["open", "ready", "end", "pause", "resume", "error", "close"]) stream.on(name, () => log.push([name, ...state()]));
   stream.on("data", chunk => log.push(["data", eventValue(chunk), ...state()]));
@@ -1463,23 +1549,27 @@ const streamOptionCases = {
 async function streamOptionContracts() {
   const path = "/tmp/filesystem-stream-options.bin";
   fs.writeFileSync(path, "abcdef");
-  const outcomes = {};
+  const outcomes: Record<string, Record<string, unknown>> = {};
   for (const [name, options] of Object.entries(streamOptionCases)) {
-    outcomes[name] = {};
+    const optionOutcomes: Record<string, unknown> = {};
+    outcomes[name] = optionOutcomes;
     for (const [kind, create] of Object.entries({ read: fs.createReadStream, write: fs.createWriteStream })) {
-      let stream;
-      try { stream = create(path, options); } catch (error) { outcomes[name][kind] = { thrown: failure(error) }; continue; }
+      let stream: fs.ReadStream | fs.WriteStream;
+      // @ts-expect-error The options include invalid ones.
+      try { stream = create(path, options); } catch (error) { optionOutcomes[kind] = { thrown: failure(error) }; continue; }
       const properties = streamProperties(stream);
-      stream.on("error", () => {});
+      // Read and write streams declare different events, so each is an EventEmitter here.
+      const emitter: EventEmitter = stream;
+      emitter.on("error", () => {});
       stream.destroy();
-      outcomes[name][kind] = { properties, closed: await eventOrTimeout(stream, "close") };
+      optionOutcomes[kind] = { properties, closed: await eventOrTimeout(stream, "close") };
     }
   }
   return outcomes;
 }
 
 // Calls naming paths with a trailing slash, with `$` for a fresh tree's root.
-const slashCalls = {
+const slashCalls: Record<string, [string, ...unknown[]]> = {
   statFile: ["stat", "$/a/"],
   statDirectory: ["stat", "$/full/"],
   statMissing: ["stat", "$/missing/"],
@@ -1538,7 +1628,7 @@ const slashCalls = {
 };
 
 // A sync call's result, with stats reduced to the node's type.
-function slashResult(value) {
+function slashResult(value: unknown) {
   if (value instanceof fs.Stats) return { file: value.isFile(), directory: value.isDirectory(), link: value.isSymbolicLink() };
   if (value instanceof fs.Dir) { value.closeSync(); return "Dir"; }
   return value ?? "ok";
@@ -1546,7 +1636,7 @@ function slashResult(value) {
 
 // Makes files a and b, directories empty and full, and symbolic links to a
 // and to full under `root`.
-function slashTree(root) {
+function slashTree(root: string) {
   fs.mkdirSync(`${root}/full`, { recursive: true });
   fs.mkdirSync(`${root}/empty`);
   fs.writeFileSync(`${root}/a`, "a");
@@ -1558,15 +1648,17 @@ function slashTree(root) {
 
 // What each sync call in `calls` returns or throws, and the tree it leaves.
 // `$` starts a path in a fresh tree `build` makes below `base`.
-function callOutcomes(calls, base, build) {
-  const outcomes = {};
+function callOutcomes(calls: Record<string, [string, ...unknown[]]>, base: string, build: (root: string) => void) {
+  const outcomes: Record<string, unknown> = {};
   for (const [name, [operation, ...args]] of Object.entries(calls)) {
     const root = `${base}/${name}`;
     build(root);
     const resolved = args.map(arg => (typeof arg === "string" ? arg.replace(/^\$/, root) : arg));
     const result = attempt(() => {
-      const value = fs[`${operation}Sync`](...resolved);
+      // @ts-expect-error Each call names its own operation and arguments.
+      const value: unknown = fs[`${operation}Sync`](...resolved);
       if (operation !== "open") return slashResult(value);
+      if (typeof value !== "number") throw new TypeError("openSync returned no descriptor");
       fs.closeSync(value);
       return "opened";
     });
@@ -1580,7 +1672,7 @@ async function streamPathContracts() {
   const root = "/tmp/filesystem-stream-paths";
   fs.mkdirSync(root, { recursive: true });
   for (const name of ["relative", "double", "a#b?c", "A", "buffer", "u x"]) fs.writeFileSync(`${root}/${name}`, name);
-  const paths = {
+  const paths: Record<string, unknown> = {
     relative: "relative",
     dotSegments: "./inner/../relative",
     doubledSlashes: "/tmp//filesystem-stream-paths//double",
@@ -1592,11 +1684,12 @@ async function streamPathContracts() {
     nullByte: `${root}/a\0b`,
     missing: undefined,
   };
-  const outcomes = {};
+  const outcomes: Record<string, unknown> = {};
   process.chdir(root);
   try {
     for (const [name, path] of Object.entries(paths)) {
-      let stream;
+      let stream: fs.ReadStream;
+      // @ts-expect-error The paths include invalid ones.
       try { stream = fs.createReadStream(path, { encoding: "latin1" }); } catch (error) { outcomes[name] = { thrown: failure(error) }; continue; }
       const reported = stream.path;
       outcomes[name] = { path: reported, events: await streamEvents(stream) };
@@ -1621,18 +1714,18 @@ async function readRangeContracts() {
     smallChunks: { start: 1, end: 4, highWaterMark: 1 },
     unevenChunks: { highWaterMark: 3 },
   };
-  const outcomes = {};
+  const outcomes: Record<string, unknown> = {};
   for (const [name, options] of Object.entries(ranges)) {
     const stream = fs.createReadStream(path, options);
     const events = await streamEvents(stream);
-    outcomes[name] = { events, bytesRead: stream.bytesRead, pos: stream.pos };
+    outcomes[name] = { events, bytesRead: stream.bytesRead, pos: member(stream, "pos") };
   }
   return outcomes;
 }
 
 // Calls naming paths through a symbolic link to a directory, with `$` for a
 // fresh `linkedTree`'s root.
-const linkedPathCalls = {
+const linkedPathCalls: Record<string, [string, ...unknown[]]> = {
   stat: ["stat", "$/linkToFull/x"],
   lstat: ["lstat", "$/linkToFull/x"],
   lstatLink: ["lstat", "$/linkToFull/inner"],
@@ -1679,7 +1772,7 @@ const linkedPathCalls = {
 };
 
 // Calls naming paths below a file, with `$` for a fresh `slashTree`'s root.
-const underFileCalls = {
+const underFileCalls: Record<string, [string, ...unknown[]]> = {
   stat: ["stat", "$/a/x"],
   lstat: ["lstat", "$/a/x"],
   statThroughLink: ["stat", "$/linkToA/x"],
@@ -1716,7 +1809,7 @@ const underFileCalls = {
 
 // Makes the `slashTree` nodes under `root`, a dangling symbolic link, and a
 // directory sub and a symbolic link inner to a in full.
-function linkedTree(root) {
+function linkedTree(root: string) {
   slashTree(root);
   fs.symlinkSync(`${root}/missing`, `${root}/dangling`);
   fs.mkdirSync(`${root}/full/sub`);
@@ -1729,15 +1822,15 @@ function linkedTree(root) {
 function descriptorKindContracts() {
   const root = "/tmp/filesystem-descriptor-kinds";
   slashTree(root);
-  const fresh = name => { const path = `${root}/${name}`; fs.writeFileSync(path, "old"); return path; };
-  const contents = path => fs.readFileSync(path, "utf8");
+  const fresh = (name: string) => { const path = `${root}/${name}`; fs.writeFileSync(path, "old"); return path; };
+  const contents = (path: string) => fs.readFileSync(path, "utf8");
   const { O_RDONLY, O_WRONLY, O_NOFOLLOW } = fs.constants;
-  const opened = (path, flags, use) => attempt(() => {
+  const opened = (path: string, flags: string | number, use: (fd: number) => unknown) => attempt(() => {
     const fd = fs.openSync(path, flags);
     try { return use(fd); } finally { fs.closeSync(fd); }
   });
-  const kind = fd => slashResult(fs.fstatSync(fd));
-  const read = fd => fs.readSync(fd, Buffer.alloc(1));
+  const kind = (fd: number) => slashResult(fs.fstatSync(fd));
+  const read = (fd: number) => fs.readSync(fd, Buffer.alloc(1));
   return {
     directory: opened(`${root}/full`, "r", kind),
     directoryRead: opened(`${root}/full`, "r", read),
@@ -1758,7 +1851,7 @@ function descriptorKindContracts() {
 }
 
 // Copies onto and from each kind of node, with `$` for a fresh tree's root.
-const cpCalls = {
+const cpCalls: Record<string, [string, ...unknown[]]> = {
   optionsNotObject: ["cp", "$/a", "$/new", "x"],
   optionsNull: ["cp", "$/a", "$/new", null],
   dereferenceNotBoolean: ["cp", "$/a", "$/new", { dereference: 1 }],
@@ -1844,7 +1937,7 @@ const cpCalls = {
 // holding one file, directory or link named f, d and l, directories holding
 // files, directories and links to b under all three names, and one holding
 // hard links to the file f and the link l.
-function cpTree(root) {
+function cpTree(root: string) {
   slashTree(root);
   fs.symlinkSync(`${root}/missing`, `${root}/dangling`);
   fs.mkdirSync(`${root}/mixed`);
@@ -1872,30 +1965,33 @@ function cpTree(root) {
 async function streamEncodingContracts() {
   const path = "/tmp/filesystem-stream-encoding.bin";
   fs.writeFileSync(path, "héllo €");
-  const reads = {
+  const reads: Record<string, Parameters<typeof fs.createReadStream>[1]> = {
     utf8: { encoding: "utf8", highWaterMark: 2 },
     hex: { encoding: "hex", highWaterMark: 3 },
     base64: { encoding: "base64", highWaterMark: 4 },
     latin1: { encoding: "latin1" },
     utf16le: { encoding: "utf16le", highWaterMark: 3 },
+    // @ts-expect-error Encoding names are lower case.
     upperCase: { encoding: "UTF8" },
     string: "base64url",
   };
-  const outcomes = { read: {}, write: {} };
+  const outcomes: Record<string, Record<string, unknown>> = { read: {}, write: {} };
   for (const [name, options] of Object.entries(reads)) outcomes.read[name] = await streamEvents(fs.createReadStream(path, options));
   outcomes.read.setEncoding = await (async () => {
     const stream = fs.createReadStream(path);
     stream.setEncoding("hex");
     return streamEvents(stream);
   })();
-  const writes = {
+  const writes: Record<string, [WriteStreamOptions | BufferEncoding, (stream: fs.WriteStream) => void]> = {
     defaultEncoding: [{ encoding: "hex" }, stream => stream.end("6869")],
+    // @ts-expect-error Encoding names are lower case.
     upperCaseEncoding: [{ encoding: "HEX" }, stream => stream.end("6869")],
     stringOptions: ["base64", stream => stream.end("aGk=")],
     chunkEncoding: [{}, stream => { stream.write("aGk=", "base64"); stream.end("6869", "hex"); }],
     bufferChunk: [{ encoding: "hex" }, stream => stream.end(Buffer.from("hi"))],
     latin1: [{ encoding: "latin1" }, stream => stream.end("hé")],
     utf16le: [{}, stream => stream.end("hé", "utf16le")],
+    // @ts-expect-error The encoding is unknown.
     unknownChunkEncoding: [{}, stream => stream.end("hi", "nope")],
     setDefaultEncoding: [{}, stream => { stream.setDefaultEncoding("base64"); stream.end("aGk="); }],
   };
@@ -1907,14 +2003,16 @@ async function streamEncodingContracts() {
 async function streamDescriptorContracts() {
   const path = "/tmp/filesystem-stream-descriptor.bin";
   const reset = () => fs.writeFileSync(path, "0123456789");
-  const isOpen = fd => attempt(() => { fs.fstatSync(fd); return true; });
-  const outcomes = {};
+  const isOpen = (fd: number) => attempt(() => { fs.fstatSync(fd); return true; });
+  const outcomes: Record<string, unknown> = {};
   reset();
   let fd = fs.openSync(path, "r+");
-  let stream = fs.createReadStream(null, { fd, start: 2, end: 4 });
+  // @ts-expect-error A descriptor leaves the path unused, and it is null.
+  let stream: fs.ReadStream | fs.WriteStream = fs.createReadStream(null, { fd, start: 2, end: 4 });
   outcomes.read = { properties: streamProperties(stream), events: await streamEvents(stream), open: isOpen(fd) };
   fd = fs.openSync(path, "r+");
   fs.readSync(fd, Buffer.alloc(3));
+  // @ts-expect-error A descriptor leaves the path unused, and it is undefined.
   stream = fs.createReadStream(undefined, { fd, autoClose: false, highWaterMark: 4 });
   outcomes.keptOpen = { events: await streamEvents(stream), open: isOpen(fd), properties: streamProperties(stream) };
   fs.closeSync(fd);
@@ -1931,12 +2029,15 @@ async function streamDescriptorContracts() {
   stream.end("XY");
   outcomes.handleWrite = { properties: streamProperties(stream), events: await streamEvents(stream), handleFd: typeof handle.fd, contents: fs.readFileSync(path, "latin1") };
   handle = await fs.promises.open(path, "r+");
+  // @ts-expect-error A file handle leaves the path unused, and it is null.
   stream = fs.createReadStream(null, { fd: handle, encoding: "latin1", autoClose: false });
   outcomes.handleOption = { events: await streamEvents(stream), handleFd: typeof handle.fd };
+  // @ts-expect-error A file handle leaves the path unused, and it is null.
   const closing = streamEvents(stream = fs.createReadStream(null, { fd: handle, highWaterMark: 2 }));
   await handle.close();
   outcomes.handleClosed = { events: await closing, destroyed: stream.destroyed };
   handle = await fs.promises.open(path, "r+");
+  // @ts-expect-error A file handle leaves the path unused, and it is null.
   outcomes.handleWithFs = attempt(() => { fs.createReadStream(null, { fd: handle, fs: {} }).destroy(); return "created"; });
   await handle.close();
   return outcomes;
@@ -1947,11 +2048,11 @@ async function streamEndingContracts() {
   const path = "/tmp/filesystem-stream-ending.bin";
   fs.writeFileSync(path, "abcdef");
   const writer = () => fs.createWriteStream(path, { flags: "r+" });
-  const outcomes = {};
-  let stream = writer();
+  const outcomes: Record<string, unknown> = {};
+  let stream: fs.ReadStream | fs.WriteStream = writer();
   let events = streamEvents(stream);
   stream.write("1");
-  const closeCallbacks = [];
+  const closeCallbacks: unknown[] = [];
   stream.close(error => closeCallbacks.push(eventValue(error)));
   outcomes.writeClose = { events: await events, callbacks: closeCallbacks };
   stream.close(error => closeCallbacks.push(["again", eventValue(error)]));
@@ -1963,23 +2064,23 @@ async function streamEndingContracts() {
   outcomes.writeCloseWithoutAutoClose = { events: await events, callbacks: closeCallbacks.slice(2) };
   stream = fs.createReadStream(path);
   events = streamEvents(stream);
-  const readCallbacks = [];
+  const readCallbacks: unknown[] = [];
   stream.close(error => readCallbacks.push(eventValue(error)));
   outcomes.readClose = { events: await events, callbacks: readCallbacks };
   stream = fs.createReadStream(path);
   events = streamEvents(stream);
   stream.destroy(Object.assign(new Error("boom"), { code: "BOOM" }));
   outcomes.readDestroyed = await events;
-  stream = writer();
-  events = streamEvents(stream);
-  stream.write("2");
-  stream.destroy();
-  outcomes.writeDestroyed = { events: await events, written: attempt(() => eventValue(stream.write("3"))) };
-  stream = writer();
-  events = streamEvents(stream);
-  stream.end("4");
-  const lateWrites = [];
-  const lateWrite = attempt(() => eventValue(stream.write("5", error => lateWrites.push(eventValue(error)))));
+  const destroyed = writer();
+  events = streamEvents(destroyed);
+  destroyed.write("2");
+  destroyed.destroy();
+  outcomes.writeDestroyed = { events: await events, written: attempt(() => eventValue(destroyed.write("3"))) };
+  const ended = writer();
+  events = streamEvents(ended);
+  ended.end("4");
+  const lateWrites: unknown[] = [];
+  const lateWrite = attempt(() => eventValue(ended.write("5", error => lateWrites.push(eventValue(error)))));
   outcomes.writeAfterEnd = { result: lateWrite, events: await events, callbacks: lateWrites };
   stream = writer();
   events = streamEvents(stream);
@@ -1995,7 +2096,9 @@ async function streamEndingContracts() {
     startBeyond: await writtenFile({ start: 8 }, stream => stream.end("XY")),
   };
   outcomes.contents = fs.readFileSync(path, "latin1");
+  // @ts-expect-error A descriptor leaves the path unused, and it is null.
   outcomes.badReadDescriptor = await streamEvents(fs.createReadStream(null, { fd: 1000 }));
+  // @ts-expect-error A descriptor leaves the path unused, and it is null.
   stream = fs.createWriteStream(null, { fd: 1001 });
   events = streamEvents(stream);
   stream.write("x", error => outcomes.badWriteCallback = eventValue(error));
@@ -2007,9 +2110,9 @@ async function streamEndingContracts() {
 async function streamFlowContracts() {
   const path = "/tmp/filesystem-stream-flow.bin";
   fs.writeFileSync(path, "0123456789");
-  const outcomes = {};
+  const outcomes: Record<string, unknown> = {};
   const writer = fs.createWriteStream("/tmp/filesystem-stream-flow-copy.bin", { highWaterMark: 4 });
-  const log = [];
+  const log: unknown[] = [];
   writer.on("drain", () => log.push(["drain", writer.writableLength]));
   log.push(["first", writer.write("abc"), writer.writableLength, writer.writableNeedDrain]);
   log.push(["second", writer.write("de"), writer.writableLength, writer.writableNeedDrain]);
@@ -2022,7 +2125,7 @@ async function streamFlowContracts() {
   const piped = Promise.all([streamEvents(source, ["open", "end", "close"]), streamEvents(target, ["open", "pipe", "finish", "unpipe", "close"])]);
   source.pipe(target);
   outcomes.pipe = { events: await piped, contents: fs.readFileSync("/tmp/filesystem-stream-flow-copy.bin", "latin1") };
-  const chunks = [];
+  const chunks: unknown[] = [];
   for await (const chunk of fs.createReadStream(path, { highWaterMark: 4, encoding: "latin1" })) chunks.push(chunk);
   outcomes.iterated = chunks;
   return outcomes;
@@ -2031,6 +2134,7 @@ async function streamFlowContracts() {
 // The stream classes, their prototypes and their exports.
 function streamShapeContracts() {
   const created = attempt(() => {
+    // @ts-expect-error Node lets the class be called without new, which its declaration does not.
     const stream = fs.ReadStream("/tmp/filesystem-stream-flow.bin");
     stream.destroy();
     return [stream instanceof fs.ReadStream, stream instanceof Readable];
@@ -2048,7 +2152,7 @@ function streamShapeContracts() {
     readPrototype: Object.getOwnPropertyNames(fs.ReadStream.prototype),
     writePrototype: Object.getOwnPropertyNames(fs.WriteStream.prototype),
     destroySoon: fs.WriteStream.prototype.destroySoon === Writable.prototype.end,
-    prototypeAutoClose: [attempt(() => fs.ReadStream.prototype.autoClose), attempt(() => fs.WriteStream.prototype.autoClose)],
+    prototypeAutoClose: [attempt(() => member(fs.ReadStream.prototype, "autoClose")), attempt(() => member(fs.WriteStream.prototype, "autoClose"))],
     prototypePending: [fs.ReadStream.prototype.pending, fs.WriteStream.prototype.pending],
     withoutNew: created,
   };
@@ -2074,7 +2178,7 @@ async function fileStreamContracts() {
 async function viewPropertyContracts() {
   const path = "/tmp/filesystem-view-properties";
   fs.writeFileSync(path, "abcd");
-  const overrides = {
+  const overrides: Record<string, Record<string, unknown>> = {
     none: {},
     typedArrayBuffer: { buffer: new Uint8Array(8) },
     smallerBuffer: { buffer: new ArrayBuffer(2) },
@@ -2082,23 +2186,24 @@ async function viewPropertyContracts() {
     byteOffset: { byteOffset: 3 },
     byteLength: { byteLength: 2 },
   };
-  const views = {
+  const views: Record<string, () => NodeJS.ArrayBufferView> = {
     uint8: () => new Uint8Array(new ArrayBuffer(8), 2, 4),
     uint16: () => new Uint16Array(new ArrayBuffer(8), 2, 2),
     dataView: () => new DataView(new ArrayBuffer(8), 2, 4),
     shared: () => new Uint8Array(new SharedArrayBuffer(8), 2, 4),
   };
-  const settled = start => new Promise(resolve => start((error, read) => resolve(error ? { error: failure(error) } : read)))
+  type ReadDone = (error: NodeJS.ErrnoException | null, read: number) => void;
+  const settled = (start: (done: ReadDone) => void) => new Promise(resolve => start((error, read) => resolve(error ? { error: failure(error) } : read)))
     .catch(error => ({ thrown: failure(error) }));
-  const reads = {
+  const reads: Record<string, (fd: number, view: NodeJS.ArrayBufferView) => unknown> = {
     readSync: (fd, view) => attempt(() => fs.readSync(fd, view, 0, 4, 0)),
     readvSync: (fd, view) => attempt(() => fs.readvSync(fd, [view], 0)),
     read: (fd, view) => settled(done => fs.read(fd, view, 0, 4, 0, done)),
     readv: (fd, view) => settled(done => fs.readv(fd, [view], 0, done)),
   };
-  const memoryOf = value => ArrayBuffer.isView(value) ? [...new Uint8Array(value.buffer)]
+  const memoryOf = (value: unknown) => ArrayBuffer.isView(value) ? [...new Uint8Array(value.buffer)]
     : value instanceof ArrayBuffer ? [...new Uint8Array(value)] : typeof value;
-  const result = {};
+  const result: Record<string, Record<string, Record<string, unknown>>> = {};
   for (const [readName, read] of Object.entries(reads)) {
     result[readName] = {};
     for (const [overrideName, properties] of Object.entries(overrides)) {
@@ -2108,7 +2213,7 @@ async function viewPropertyContracts() {
         const memory = new Uint8Array(view.buffer);
         const replacement = properties.buffer;
         for (const [name, value] of Object.entries(properties)) {
-          const own = ArrayBuffer.isView(value) ? new Uint8Array(value.length) : value instanceof ArrayBuffer ? new ArrayBuffer(value.byteLength) : value;
+          const own = ArrayBuffer.isView(value) ? new Uint8Array(value.byteLength) : value instanceof ArrayBuffer ? new ArrayBuffer(value.byteLength) : value;
           Object.defineProperty(view, name, { value: own });
         }
         const fd = fs.openSync(path, "r");
@@ -2134,8 +2239,8 @@ async function blobContracts() {
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(`${root}/file`, "blob text");
   fs.symlinkSync(`${root}/file`, `${root}/link`);
-  const Builtin = globalThis.Blob;
-  async function outcome(...args) {
+  const Builtin = Blob;
+  async function outcome(...args: Parameters<typeof fs.openAsBlob>) {
     try {
       const blob = fs.openAsBlob(...args);
       return { builtin: blob instanceof Builtin, size: blob.size, type: blob.type, text: await blob.text() };
@@ -2143,7 +2248,7 @@ async function blobContracts() {
       return { thrown: failure(error) };
     }
   }
-  const result = {
+  const result: Record<string, unknown> = {
     file: await outcome(`${root}/file`),
     typed: await outcome(`${root}/file`, { type: "text/plain" }),
     mixedCaseType: await outcome(`${root}/file`, { type: "Text/Plain; Charset=UTF-8" }),
@@ -2151,25 +2256,30 @@ async function blobContracts() {
     link: await outcome(`${root}/link`),
     directory: await outcome(root),
     missing: await outcome(`${root}/missing`),
+    // @ts-expect-error The options are null.
     nullOptions: await outcome(`${root}/file`, null),
+    // @ts-expect-error A number is not a type.
     numberType: await outcome(`${root}/file`, { type: 1 }),
   };
   try {
-    globalThis.Blob = class Replaced {};
+    // Assigned through Object.assign, since TypeScript makes no property of
+    // globalThis for a class, as workers-types declares Blob.
+    Object.assign(globalThis, { Blob: class Replaced {} });
     result.replacedGlobal = await outcome(`${root}/file`);
     result.deletedGlobal = Reflect.deleteProperty(globalThis, "Blob");
     result.withoutGlobal = await outcome(`${root}/file`);
   } finally {
-    globalThis.Blob = Builtin;
+    Object.assign(globalThis, { Blob: Builtin });
   }
   return result;
 }
 
 export async function filesystemContracts() {
-  const result = { write: {} };
+  const result: Record<string, Record<string, unknown>> = { write: {} };
   for (const [name, write] of Object.entries(writers)) result.write[name] = await writerOutcomes(write);
   result.writev = {};
   for (const [name, write] of Object.entries(vectorWriters)) result.writev[name] = await vectorOutcomes(write);
+  // @ts-expect-error Writes declare no bigint positions.
   result.append = { uint32Bigint: appendOutcome(2n ** 32n), negativeBigint: appendOutcome(-1n), beyondSizeLimit: appendOutcome(SIZE_LIMIT) };
   result.sizeLimit = sizeLimitOutcomes();
   result.fileWrites = await fileWriteContracts();

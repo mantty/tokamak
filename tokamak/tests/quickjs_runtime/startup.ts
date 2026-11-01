@@ -8,4 +8,4 @@ export default {
     const { run } = await import("./contracts.ts");
     return new Response(JSON.stringify(await run(env, ctx, constructors)));
   },
-};
+} satisfies ExportedHandler<{ FLAG: string }>;

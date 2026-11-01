@@ -1,4 +1,4 @@
-// Text and Data modules, compared with workerd by modules-reference.ts.
+// Text and Data modules, compared with workerd by modules-reference.mts.
 import text from "./text.txt";
 import * as textNamespace from "./text.txt";
 import bom from "./bom.txt";
@@ -6,7 +6,7 @@ import invalid from "./invalid.txt";
 import data from "./data.bin";
 import * as dataNamespace from "./data.bin";
 
-const codePoints = (value) => Array.from(value, (character) => character.codePointAt(0));
+const codePoints = (value: string) => Array.from(value, (character) => character.codePointAt(0));
 
 export default {
   async fetch() {
@@ -23,4 +23,4 @@ export default {
       resizable: data.resizable,
     });
   },
-};
+} satisfies ExportedHandler;

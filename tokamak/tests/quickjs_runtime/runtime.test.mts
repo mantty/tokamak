@@ -18,36 +18,36 @@ test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
       controller.enqueue(new Uint8Array([chunk[0] + 10]));
     },
   });
-  const received = [];
+  const received: number[] = [];
   const writable = new WritableStream({ write(value) { received.push(value[0]); } });
   await source.pipeThrough(transform).pipeTo(writable);
   assert.deepEqual(received, [11, 12]);
 });
 
 test("Readable emits end after pushed data", async () => {
-  const { Readable } = await import("../../src/streams/node.js?end-event");
-  const events = [];
+  const { Readable } = await import("../../src/streams/node.js");
+  const events: string[] = [];
   const stream = new Readable();
-  stream.on("data", (value) => events.push(`data:${value}`));
+  stream.on("data", (value: unknown) => events.push(`data:${value}`));
   stream.on("end", () => events.push("end"));
   stream.push("value");
   stream.push(null);
   await new Promise(resolve => stream.once("end", resolve));
   assert.deepEqual(events, ["data:value", "end"]);
 
-  const bufferedEvents = [];
+  const bufferedEvents: string[] = [];
   const buffered = new Readable();
   buffered.push("buffered");
   buffered.push(null);
   buffered.on("end", () => bufferedEvents.push("end"));
-  buffered.on("data", (value) => bufferedEvents.push(`data:${value}`));
+  buffered.on("data", (value: unknown) => bufferedEvents.push(`data:${value}`));
   await new Promise(resolve => buffered.once("end", resolve));
   assert.deepEqual(bufferedEvents, ["data:buffered", "end"]);
 
   const ended = new Readable();
-  const lateValues = [];
-  const failure = new Promise(resolve => ended.once("error", resolve));
-  ended.on("data", (value) => lateValues.push(value));
+  const lateValues: unknown[] = [];
+  const failure = new Promise<NodeJS.ErrnoException>(resolve => ended.once("error", resolve));
+  ended.on("data", (value: unknown) => lateValues.push(value));
   ended.push(null);
   assert.equal(ended.push("late"), false);
   assert.equal((await failure).code, "ERR_STREAM_PUSH_AFTER_EOF");

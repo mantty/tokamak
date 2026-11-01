@@ -1,15 +1,18 @@
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { gzipSync, deflateSync, brotliCompressSync, zstdCompressSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { esModule } from "./reference.ts";
+import { esModule, listen } from "./reference.mts";
 
-let active;
+let active: ServerResponse | undefined;
 let ended = false;
+const compressors = new Map<string, (data: Buffer) => Buffer>([
+  ["br", brotliCompressSync], ["deflate", deflateSync], ["zstd", zstdCompressSync],
+]);
 const upstream = createServer(async (request, response) => {
-  const url = new URL(request.url, "http://localhost");
+  const url = new URL(request.url ?? "/", "http://localhost");
   if (url.pathname === "/encoding") {
-    const encoding = url.searchParams.get("kind");
-    const compress = { br: brotliCompressSync, deflate: deflateSync, zstd: zstdCompressSync }[encoding] ?? gzipSync;
+    const encoding = url.searchParams.get("kind") ?? "gzip";
+    const compress = compressors.get(encoding) ?? gzipSync;
     response.setHeader("content-encoding", encoding);
     return response.end(compress(Buffer.from("payload")));
   }
@@ -61,12 +64,11 @@ const upstream = createServer(async (request, response) => {
     response.writeHead(200, { "content-encoding": "gzip", "set-cookie": ["one=1", "two=2"] });
     return response.end(gzipSync("compressed"));
   }
-  const chunks = [];
+  const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(chunk);
   response.end(JSON.stringify({ method: request.method, body: Buffer.concat(chunks).toString() }));
 });
-await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
-const port = String(upstream.address().port);
+const port = String(await listen(upstream));
 const mf = new Miniflare(convertV4MiniflareOptions({
   modulesRoot: import.meta.dirname,
   cf: false,
@@ -83,5 +85,5 @@ try {
 } finally {
   await mf.dispose();
   upstream.closeAllConnections();
-  await new Promise(resolve => upstream.close(resolve));
+  await new Promise<void>(resolve => upstream.close(() => resolve()));
 }

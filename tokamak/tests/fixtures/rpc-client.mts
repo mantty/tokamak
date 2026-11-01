@@ -7,20 +7,21 @@ import tls from 'node:tls';
 import { createClient } from '../../../plugins/core/src/rpc/client.ts';
 
 const require = createRequire(new URL('../../../tokamak-cli/npm/package.json', import.meta.url));
-const WebSocket = require('ws');
+// The ws package's WebSocket, which takes the connection to use.
+const Ws: typeof WebSocket & (new (url: string | URL, options: object) => WebSocket) = require('ws');
 const [port, state] = process.argv.slice(2);
 const host = 'services.tokamak.local';
-const connections = new Set();
+const connections = new Set<net.Socket>();
 const timer = setTimeout(() => { console.error('RPC test timed out'); process.exit(1); }, 10_000);
 
-function connect(_options, connected) {
+function connect(_options: unknown, connected: (error: Error | null, socket?: tls.TLSSocket) => void) {
   const socket = net.connect({ host: '127.0.0.1', port: Number(port) });
   connections.add(socket);
   socket.once('close', () => connections.delete(socket));
   socket.once('error', connected);
   socket.once('connect', () => socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`));
   let header = Buffer.alloc(0);
-  function receive(chunk) {
+  function receive(chunk: Buffer) {
     header = Buffer.concat([header, chunk]);
     const end = header.indexOf('\r\n\r\n');
     if (end < 0) return;
@@ -44,21 +45,23 @@ function connect(_options, connected) {
   socket.on('data', receive);
 }
 
-globalThis.WebSocket = class extends WebSocket {
-  constructor(url) {
+globalThis.WebSocket = class extends Ws {
+  constructor(url: string | URL) {
     super(url, { createConnection: connect, handshakeTimeout: 5000, origin: `https://${host}` });
   }
 };
 
 try {
-  const client = createClient(['echo', 'stage', 'fail', 'invalid', 'bytes', 'ignore'], `https://${host}/_tokamak/app`);
+  const client = createClient(['echo', 'stage', 'fail', 'invalid', 'bytes', 'ignore'], `https://${host}/_tokamak/app`, {});
   assert.equal(await client.stage(), 'foreground');
   const value = { count: 42n, bytes: new Uint8Array([8, 9]), map: new Map() };
   value.map.set(value, value);
   assert.deepEqual(await client.echo(value), value);
   await assert.rejects(client.fail(), { message: 'Denied', code: 'DENIED' });
   await assert.rejects(client.invalid(), { name: 'DataCloneError' });
-  assert.deepEqual(new Uint8Array(await new Response(await client.bytes()).arrayBuffer()), new Uint8Array([1, 2, 3]));
+  const bytes = await client.bytes();
+  assert.ok(bytes instanceof ReadableStream);
+  assert.deepEqual(new Uint8Array(await new Response(bytes).arrayBuffer()), new Uint8Array([1, 2, 3]));
   const cancelled = Promise.withResolvers();
   let pulls = 0;
   const source = new ReadableStream({
@@ -67,13 +70,14 @@ try {
     cancel(reason) { cancelled.resolve(reason); },
   });
   const stream = await client.echo(source);
+  assert.ok(stream instanceof ReadableStream);
   assert.equal(pulls, 0);
   const reader = stream.getReader();
   assert.equal((await reader.read()).value.byteLength, 64 * 1024);
   assert.equal(pulls, 1);
   await reader.cancel('finished');
   assert.equal(await cancelled.promise, 'finished');
-  const ignored = Promise.withResolvers();
+  const ignored = Promise.withResolvers<DOMException>();
   assert.equal(await client.ignore(new ReadableStream({ type: 'bytes', cancel: ignored.resolve })), 'finished');
   assert.equal((await ignored.promise).name, 'AbortError');
 } finally {

@@ -178,7 +178,7 @@ jobs:
         run: pnpm --dir examples/astro build
 
       - name: Test runtime JavaScript
-        run: node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
+        run: node --test tokamak/tests/quickjs_runtime/runtime.test.mts
 
       # The pre-checks lint, format and test the host build.
       - name: Lint Android Rust

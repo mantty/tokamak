@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { esModule } from "./reference.ts";
+import { esModule, listen } from "./reference.mts";
 
 const payload = gzipSync(Buffer.from("upstream-payload"));
 const upstream = createServer((request, response) => {
@@ -14,7 +14,7 @@ const upstream = createServer((request, response) => {
   response.setHeader("Content-Length", payload.length);
   response.end(payload);
 });
-await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+const port = await listen(upstream);
 
 const root = import.meta.dirname;
 const state = await mkdtemp(join(tmpdir(), "tokamak-boundary-"));
@@ -24,11 +24,11 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   cf: false,
   compatibilityDate: "2026-08-25",
   compatibilityFlags: ["nodejs_compat"],
-  bindings: { UPSTREAM_PORT: String(upstream.address().port) },
+  bindings: { UPSTREAM_PORT: String(port) },
   modules: [esModule(root, "boundary.ts")],
 }));
 try {
-  const results = {};
+  const results: Record<string, unknown> = {};
   const echo = await mf.dispatchFetch("http://localhost/echo", {
     method: "POST",
     body: "x".repeat(70000),

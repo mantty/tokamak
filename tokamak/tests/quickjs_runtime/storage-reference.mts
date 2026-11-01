@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { esModule } from "./reference.ts";
+import { esModule } from "./reference.mts";
 
 const root = import.meta.dirname;
 const state = await mkdtemp(join(tmpdir(), "tokamak-storage-"));
@@ -18,7 +18,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   kvPersist: join(state, "kv"),
   r2Buckets: ["R2"],
   r2Persist: join(state, "r2"),
-  modules: ["storage.ts", "bytes.ts"].map(name => esModule(root, name)),
+  modules: ["storage.ts", "bytes.ts", "outcome.ts"].map(name => esModule(root, name)),
 }));
 try {
   const response = await mf.dispatchFetch("http://localhost/");

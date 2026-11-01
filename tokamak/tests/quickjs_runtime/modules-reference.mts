@@ -3,12 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { esModule } from "./reference.ts";
+import { esModule } from "./reference.mts";
 
 const root = join(import.meta.dirname, "modules");
 const state = await mkdtemp(join(tmpdir(), "tokamak-modules-"));
 process.chdir(state);
-const module = (type, name) => ({ type, path: join(root, name), contents: readFileSync(join(root, name)) });
+const module = (type: "Text" | "Data", name: string) => ({ type, path: join(root, name), contents: readFileSync(join(root, name)) });
 const mf = new Miniflare(convertV4MiniflareOptions({
   modulesRoot: root,
   cf: false,

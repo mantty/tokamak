@@ -3,7 +3,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { esModule } from "./reference.ts";
+import { esModule } from "./reference.mts";
 
 const root = join(import.meta.dirname, "assets");
 const configurations = [
@@ -13,22 +13,22 @@ const configurations = [
   ["none", "none"],
   ["auto-trailing-slash", "single-page-application"],
   ["auto-trailing-slash", "404-page"],
-];
+] as const;
 const paths = ["/", "/index.html", "/about", "/about/", "/about.html", "/docs", "/docs/", "/docs/index",
   "/blog/post", "/blog/post/", "/blog/post.html", "/app.css", "/missing"];
 // Each request's method, path and whether it is a navigation.
-const requests = [
-  ...paths.map((path) => ["GET", path, false]),
+const requests: [string, string, boolean][] = [
+  ...paths.map((path): [string, string, boolean] => ["GET", path, false]),
   ["GET", "/missing", true], ["GET", "/docs/missing/page", true],
   ["HEAD", "/app.css", false], ["POST", "/about", false], ["POST", "/missing", false],
 ];
 
 /** The status, location and body of the response to a request to `base`. */
-function send(base, method, path, navigation) {
+function send(base: URL, method: string, path: string, navigation: boolean) {
   const headers = navigation ? { "Sec-Fetch-Mode": "navigate" } : {};
-  return new Promise((resolve, reject) => {
+  return new Promise<{ status?: number; location?: string; body: string }>((resolve, reject) => {
     const request = httpRequest(new URL(path, base), { method, headers }, (response) => {
-      const chunks = [];
+      const chunks: Buffer[] = [];
       response.on("data", (chunk) => chunks.push(chunk));
       response.on("end", () => resolve({
         status: response.statusCode,
@@ -43,7 +43,7 @@ function send(base, method, path, navigation) {
 
 const state = await mkdtemp(join(tmpdir(), "tokamak-assets-"));
 process.chdir(state);
-const results = [];
+const results: unknown[] = [];
 try {
   for (const [htmlHandling, notFoundHandling] of configurations) {
     const mf = new Miniflare(convertV4MiniflareOptions({
@@ -60,11 +60,11 @@ try {
     }));
     try {
       const base = await mf.ready;
-      const router = [];
+      const router: unknown[] = [];
       for (const [method, path, navigation] of requests) {
         let response = await send(base, method, path, navigation);
         // tokamak serves the asset Cloudflare redirects to.
-        if (response.status === 307) response = await send(base, method, response.location, navigation);
+        if (response.status === 307 && response.location !== undefined) response = await send(base, method, response.location, navigation);
         router.push({ status: response.status, body: response.body });
       }
       const binding = await (await mf.dispatchFetch(new URL("/binding", base), {

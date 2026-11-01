@@ -1,4 +1,5 @@
 import { StringDecoder } from "node:string_decoder";
+import { member } from "./outcome.ts";
 
 // Each kind of value an API may take as bytes, made fresh for every use.
 export const byteInputs = {
@@ -15,30 +16,31 @@ export const byteInputs = {
   object: () => ({ length: 2 }),
 };
 
-export function streamOf(chunk) {
+export function streamOf(chunk: unknown) {
   return new ReadableStream({ start(controller) { controller.enqueue(chunk); controller.close(); } });
 }
 
-export async function bytesOf(buffer) {
+export async function bytesOf(buffer: ArrayBuffer | Promise<ArrayBuffer>) {
   return [...new Uint8Array(await buffer)];
 }
 
 // What each input becomes in `use`, or the error it raises, by name alone unless `messages`.
-export async function byteOutcomes(use, messages = true) {
-  const outcomes = {};
+export async function byteOutcomes(use: (value: unknown) => unknown, messages = true) {
+  const outcomes: Record<string, unknown> = {};
   for (const [name, input] of Object.entries(byteInputs)) {
     try { outcomes[name] = await use(input()); }
-    catch (error) { outcomes[name] = messages ? { error: error.name, message: error.message } : { error: error.name }; }
+    catch (error) { outcomes[name] = messages ? { error: member(error, "name"), message: member(error, "message") } : { error: member(error, "name") }; }
   }
   return outcomes;
 }
 
 // The bytes `value` becomes, written directly to an IdentityTransformStream.
-async function written(value) {
+async function written(value: unknown) {
   const stream = new IdentityTransformStream();
   const read = bytesOf(new Response(stream.readable).arrayBuffer());
   read.catch(() => {});
   const writer = stream.writable.getWriter();
+  // @ts-expect-error Some inputs are not bytes.
   await writer.write(value);
   await writer.close();
   return read;
@@ -46,15 +48,20 @@ async function written(value) {
 
 export async function bytesContracts() {
   return {
+    // @ts-expect-error Some inputs are not bodies.
     response: await byteOutcomes(value => bytesOf(new Response(value).arrayBuffer())),
+    // @ts-expect-error Some inputs are not blob parts.
     blob: await byteOutcomes(value => bytesOf(new Blob([value]).arrayBuffer())),
     streamBody: await byteOutcomes(value => bytesOf(new Response(streamOf(value)).arrayBuffer())),
+    // @ts-expect-error Some inputs are not bytes.
     decode: await byteOutcomes(value => new TextDecoder().decode(value)),
     decoderStream: await byteOutcomes(async value => (await Array.fromAsync(streamOf(value).pipeThrough(new TextDecoderStream()))).join("")),
     compression: await byteOutcomes(value => bytesOf(new Response(streamOf(value).pipeThrough(new CompressionStream("gzip")).pipeThrough(new DecompressionStream("gzip"))).arrayBuffer())),
     identity: await byteOutcomes(written),
     html: await byteOutcomes(value => new HTMLRewriter().transform(new Response(streamOf(value))).text()),
+    // @ts-expect-error Some inputs are not bytes.
     digest: await byteOutcomes(async value => (await crypto.subtle.digest("SHA-1", value)).byteLength, false),
+    // @ts-expect-error Some inputs are not bytes.
     stringDecoder: await byteOutcomes(value => new StringDecoder().write(value), false),
   };
 }

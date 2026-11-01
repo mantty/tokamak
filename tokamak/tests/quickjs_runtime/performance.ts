@@ -4,8 +4,9 @@ import { outcome } from "./outcome.ts";
 export async function performanceContracts() {
   const p = performance;
   p.clearMarks(); p.clearMeasures();
-  const result = {
+  const result: Record<string, unknown> = {
     clock: { origin: p.timeOrigin, epochBased: Math.abs(p.now() - Date.now()) < 100 },
+    // @ts-expect-error The constructors are illegal.
     constructors: [() => new Performance(), () => new PerformanceEntry(), () => new PerformanceMeasure(), () => new PerformanceObserverEntryList()]
       .map(callback => outcome(callback)),
     marks: [-1, NaN, Infinity].map(startTime => outcome(() => new PerformanceMark("mark", { startTime }).toJSON())),
@@ -17,10 +18,12 @@ export async function performanceContracts() {
   };
   p.mark("a", { startTime: 10 }); p.mark("b", { startTime: 2 });
   p.mark("a", { startTime: 20 });
-  result.measure = [["m", "a", "b"], ["m", { start: 1, end: 5 }], ["m", { start: 1, duration: 4 }],
+  const measures: [string, (string | PerformanceMeasureOptions)?, string?][] = [["m", "a", "b"], ["m", { start: 1, end: 5 }], ["m", { start: 1, duration: 4 }],
     ["m", { end: 5, duration: 4 }], ["m", { duration: 4 }], ["m", { start: 1, end: 5, duration: 2 }],
-    ["m", { start: -1, end: 2 }], ["m", { start: "missing", end: 5 }]]
-    .map(args => outcome(() => p.measure(...args).toJSON()));
+    ["m", { start: -1, end: 2 }],
+    // @ts-expect-error workers-types declares start as a number, but it may name a mark.
+    ["m", { start: "missing", end: 5 }]];
+  result.measure = measures.map(args => outcome(() => p.measure(...args).toJSON()));
   const detail = { value: 1 };
   const mark = p.mark("reference", { startTime: 3, detail }); detail.value = 2;
   result.detail = { same: mark.detail === detail, value: mark.detail, json: mark.toJSON(), nullPrototype: Object.getPrototypeOf(mark.toJSON()) === null };
@@ -28,7 +31,7 @@ export async function performanceContracts() {
     prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(p.nodeTiming)).sort(), tag: Object.prototype.toString.call(p.nodeTiming), entry: p.nodeTiming instanceof PerformanceEntry }));
   result.events = outcome(() => ({ tag: Object.prototype.toString.call(p.eventCounts), size: p.eventCounts.size,
     entries: [...p.eventCounts], has: p.eventCounts.has("click"), value: p.eventCounts.get("click") }));
-  const fn = function (a) { return [this.value, a]; };
+  const fn = function (this: { value: number }, a: number) { return [this.value, a]; };
   result.timerify = { identity: p.timerify(fn) === fn, nodeIdentity: perf.timerify(fn) === fn, call: p.timerify(fn).call({ value: 5 }, 7) };
   result.utilization = perf.eventLoopUtilization({ idle: 2, active: 3, utilization: 0.6 });
   result.eventsDispatch = outcome(() => {
@@ -48,6 +51,7 @@ export async function performanceContracts() {
     const options = { startTime: 1 };
     let calls = 0;
     const name = { toString() { calls++; options.startTime = 7; return "converted"; } };
+    // @ts-expect-error Names are converted to strings.
     const mark = construct ? new PerformanceMark(name, options) : p.mark(name, options);
     return { calls, start: mark.startTime };
   });
@@ -63,8 +67,8 @@ export async function performanceContracts() {
   });
   result.observerArguments = [1, null, undefined, {}].map(value => outcome(() => { new PerformanceObserver(value); return true; }));
   result.observation = await (async () => {
-    const calls = [];
-    const observer = new PerformanceObserver(list => calls.push(list.getEntries()));
+    const calls: PerformanceEntry[][] = [];
+    const observer = new PerformanceObserver((list: PerformanceObserverEntryList) => calls.push(list.getEntries()));
     observer.observe({ entryTypes: ["mark", "measure"], buffered: true });
     p.mark("observed", { startTime: 1 });
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -72,7 +76,7 @@ export async function performanceContracts() {
     return { calls, records: observer.takeRecords() };
   })();
   result.json = p.toJSON();
-  result.clearing = ["clearMarks", "clearMeasures"].flatMap(method => [false, true].map(named => {
+  result.clearing = (["clearMarks", "clearMeasures"] as const).flatMap(method => [false, true].map(named => {
     p.clearMarks(); p.clearMeasures();
     p.mark("shared", { startTime: 1 });
     p.measure("shared", { start: 1, end: 2 });
