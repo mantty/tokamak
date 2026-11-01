@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takeStream, receiveStream } from '../../src/rpc/streams.ts';
 
-test('stream transfer moves ownership and only reads when the receiver demands bytes', async () => {
+void test('stream transfer moves ownership and only reads when the receiver demands bytes', async () => {
   let pulls = 0;
   const source = new ReadableStream({
     type: 'bytes',
@@ -21,7 +21,7 @@ test('stream transfer moves ownership and only reads when the receiver demands b
   assert.equal((await reader.read()).done, true);
 });
 
-test('transport chunks remain bounded when the source supplies a large buffer', async () => {
+void test('transport chunks remain bounded when the source supplies a large buffer', async () => {
   const source = new ReadableStream({
     type: 'bytes',
     start(controller) {
@@ -38,8 +38,8 @@ test('transport chunks remain bounded when the source supplies a large buffer', 
   assert.equal(total, 200_000);
 });
 
-test('receiver cancellation reaches the producer, including while a read is pending', async () => {
-  let reason;
+void test('receiver cancellation reaches the producer, including while a read is pending', async () => {
+  let reason: unknown;
   const source = new ReadableStream({ type: 'bytes', cancel(value) { reason = value; } });
   const reader = receiveStream(takeStream(source)).getReader();
   const pending = reader.read();
@@ -48,7 +48,7 @@ test('receiver cancellation reaches the producer, including while a read is pend
   assert.equal((await pending).done, true);
 });
 
-test('producer failures reach the receiving reader', async () => {
+void test('producer failures reach the receiving reader', async () => {
   const source = new ReadableStream({
     type: 'bytes',
     pull(controller) { controller.error(Object.assign(new Error('device lost'), { code: 'DISCONNECTED' })); },
@@ -56,13 +56,13 @@ test('producer failures reach the receiving reader', async () => {
   await assert.rejects(receiveStream(takeStream(source)).getReader().read(), { message: 'device lost', code: 'DISCONNECTED' });
 });
 
-test('a closed stream settles a pending BYOB read', async () => {
+void test('a closed stream settles a pending BYOB read', async () => {
   const source = new ReadableStream({ type: 'bytes', start(controller) { controller.close(); } });
   const reader = receiveStream(takeStream(source)).getReader({ mode: 'byob' });
   assert.equal((await reader.read(new Uint8Array(8))).done, true);
 });
 
-test('ordinary streams that produce byte arrays use the same bounded transfer contract', async () => {
+void test('ordinary streams that produce byte arrays use the same bounded transfer contract', async () => {
   const source = new ReadableStream({
     start(controller) {
       controller.enqueue(new Uint8Array(150_000).fill(7));
@@ -78,18 +78,19 @@ test('ordinary streams that produce byte arrays use the same bounded transfer co
   assert.equal(total, 150_000);
 });
 
-test('non-byte chunks fail the receiving read and cancel the producer', async () => {
-  let cancelled;
+void test('non-byte chunks fail the receiving read and cancel the producer', async () => {
+  let cancelled: unknown;
   const source = new ReadableStream({
     start(controller) { controller.enqueue({ location: 'not bytes' }); },
     cancel(reason) { cancelled = reason; },
   });
   await assert.rejects(receiveStream(takeStream(source)).getReader().read(), { name: 'DataCloneError' });
+  assert.ok(cancelled instanceof DOMException);
   assert.equal(cancelled.name, 'DataCloneError');
 });
 
-test('an invalid chunk rejects even when producer cleanup fails or never completes', { timeout: 1000 }, async () => {
-  for (const cancel of [() => Promise.reject(new Error('cleanup failed')), () => new Promise(() => {})]) {
+void test('an invalid chunk rejects even when producer cleanup fails or never completes', { timeout: 1000 }, async () => {
+  for (const cancel of [() => Promise.reject(new Error('cleanup failed')), () => new Promise<void>(() => {})]) {
     const source = new ReadableStream({
       start(controller) { controller.enqueue('not bytes'); },
       cancel,

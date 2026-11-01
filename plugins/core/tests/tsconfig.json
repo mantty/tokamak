@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // The tests run the Worker modules under Node. The two type packages
+    // declare the same globals, so their declaration files are not checked.
+    "types": ["node", "@cloudflare/workers-types"],
+    "skipLibCheck": true
+  },
+  "include": ["."]
+}
