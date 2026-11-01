@@ -251,13 +251,6 @@ fn closed_error(ctx: &Ctx<'_>) -> rquickjs::Error {
     thrown.unwrap_or_else(|error| error)
 }
 
-/// `fs/node/file-handle.ts`, which defines `FileHandle`.
-pub(super) fn file_handle_module<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>> {
-    cached(ctx, "__tokamak_node_fs_file_handle", |ctx| {
-        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:fs/node/file-handle.ts")
-    })
-}
-
 /// A `FileHandle` for the open `descriptor`.
 pub(super) fn file_handle<'js>(ctx: &Ctx<'js>, descriptor: u32) -> rquickjs::Result<Value<'js>> {
     let state = Class::instance(
@@ -266,7 +259,7 @@ pub(super) fn file_handle<'js>(ctx: &Ctx<'js>, descriptor: u32) -> rquickjs::Res
             descriptor: Cell::new(Some(descriptor)),
         },
     )?;
-    let create: Function = file_handle_module(ctx)?.get("fileHandle")?;
+    let create: Function = fs_module(ctx, "file-handle.ts")?.get("fileHandle")?;
     create.call((state,))
 }
 

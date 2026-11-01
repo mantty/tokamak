@@ -438,8 +438,7 @@ fn declarations() -> String {
         Module::new("tokamak:host", |types| {
             // `builtins/runtime.ts` exports the bootstrap that Rust reads.
             crate::dispatcher::Bootstrap::typescript(types);
-            // `fs/node/file-handle.ts` defines `FileHandle` over this state.
-            <rquickjs::Class<'_, crate::fs::node::FileHandleState>>::typescript(types);
+            crate::fs::node::declare_types(types);
             crate::globals::native::declarations(types)
         }),
         Module::new("tokamak:storage", crate::storage::declarations),

@@ -62,7 +62,8 @@ impl<'js> ReadFields<'js> {
                 ),
             ));
         }
-        let target: Value = read_buffer(ctx)?.call((self.buffer.clone(), offset, length))?;
+        let read_target: Function = fs_module(ctx, "reads.ts")?.get("readTarget")?;
+        let target: Value = read_target.call((self.buffer.clone(), offset, length))?;
         Ok(ReadRequest {
             targets: vec![view_target(ctx, &target)?],
             position,
@@ -324,11 +325,7 @@ fn outside_buffer<'js>(
     length: &Value<'js>,
     size: f64,
 ) -> rquickjs::Result<bool> {
-    let check: Function = cached(ctx, "__tokamak_node_fs_outside_buffer", |ctx| {
-        ctx.eval(
-            "(offset, length, size) => offset < 0 || length < 0 || (length !== 0 && offset + length > size)",
-        )
-    })?;
+    let check: Function = fs_module(ctx, "reads.ts")?.get("outsideBuffer")?;
     check.call((offset.clone(), length.clone(), size))
 }
 
@@ -458,21 +455,6 @@ fn remaining_length<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let offset = Coerced::<f64>::from_js(ctx, offset.clone())?.0;
     Ok(Value::new_number(ctx.clone(), byte_length - offset))
-}
-
-/// workerd's `readSync` target,
-/// `Buffer.from(buffer.buffer, buffer.byteOffset + offset, length)`, which
-/// reads the properties a Worker may define on the view.
-fn read_buffer<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    cached(ctx, "__tokamak_node_fs_read_buffer", |ctx| {
-        let buffer: Value =
-            crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:node/buffer.ts")?
-                .get("Buffer")?;
-        let target: Function = ctx.eval(
-            "Buffer => (view, offset, length) => Buffer.from(view.buffer, view.byteOffset + offset, length)",
-        )?;
-        target.call((buffer,))
-    })
 }
 
 /// The range `view` covers in its `ArrayBuffer`, as the engine holds it:

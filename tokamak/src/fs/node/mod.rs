@@ -52,5 +52,12 @@ pub use exports::{
     read_bundle_file, working_directory,
 };
 use exports::{VfsHandle, VfsUserData};
+
+/// Adds the host types that `fs/node`'s TypeScript modules use to `types`.
 #[cfg(test)]
-pub(crate) use file_handle::FileHandleState;
+pub(crate) fn declare_types(types: &mut crate::typescript::Types) {
+    use crate::typescript::JsType;
+    <rquickjs::Class<'_, FileHandleState>>::typescript(types);
+    DirEntryRecord::typescript(types);
+    StatRecord::typescript(types);
+}

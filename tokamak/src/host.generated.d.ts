@@ -301,6 +301,12 @@ declare module "tokamak:host" {
     copy(): DigestState;
   }
 
+  export interface DirEntryRecord {
+    name: string;
+    type: number;
+    parentPath: string;
+  }
+
   export interface EcdhKey {
     curve: string;
     private: Uint8Array;
@@ -624,6 +630,12 @@ declare module "tokamak:host" {
   export interface SocketNotifier {
     readonly [classBrand]: "SocketNotifier";
     notify(): void;
+  }
+
+  export interface StatRecord {
+    mode: number;
+    size: number;
+    device: boolean;
   }
 
   export interface StreamCodec {

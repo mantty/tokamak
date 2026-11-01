@@ -1,109 +1,19 @@
 #![allow(clippy::wildcard_imports)]
 
+use tokamak_macros::JsType;
+
 use super::*;
 
-/// workerd's `Dirent` class, which holds an entry's libuv `UV_DIRENT_*` type
-/// under a private symbol.
-const DIRENT_CLASS: &str = r#"(() => {
-  const kType = Symbol("type");
-  return class Dirent {
-    name;
-    parentPath;
-    [kType];
-    constructor(name, type, path) {
-      this.name = name;
-      this.parentPath = path;
-      this[kType] = type;
-    }
-    isDirectory() { return this[kType] === 2; }
-    isFile() { return this[kType] === 1; }
-    isBlockDevice() { return this[kType] === 7; }
-    isCharacterDevice() { return this[kType] === 6; }
-    isSymbolicLink() { return this[kType] === 3; }
-    isFIFO() { return this[kType] === 4; }
-    isSocket() { return this[kType] === 5; }
-  };
-})()"#;
-
-pub(super) fn dirent_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Constructor<'js>> {
-    cached(ctx, "__tokamak_node_fs_dirent", |ctx| {
-        ctx.eval(DIRENT_CLASS)
+/// The namespace of the runtime module `fs/node/{name}`.
+pub(super) fn fs_module<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Object<'js>> {
+    cached(ctx, &format!("__tokamak_node_fs_{name}"), |ctx| {
+        crate::runtime_modules::module_namespace(ctx.clone(), &format!("tokamak:fs/node/{name}"))
     })
 }
 
-/// workerd's `Dir` class, made from `Buffer` and `Dirent`, which reads the
-/// `{ name, type, parentPath }` handles it is given.
-const DIR_CLASS: &str = r#"(Buffer, Dirent) => {
-  const coded = (Type, code, message) => Object.assign(new Type(message), { code });
-  const closed = () => coded(Error, "ERR_DIR_CLOSED", "Directory is closed");
-  return class Dir {
-    #handle;
-    #encoding;
-    #path;
-    constructor(handle, path, options) {
-      if (handle == null) throw coded(TypeError, "ERR_MISSING_ARGS", 'The "handle" argument must be specified');
-      this.#handle = handle;
-      this.#path = path;
-      if (options === null || typeof options !== "object" || Array.isArray(options)) {
-        throw coded(TypeError, "ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object');
-      }
-      const { encoding = "utf8" } = options;
-      if (typeof encoding !== "string") {
-        throw coded(TypeError, "ERR_INVALID_ARG_TYPE", 'The "options.encoding" property must be of type string');
-      }
-      this.#encoding = encoding;
-    }
-    get path() { return this.#path; }
-    read(callback) {
-      if (typeof callback === "function") {
-        try {
-          const entry = this.readSync();
-          queueMicrotask(() => callback(null, entry));
-        } catch (error) {
-          queueMicrotask(() => callback(error, null));
-        }
-        return;
-      }
-      try { return Promise.resolve(this.readSync()); }
-      catch (error) { return Promise.reject(error); }
-    }
-    readSync() {
-      if (this.#handle === undefined) throw closed();
-      const entry = this.#handle.shift();
-      if (entry == null) return null;
-      const name = Buffer.from(entry.name);
-      return new Dirent(this.#encoding === "buffer" ? name : name.toString(this.#encoding), entry.type, entry.parentPath);
-    }
-    close(callback) {
-      this.closeSync();
-      if (typeof callback === "function") {
-        queueMicrotask(() => callback(null));
-        return undefined;
-      }
-      return Promise.resolve();
-    }
-    closeSync() {
-      if (this.#handle === undefined) throw closed();
-      this.#handle = undefined;
-    }
-    async *entries() {
-      for (;;) {
-        const entry = await this.read();
-        if (entry == null) return;
-        yield entry;
-      }
-    }
-    [Symbol.asyncIterator]() { return this.entries(); }
-    async [Symbol.asyncDispose]() { await this.close(); }
-    [Symbol.dispose]() { this.closeSync(); }
-  };
-}"#;
-
-pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Constructor<'js>> {
-    cached(ctx, "__tokamak_node_fs_dir", |ctx| {
-        let class: Function = ctx.eval(DIR_CLASS)?;
-        class.call((buffer_class(ctx)?, dirent_constructor(ctx)?))
-    })
+/// `fs/node/objects.ts`'s export `name`.
+pub(super) fn fs_object<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Constructor<'js>> {
+    fs_module(ctx, "objects.ts")?.get(name)
 }
 
 /// The value `create` makes, made once per context and kept in the hidden
@@ -121,6 +31,27 @@ pub(super) fn cached<'js, T: FromJs<'js> + IntoJs<'js> + Clone>(
     Ok(value)
 }
 
+/// An entry a `Dir` reads: its name, libuv `UV_DIRENT_*` type and parent
+/// path.
+#[derive(IntoJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct DirEntryRecord {
+    name: String,
+    #[qjs(rename = "type")]
+    kind: u32,
+    parent_path: String,
+}
+
+/// What a `Stats` reports of a file.
+#[derive(IntoJs, JsType)]
+pub(crate) struct StatRecord {
+    /// The file type and permission bits.
+    mode: u32,
+    size: u64,
+    /// Whether the file is a synthetic device.
+    device: bool,
+}
+
 #[derive(Clone)]
 pub(super) struct DirItem {
     pub(super) name: String,
@@ -136,19 +67,19 @@ pub(super) fn dir_object<'js>(
     entries: Vec<DirItem>,
     encoding: Option<&str>,
 ) -> rquickjs::Result<Object<'js>> {
-    let handles = Array::new(ctx.clone())?;
-    for (index, item) in entries.iter().enumerate() {
-        let handle = Object::new(ctx.clone())?;
-        handle.set("name", item.name.as_str())?;
-        handle.set("type", dirent_type(&item.entry))?;
-        handle.set("parentPath", item.parent.as_str())?;
-        handles.set(index, handle)?;
-    }
+    let handles: Vec<DirEntryRecord> = entries
+        .iter()
+        .map(|item| DirEntryRecord {
+            name: item.name.clone(),
+            kind: dirent_type(&item.entry),
+            parent_path: item.parent.clone(),
+        })
+        .collect();
     let options = Object::new(ctx.clone())?;
     if let Some(encoding) = encoding {
         options.set("encoding", encoding)?;
     }
-    dir_constructor(ctx)?.construct((handles, path, options))
+    fs_object(ctx, "Dir")?.construct((handles, path, options))
 }
 
 pub(super) fn item_dirent<'js>(
@@ -160,123 +91,25 @@ pub(super) fn item_dirent<'js>(
     dirent(ctx, name, dirent_type(&item.entry), &item.parent)
 }
 
-/// The namespace of the module of workerd's `ReadStream` and `WriteStream`.
-pub(super) fn streams_module<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>> {
-    cached(ctx, "__tokamak_node_fs_streams", |ctx| {
-        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:fs/node/streams.ts")
-    })
-}
-
-/// workerd's `Stats` class, with a function that makes one from a stat
-/// record and whether its numbers are bigints.
-const STATS_CLASS: &str = r#"(() => {
-  const badge = Symbol("badge");
-  class Stats {
-    dev;
-    ino;
-    mode;
-    nlink;
-    uid;
-    gid;
-    rdev;
-    size;
-    blksize;
-    blocks;
-    atimeMs;
-    mtimeMs;
-    ctimeMs;
-    birthtimeMs;
-    atimeNs;
-    mtimeNs;
-    ctimeNs;
-    birthtimeNs;
-    atime;
-    mtime;
-    ctime;
-    birthtime;
-    constructor(key, stat, options) {
-      if (key !== badge) throw new TypeError("Illegal constructor");
-      this.mode = 0o444;
-      if (stat.writable) this.mode |= 0o222;
-      if (stat.device) this.mode |= 0o20000;
-      else this.mode |= { file: 0o100000, directory: 0o40000, symlink: 0o120000 }[stat.type];
-      if (options.bigint) {
-        this.dev = BigInt(stat.device);
-        this.size = BigInt(stat.size);
-        this.mode = BigInt(this.mode);
-        this.atimeNs = 0n;
-        this.mtimeNs = stat.lastModified;
-        this.ctimeNs = stat.lastModified;
-        this.birthtimeNs = stat.created;
-        this.atimeMs = this.atimeNs / 1000000n;
-        this.mtimeMs = this.mtimeNs / 1000000n;
-        this.ctimeMs = this.ctimeNs / 1000000n;
-        this.birthtimeMs = this.birthtimeNs / 1000000n;
-        this.atime = new Date(Number(this.atimeMs));
-        this.mtime = new Date(Number(this.mtimeMs));
-        this.ctime = new Date(Number(this.ctimeMs));
-        this.birthtime = new Date(Number(this.birthtimeMs));
-        this.ino = 0n;
-        this.nlink = 1n;
-        this.uid = 0n;
-        this.gid = 0n;
-        this.rdev = 0n;
-        this.blksize = 0n;
-        this.blocks = 0n;
-      } else {
-        this.dev = Number(stat.device);
-        this.size = stat.size;
-        this.atimeMs = 0;
-        this.mtimeMs = Number(stat.lastModified) / 1000000;
-        this.ctimeMs = Number(stat.lastModified) / 1000000;
-        this.birthtimeMs = Number(stat.created) / 1000000;
-        this.atime = new Date(this.atimeMs);
-        this.mtime = new Date(this.mtimeMs);
-        this.ctime = new Date(this.ctimeMs);
-        this.birthtime = new Date(this.birthtimeMs);
-        this.ino = 0;
-        this.nlink = 1;
-        this.uid = 0;
-        this.gid = 0;
-        this.rdev = 0;
-        this.blksize = 0;
-        this.blocks = 0;
-      }
-    }
-    isBlockDevice() { return (Number(this.mode) & 0o170000) === 0o60000; }
-    isCharacterDevice() { return (Number(this.mode) & 0o170000) === 0o20000; }
-    isDirectory() { return (Number(this.mode) & 0o170000) === 0o40000; }
-    isFIFO() { return (Number(this.mode) & 0o170000) === 0o10000; }
-    isFile() { return (Number(this.mode) & 0o170000) === 0o100000; }
-    isSocket() { return (Number(this.mode) & 0o170000) === 0o140000; }
-    isSymbolicLink() { return (Number(this.mode) & 0o170000) === 0o120000; }
-  }
-  return [Stats, (stat, bigint) => new Stats(badge, stat, { bigint })];
-})()"#;
-
-/// `Stats` and the function that makes one.
-fn stats_class<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Array<'js>> {
-    cached(ctx, "__tokamak_node_fs_stats", |ctx| ctx.eval(STATS_CLASS))
-}
-
-pub(super) fn stats_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Constructor<'js>> {
-    stats_class(ctx)?.get(0)
-}
-
-/// The `Stats` workerd reports for `stat`, which has no times.
+/// The `Stats` workerd reports for `stat`.
 pub(super) fn stat_object<'js>(
     ctx: &Ctx<'js>,
     stat: &Stat,
     bigint: bool,
 ) -> rquickjs::Result<Object<'js>> {
-    let record = Object::new(ctx.clone())?;
-    record.set("type", node_type_name(stat.kind))?;
-    record.set("size", stat.size)?;
-    record.set("writable", stat.writable)?;
-    record.set("device", stat.device)?;
-    record.set("lastModified", BigInt::from_i64(ctx.clone(), 0)?)?;
-    record.set("created", BigInt::from_i64(ctx.clone(), 0)?)?;
-    let create: Function = stats_class(ctx)?.get(1)?;
+    // `S_IFCHR`, `S_IFREG`, `S_IFDIR` and `S_IFLNK`.
+    let file_type = match stat.kind {
+        _ if stat.device => 0o20_000,
+        NodeType::File => 0o100_000,
+        NodeType::Directory => 0o40_000,
+        NodeType::Symlink => 0o120_000,
+    };
+    let record = StatRecord {
+        mode: file_type | if stat.writable { 0o666 } else { 0o444 },
+        size: stat.size,
+        device: stat.device,
+    };
+    let create: Function = fs_module(ctx, "objects.ts")?.get("stats")?;
     create.call((record, bigint))
 }
 
@@ -334,14 +167,6 @@ pub(super) fn blob_object<'js>(
     exact_blob.call((TypedArray::<u8>::new_copy(ctx.clone(), &bytes)?, mime_type))
 }
 
-const fn node_type_name(kind: NodeType) -> &'static str {
-    match kind {
-        NodeType::File => "file",
-        NodeType::Directory => "directory",
-        NodeType::Symlink => "symlink",
-    }
-}
-
 /// A `Dirent` named `name` of the libuv `UV_DIRENT_*` type `kind`.
 pub(super) fn dirent<'js>(
     ctx: &Ctx<'js>,
@@ -349,7 +174,7 @@ pub(super) fn dirent<'js>(
     kind: u32,
     parent_path: &str,
 ) -> rquickjs::Result<Object<'js>> {
-    dirent_constructor(ctx)?.construct((name, kind, parent_path))
+    fs_object(ctx, "Dirent")?.construct((name, kind, parent_path))
 }
 
 /// The libuv `UV_DIRENT_*` type of `entry`.
