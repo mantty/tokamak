@@ -1,5 +1,5 @@
 import * as nodeCrypto from "node:crypto";
-import { asyncOutcome, outcome } from "./outcome.mjs";
+import { asyncOutcome, outcome } from "./outcome.ts";
 
 export async function cryptoContracts() {
   const result = {};

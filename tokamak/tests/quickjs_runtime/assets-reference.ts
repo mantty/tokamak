@@ -1,9 +1,9 @@
-import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { esModule } from "./reference.ts";
 
 const root = join(import.meta.dirname, "assets");
 const configurations = [
@@ -50,7 +50,7 @@ try {
       modulesRoot: root,
       cf: false,
       compatibilityDate: "2026-08-25",
-      modules: [{ type: "ESModule", path: join(root, "worker.mjs"), contents: readFileSync(join(root, "worker.mjs")) }],
+      modules: [esModule(root, "worker.ts")],
       assets: {
         directory: join(root, "public"),
         binding: "STATIC",

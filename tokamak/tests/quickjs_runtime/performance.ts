@@ -1,5 +1,5 @@
 import * as perf from "node:perf_hooks";
-import { outcome } from "./outcome.mjs";
+import { outcome } from "./outcome.ts";
 
 export async function performanceContracts() {
   const p = performance;

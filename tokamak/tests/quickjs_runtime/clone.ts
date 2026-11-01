@@ -1,4 +1,4 @@
-import { outcome } from "./outcome.mjs";
+import { outcome } from "./outcome.ts";
 
 export async function cloneContracts() {
   const result = {};

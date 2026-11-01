@@ -2,17 +2,17 @@ import EventEmitter from "node:events";
 import streams from "node:stream";
 import processModule from "node:process";
 import { env, waitUntil } from "cloudflare:workers";
-import { streamContracts } from "./streams.mjs";
-import { cryptoContracts } from "./crypto.mjs";
-import { htmlContracts } from "./html.mjs";
-import { zlibContracts } from "./zlib.mjs";
-import { cloneContracts } from "./clone.mjs";
-import { performanceContracts } from "./performance.mjs";
-import { intlContracts } from "./intl.mjs";
-import { bytesContracts } from "./bytes.mjs";
-import { filesystemContracts } from "./filesystem.mjs";
-import { netContracts } from "./net.mjs";
-import { eventsContracts } from "./events.mjs";
+import { streamContracts } from "./streams.ts";
+import { cryptoContracts } from "./crypto.ts";
+import { htmlContracts } from "./html.ts";
+import { zlibContracts } from "./zlib.ts";
+import { cloneContracts } from "./clone.ts";
+import { performanceContracts } from "./performance.ts";
+import { intlContracts } from "./intl.ts";
+import { bytesContracts } from "./bytes.ts";
+import { filesystemContracts } from "./filesystem.ts";
+import { netContracts } from "./net.ts";
+import { eventsContracts } from "./events.ts";
 
 function errorResult(error) {
   return { error: error.name, dom: error instanceof DOMException, code: error.code ?? null };
@@ -2741,7 +2741,7 @@ export async function run(handlerEnv, ctx, constructors) {
     module: {
       aliases: [nodeModule === nodeModule.Module, nodeModule.builtinModules === nodeModule.Module.builtinModules, nodeModule.isBuiltin === nodeModule.Module.isBuiltin, nodeModule.createRequire === nodeModule.Module.createRequire, nodeModule === nodeModule.default],
       builtin: [nodeModule.isBuiltin("node:buffer"), nodeModule.isBuiltin("node:not-real")],
-      require: nodeModule.createRequire("/bundle/contracts.mjs")("node:buffer") === nodeBuffer,
+      require: nodeModule.createRequire("/bundle/contracts.ts")("node:buffer") === nodeBuffer,
       stripTypeScriptTypes: result(() => nodeModule.stripTypeScriptTypes("const value: number = 1;")),
     },
     timers: await asyncResult(async () => {

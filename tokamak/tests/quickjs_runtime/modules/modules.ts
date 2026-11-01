@@ -1,4 +1,4 @@
-// Text and Data modules, compared with workerd by modules-reference.mjs.
+// Text and Data modules, compared with workerd by modules-reference.ts.
 import text from "./text.txt";
 import * as textNamespace from "./text.txt";
 import bom from "./bom.txt";

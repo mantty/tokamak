@@ -1,13 +1,12 @@
-import { readFileSync } from "node:fs";
 import { get } from "node:http";
 import { gunzipSync, brotliDecompressSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { cases } from "./encoding.mjs";
+import { cases } from "./encoding.ts";
+import { esModule } from "./reference.ts";
 
-const path = `${import.meta.dirname}/encoding.mjs`;
 const mf = new Miniflare(convertV4MiniflareOptions({
   cf: false, modulesRoot: import.meta.dirname, compatibilityDate: "2026-08-25", compatibilityFlags: ["nodejs_compat"],
-  modules: [{ type: "ESModule", path, contents: readFileSync(path, "utf8") }],
+  modules: [esModule(import.meta.dirname, "encoding.ts")],
 }));
 try {
   const base = await mf.ready;

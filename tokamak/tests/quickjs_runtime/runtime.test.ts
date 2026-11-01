@@ -4,7 +4,7 @@ import test from "node:test";
 test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
   // Host-side smoke test for the vendored stream engine. Native extensions
   // are exercised by the compiled Workerd differential suite.
-  const { ReadableStream, TransformStream, WritableStream } = await import("../../src/streams/web-standard.mjs");
+  const { ReadableStream, TransformStream, WritableStream } = await import("../../src/streams/web-standard.js");
   let next = 0;
   const source = new ReadableStream({
     pull(controller) {
@@ -25,7 +25,7 @@ test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
 });
 
 test("Readable emits end after pushed data", async () => {
-  const { Readable } = await import("../../src/streams/node.mjs?end-event");
+  const { Readable } = await import("../../src/streams/node.js?end-event");
   const events = [];
   const stream = new Readable();
   stream.on("data", (value) => events.push(`data:${value}`));

@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
-import { byteInputs } from "./bytes.mjs";
-import { failure as namedFailure } from "./outcome.mjs";
+import { byteInputs } from "./bytes.ts";
+import { failure as namedFailure } from "./outcome.ts";
 
 const SIZE_LIMIT = 128 * 1024 * 1024;
 
@@ -624,7 +624,7 @@ async function globDetailContracts() {
     })(),
     callbackError: await new Promise(resolve => fs.glob(5, (error, matches) =>
       resolve(error ? { error: failure(error) } : { matches }))),
-    callbackDefaultOptions: await new Promise(resolve => fs.glob("*.mjs", (error, matches) =>
+    callbackDefaultOptions: await new Promise(resolve => fs.glob("*.ts", (error, matches) =>
       resolve(error ? { error: failure(error) } : { matches: Array.isArray(matches) }))),
     promiseError: await Array.fromAsync(fs.promises.glob(5)).then(matches => ({ matches }), error => ({ error: failure(error) })),
     promiseDirents: (await Array.fromAsync(fs.promises.glob("zeta/*", { cwd: root, withFileTypes: true }))).map(direntOutcome),

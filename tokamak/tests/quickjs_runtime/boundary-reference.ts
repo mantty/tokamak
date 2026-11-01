@@ -1,10 +1,10 @@
-import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { esModule } from "./reference.ts";
 
 const payload = gzipSync(Buffer.from("upstream-payload"));
 const upstream = createServer((request, response) => {
@@ -25,11 +25,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: "2026-08-25",
   compatibilityFlags: ["nodejs_compat"],
   bindings: { UPSTREAM_PORT: String(upstream.address().port) },
-  modules: [{
-    type: "ESModule",
-    path: `${root}/boundary.mjs`,
-    contents: readFileSync(`${root}/boundary.mjs`, "utf8"),
-  }],
+  modules: [esModule(root, "boundary.ts")],
 }));
 try {
   const results = {};

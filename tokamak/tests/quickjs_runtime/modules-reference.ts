@@ -3,21 +3,24 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { esModule } from "./reference.ts";
 
-const root = import.meta.dirname;
-const state = await mkdtemp(join(tmpdir(), "tokamak-workerd-"));
+const root = join(import.meta.dirname, "modules");
+const state = await mkdtemp(join(tmpdir(), "tokamak-modules-"));
 process.chdir(state);
+const module = (type, name) => ({ type, path: join(root, name), contents: readFileSync(join(root, name)) });
 const mf = new Miniflare(convertV4MiniflareOptions({
   modulesRoot: root,
   cf: false,
   compatibilityDate: "2026-08-25",
   compatibilityFlags: ["nodejs_compat"],
-  bindings: { FLAG: "enabled" },
-  modules: [...["startup.mjs", "contracts.mjs", "streams.mjs", "crypto.mjs", "html.mjs", "zlib.mjs", "clone.mjs", "performance.mjs", "intl.mjs", "bytes.mjs", "filesystem.mjs", "net.mjs", "events.mjs", "outcome.mjs"].map(name => ({
-    type: "ESModule",
-    path: `${root}/${name}`,
-    contents: readFileSync(`${root}/${name}`, "utf8"),
-  })), { type: "Text", path: `${root}/bundle.txt`, contents: readFileSync(`${root}/bundle.txt`, "utf8") }],
+  modules: [
+    esModule(root, "modules.ts"),
+    module("Text", "text.txt"),
+    module("Text", "bom.txt"),
+    module("Text", "invalid.txt"),
+    module("Data", "data.bin"),
+  ],
 }));
 try {
   const response = await mf.dispatchFetch("http://localhost/");

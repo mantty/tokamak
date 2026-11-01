@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
 import { gzipSync, deflateSync, brotliCompressSync, zstdCompressSync } from "node:zlib";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { esModule } from "./reference.ts";
 
 let active;
 let ended = false;
@@ -73,7 +73,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: "2026-08-25",
   compatibilityFlags: ["nodejs_compat"],
   bindings: { FLAG: port },
-  modules: [{ type: "ESModule", path: `${import.meta.dirname}/http.mjs`, contents: readFileSync(new URL("http.mjs", import.meta.url), "utf8") }],
+  modules: [esModule(import.meta.dirname, "http.ts")],
 }));
 try {
   const response = await mf.dispatchFetch("http://localhost");

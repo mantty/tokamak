@@ -45,7 +45,7 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
     let host = HOST;
     let client = (state.join("client.cert.pem"), state.join("client.key.pem"));
     let foreign = write_foreign_client(temporary.path())?;
-    let script = write_client_script(temporary.path())?;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls-client.ts");
     let authority = state.join("ca.cert.pem");
 
     for (authority, client, accepted) in [
@@ -1249,12 +1249,6 @@ fn write_foreign_client(directory: &Path) -> TestResult<(PathBuf, PathBuf)> {
     fs::write(&cert_path, certificate.pem())?;
     fs::write(&key_path, key.serialize_pem())?;
     Ok((cert_path, key_path))
-}
-
-fn write_client_script(directory: &Path) -> TestResult<PathBuf> {
-    let script = directory.join("tls-client.mjs");
-    fs::write(&script, include_str!("fixtures/tls-client.mjs"))?;
-    Ok(script)
 }
 
 fn connect(

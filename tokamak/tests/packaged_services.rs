@@ -89,19 +89,26 @@ fn rpc_modules(directory: &Path) -> TestResult<Vec<(&'static str, String)>> {
         "values.ts",
     ];
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let status = Command::new("node")
-        .arg(repository.join("scripts/strip-types.mts"))
-        .arg(repository.join("plugins/core/src/rpc"))
-        .arg(directory)
-        .args(names)
-        .status()?;
-    if !status.success() {
-        return Err("removing the RPC modules' types failed".into());
-    }
+    strip_types(&repository.join("plugins/core/src/rpc"), directory, &names)?;
     names
         .into_iter()
         .map(|name| Ok((name, fs::read_to_string(directory.join(name))?)))
         .collect()
+}
+
+/// Writes each TypeScript module of `names` under `from` to the same name
+/// under `to`, with its types removed.
+fn strip_types(from: &Path, to: &Path, names: &[&str]) -> TestResult {
+    let status = Command::new("node")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/strip-types.mts"))
+        .arg(from)
+        .arg(to)
+        .args(names)
+        .status()?;
+    if !status.success() {
+        return Err("removing the modules' types failed".into());
+    }
+    Ok(())
 }
 
 fn package(app: &PackageLayout, source: &str, environment: &Value) -> TestResult {
@@ -143,13 +150,16 @@ fn frontend_rpc_uses_the_packaged_native_worker_and_owns_its_streams() -> TestRe
         &json!({}),
     )?;
     let stripped = tempfile::tempdir()?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    strip_types(&fixtures, stripped.path(), &["rpc-worker.ts"])?;
+    let worker = fs::read_to_string(stripped.path().join("rpc-worker.ts"))?;
     let rpc = rpc_modules(stripped.path())?;
-    let mut modules = BTreeMap::from([("worker.mjs", include_str!("fixtures/rpc-worker.mjs"))]);
+    let mut modules = BTreeMap::from([("worker.mjs", worker.as_str())]);
     modules.extend(rpc.iter().map(|(name, source)| (*name, source.as_str())));
     package_modules(&app.tokamak_worker(), &modules, &json!({}))?;
     let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
     let output = Command::new("node")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rpc-client.mjs"))
+        .arg(fixtures.join("rpc-client.ts"))
         .arg(runtime.port().to_string())
         .arg(directory.path().join("state"))
         .output()?;

@@ -1,4 +1,4 @@
-import { asyncOutcome } from "./outcome.mjs";
+import { asyncOutcome } from "./outcome.ts";
 
 export async function htmlContracts() {
   const result = {};

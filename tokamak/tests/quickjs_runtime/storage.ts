@@ -2,7 +2,7 @@
 // Values that differ by implementation (timings, sizes, bookmarks) are
 // reduced to their types.
 
-import { byteOutcomes, bytesOf } from "./bytes.mjs";
+import { byteOutcomes, bytesOf } from "./bytes.ts";
 
 async function outcome(callback) {
   try {

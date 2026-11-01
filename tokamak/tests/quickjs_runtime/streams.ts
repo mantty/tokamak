@@ -1,5 +1,5 @@
 import { Readable, Writable, Duplex } from "node:stream";
-import { asyncOutcome } from "./outcome.mjs";
+import { asyncOutcome } from "./outcome.ts";
 
 async function compress(format, bytes) {
   const stream = new CompressionStream(format);

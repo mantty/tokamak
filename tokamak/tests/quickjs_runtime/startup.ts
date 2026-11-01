@@ -5,7 +5,7 @@ const constructors = [TextDecoder, TextEncoder, Response, ReadableStream, proces
 export default {
   async fetch(request, env, ctx) {
     if (ready !== "ready") throw new Error("Worker text encoding failed");
-    const { run } = await import("./contracts.mjs");
+    const { run } = await import("./contracts.ts");
     return new Response(JSON.stringify(await run(env, ctx, constructors)));
   },
 };

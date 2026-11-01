@@ -1,6 +1,6 @@
 import * as zlib from "node:zlib";
 import { Buffer } from "node:buffer";
-import { asyncOutcome, outcome } from "./outcome.mjs";
+import { asyncOutcome, outcome } from "./outcome.ts";
 
 export async function zlibContracts() {
   const result = {};
