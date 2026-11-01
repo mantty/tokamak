@@ -48,6 +48,20 @@ const CLIPPY_TARGETS = [
   ["-p", "tokamak", "--all-targets", "--features", "native"],
 ];
 
+// Each TypeScript project, with the package whose compiler checks it. The CLI
+// package's project builds the declarations its tests' project reads.
+const TYPESCRIPT_PROJECTS = [
+  ["tokamak", "tokamak"],
+  ["tokamak", "tokamak/tests"],
+  ["tokamak", "tokamak/tests/fixtures"],
+  ["tokamak", "scripts"],
+  ["plugins", "plugins"],
+  ["plugins", "plugins/core"],
+  ["plugins", "plugins/core/tests"],
+  ["tokamak-cli/npm", "tokamak-cli/npm"],
+  ["tokamak-cli/npm", "tokamak-cli/npm/tsconfig.test.json"],
+];
+
 // The lint sections with their own clippy lints; every other finding counts
 // in `lint`.
 const LINT_SECTIONS = new Map<string | undefined, string>([
@@ -149,10 +163,19 @@ function format() {
 }
 
 function typecheck() {
-  const result = run("cargo", ["check", "--workspace", "--exclude", "windows-shell"]);
-  const failed = result.status !== 0;
-  if (failed) console.error(tail(result));
-  write("typecheck", { typecheck: section(failed, failed ? 1 : 0) });
+  let errors = 0;
+  const cargo = run("cargo", ["check", "--workspace", "--exclude", "windows-shell"]);
+  if (cargo.status !== 0) {
+    errors++;
+    console.error(tail(cargo));
+  }
+  for (const [pkg, project] of TYPESCRIPT_PROJECTS) {
+    const result = run(path.join(pkg, "node_modules/.bin/tsc"), ["--project", project]);
+    if (result.status === 0) continue;
+    errors += Math.max(result.stdout.match(/error TS\d+/g)?.length ?? 0, 1);
+    console.error(`tsc --project ${project} exited ${result.status ?? result.signal}:\n${result.stdout}${result.stderr}`);
+  }
+  write("typecheck", { typecheck: section(errors > 0, errors) });
 }
 
 function test() {

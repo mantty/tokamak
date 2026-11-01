@@ -195,6 +195,12 @@ jobs:
           key: ${{ matrix.target }}
           cache-bin: false
 
+      # The runtime's build strips the types from its TypeScript modules with Node.
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Build CLI
         run: cargo build --locked --package tokamak-cli --release --target "${{ matrix.target }}"
 
