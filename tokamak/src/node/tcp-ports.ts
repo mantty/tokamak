@@ -8,10 +8,13 @@ const EPHEMERAL_PORT_MAX = 65535;
 export const HOST_ADDRESS = "240.1.0.1";
 export const GATEWAY_ADDRESS = "240.1.255.254";
 
+// A cloudflare:sockets socket, by a name that node:net's Socket does not shadow.
+export type CloudflareSocket = Socket;
+
 // Where a port's HTTP requests or socket connections go.
 export type PortHandler =
   | { fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> }
-  | { connect(socket: Socket, env: unknown, ctx: ExecutionContext): Promise<void> | void };
+  | { connect(socket: CloudflareSocket, env: unknown, ctx: ExecutionContext): Promise<void> | void };
 
 interface PortEntry {
   refs: number;

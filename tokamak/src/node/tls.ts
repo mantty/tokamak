@@ -1,4 +1,5 @@
 import EventEmitter from "../events/events.ts";
+import { callFunction, isFunction, objectOf } from "../globals/objects.ts";
 import { Socket } from "./net.ts";
 import { unsupported, unsupportedFunction } from "./unsupported.ts";
 
@@ -10,13 +11,17 @@ export const DEFAULT_MAX_VERSION = "TLSv1.3";
 export const DEFAULT_MIN_VERSION = "TLSv1.2";
 
 export class SecureContext {
-  constructor(options = {}) { this.options = { ...options }; }
+  declare options: Record<PropertyKey, unknown>;
+
+  constructor(options: unknown = {}) { this.options = { ...objectOf(options ?? {}) }; }
 }
 
 export class Server extends EventEmitter {}
 
 export class TLSSocket extends Socket {
-  constructor(options = {}) {
+  declare __servername: string;
+
+  constructor(options: unknown = {}) {
     super(options);
     Object.defineProperty(this, "encrypted", { configurable: true, enumerable: true, value: true });
     // The connection is encrypted from the start.
@@ -24,13 +29,13 @@ export class TLSSocket extends Socket {
   }
 
   _destroySSL() {}
-  _emitTLSError(error) { this.emit("error", error); }
+  _emitTLSError(error: unknown) { this.emit("error", error); }
   _finishInit() {}
   _handleTimeout() { this.emit("timeout"); }
   _init() {}
   _releaseControl() {}
   _start() {}
-  _tlsError(error) { this.emit("error", error); }
+  _tlsError(error: unknown) { this.emit("error", error); }
   _wrapHandle() {}
   disableRenegotiation() {}
   enableTrace() {}
@@ -48,17 +53,21 @@ export class TLSSocket extends Socket {
   getTLSTicket() { return undefined; }
   getX509Certificate() { return undefined; }
   isSessionReused() { return false; }
-  renegotiate(_options, callback) { callback?.(new Error("TLS renegotiation is not supported")); return false; }
+  renegotiate(_options: unknown, callback?: unknown) {
+    if (callback != null) callFunction(callback, undefined, new Error("TLS renegotiation is not supported"));
+    return false;
+  }
   setKeyCert() { return this; }
-  setMaxSendFragment(size) { return Number.isInteger(size) && size > 0; }
-  setServername(name) { this.__servername = String(name); return this; }
+  setMaxSendFragment(size: unknown) { return typeof size === "number" && Number.isInteger(size) && size > 0; }
+  setServername(name: unknown) { this.__servername = String(name); return this; }
   setSession() { return this; }
 }
 
 export function checkServerIdentity() { return undefined; }
 
-export function connect(...args) {
-  const callback = typeof args.at(-1) === "function" ? args.at(-1) : undefined;
+export function connect(...args: unknown[]): TLSSocket {
+  const last = args.at(-1);
+  const callback = isFunction(last) ? last : undefined;
   const first = args[0];
   const options = first !== null && typeof first === "object" ? { ...first } : { port: first, host: args[1] };
   const socket = new TLSSocket(options);
@@ -66,13 +75,13 @@ export function connect(...args) {
   return socket;
 }
 
-export function convertALPNProtocols(value) { return value; }
-export function createSecureContext(options) { return new SecureContext(options); }
+export function convertALPNProtocols(value: unknown) { return value; }
+export function createSecureContext(options?: unknown) { return new SecureContext(options); }
 export const createSecurePair = unsupportedFunction("tls.createSecurePair");
 export const createServer = unsupportedFunction("tls.createServer");
 export function getCiphers() { return []; }
-export const rootCertificates = [];
-export function translatePeerCertificate(certificate) { return certificate; }
+export const rootCertificates: string[] = [];
+export function translatePeerCertificate(certificate: unknown) { return certificate; }
 
 export default {
   CLIENT_RENEG_LIMIT, CLIENT_RENEG_WINDOW, DEFAULT_CIPHERS, DEFAULT_ECDH_CURVE, DEFAULT_MAX_VERSION, DEFAULT_MIN_VERSION,
