@@ -93,7 +93,8 @@ fn properties(fields: &FieldsNamed, rename: Option<Rename>) -> syn::Result<Vec<T
 }
 
 /// Each variant's type in a serde enum: its name, or, with a tag, an object
-/// of its fields whose tag property is its name.
+/// of its fields, which the variant's `rename_all` renames, whose tag
+/// property is its name.
 fn variants(
     input: &DeriveInput,
     data: &DataEnum,
@@ -111,7 +112,7 @@ fn variants(
                     Ok(quote!(crate::typescript::object(&[(#tag, false, #literal.to_owned())])))
                 }
                 (Some(tag), Fields::Named(fields)) => {
-                    let properties = properties(fields, None)?;
+                    let properties = properties(fields, rename_all(&variant.attrs)?)?;
                     Ok(quote! {
                         crate::typescript::object(&[(#tag, false, #literal.to_owned()), #(#properties),*])
                     })

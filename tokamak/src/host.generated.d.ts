@@ -80,7 +80,7 @@ declare module "tokamak:host" {
 
   export function digest(algorithm: string, input: Uint8Array): ArrayBuffer;
 
-  export function htmlRewrite(handlers: string, contentType: string): object;
+  export function htmlRewrite(handlers: HandlerSpec[], contentType: string): HtmlParser;
 
   export function htmlValidateSelector(selector: string): void;
 
@@ -235,11 +235,18 @@ declare module "tokamak:host" {
     write(input: Uint8Array, finish: boolean, emit: (arg0: Uint8Array) => void): void;
   }
 
+  export type ContentKind = "html" | "text";
+
   export interface DigestState {
     readonly [classBrand]: "DigestState";
     update(input: Uint8Array): void;
     finish(): ArrayBuffer;
     copy(): DigestState;
+  }
+
+  export interface ElementAttribute {
+    name: string;
+    value: string;
   }
 
   export interface FetchRequest {
@@ -265,6 +272,39 @@ declare module "tokamak:host" {
     bodyless: boolean;
     length?: number | undefined;
   }
+
+  export interface HandlerSpec {
+    selector?: string | undefined;
+    element?: number | undefined;
+    text?: number | undefined;
+    comments?: number | undefined;
+    doctype?: number | undefined;
+    end?: number | undefined;
+  }
+
+  export type HtmlContent = string | { source: number };
+
+  export interface HtmlOperation {
+    name: HtmlOperationName;
+    value?: HtmlContent | undefined;
+    attribute?: string | undefined;
+    handler?: number | undefined;
+    contentType?: ContentKind;
+  }
+
+  export type HtmlOperationName = "before" | "after" | "replace" | "remove" | "setText" | "setAttribute" | "removeAttribute" | "setTagName" | "setInnerContent" | "prepend" | "append" | "removeAndKeepContent" | "onEndTag";
+
+  export interface HtmlParser {
+    readonly [classBrand]: "HtmlParser";
+    next(): Promise<ParserEvent | undefined>;
+    input(bytes: Uint8Array | undefined): void;
+    done(): void;
+    mutate(operation: HtmlOperation): TokenProperties;
+    releases(): HtmlRelease[];
+    cancel(): void;
+  }
+
+  export type HtmlRelease = { kind: "source"; id: number } | { kind: "handler"; id: number };
 
   export interface HttpFetch {
     readonly [classBrand]: "HttpFetch";
@@ -308,6 +348,8 @@ declare module "tokamak:host" {
   export type OutboxFrame = { type: "message"; binary: true; data: ArrayBuffer } | { type: "message"; binary: false; data: string } | { type: "close"; code: number; reason: string };
 
   export type Overflow = "error" | "dropOldest";
+
+  export type ParserEvent = { kind: "input"; source: number } | { kind: "token"; handler: number; properties: TokenProperties } | { kind: "output"; bytes: Uint8Array };
 
   export interface PatternComponent {
     pattern: string;
@@ -405,6 +447,8 @@ declare module "tokamak:host" {
     readonly encoding: string;
     decode(input: Uint8Array, stream: boolean): string;
   }
+
+  export type TokenProperties = { token: "element"; tagName: string; namespaceURI: string; removed: boolean; attributes: ElementAttribute[] } | { token: "text"; text: string; lastInTextNode: boolean; removed: boolean } | { token: "comment"; text: string; removed: boolean } | { token: "doctype"; name?: string | undefined; publicId?: string | undefined; systemId?: string | undefined } | { token: "endTag"; name: string } | { token: "end" };
 
   export interface UrlParts {
     href: string;
