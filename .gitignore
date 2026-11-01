@@ -24,5 +24,5 @@ tokamak-cli/npm/dist/
 /plugins/*/android/.kotlin/
 /plugins/*/android/local.properties
 
-# Written by scripts/collect-report.mjs.
+# Written by scripts/collect-report.mts.
 /reports/

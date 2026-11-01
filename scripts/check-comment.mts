@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 // Prints the PR comment that compares each check section in reports/ with
 // main's reports, which may be missing, for the commit the reports checked.
-// Usage: node scripts/check-comment.mjs <project> <directory of main's reports> <commit>
+// Usage: node scripts/check-comment.mts <project> <directory of main's reports> <commit>
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import type { Report, Section } from "./collect-report.mts";
 
 const [project, mainReports, commit] = process.argv.slice(2);
 const kinds = ["lint", "format", "typecheck", "test"];
 const dash = "—";
 
-function report(directory, kind) {
+function report(directory: string, kind: string): Report | null {
   try {
     return JSON.parse(readFileSync(path.join(directory, `${project}-${kind}.json`), "utf8"));
   } catch {
@@ -17,14 +18,14 @@ function report(directory, kind) {
   }
 }
 
-function cell(section) {
+function cell(section: Section | undefined): string {
   if (!section) return dash;
   const detail = section.errors || section.warnings ? ` (${section.errors}e/${section.warnings}w)` : "";
   return section.status === "failed" ? `❌ failed${detail}` : `✅ passed${detail}`;
 }
 
 let failed = false;
-const rows = [];
+const rows: string[] = [];
 for (const kind of kinds) {
   const current = report("reports", kind);
   if (!current) {

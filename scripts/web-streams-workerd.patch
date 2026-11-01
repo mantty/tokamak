@@ -1,5 +1,5 @@
---- web-standard.mjs
-+++ web-standard.mjs
+--- web-standard.js
++++ web-standard.js
 @@ -105,9 +105,8 @@
  }
  function O(e2) {

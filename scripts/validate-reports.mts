@@ -3,8 +3,14 @@
 // Only structural validation; the underlying tools enforce their own rules.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import type { Report } from "./collect-report.mts";
 
-const config = JSON.parse(readFileSync("checks.config.json", "utf8"));
+/** checks.config.json: the sections each project's reports must contain, by check kind. */
+interface ChecksConfig {
+  projects: Record<string, { required_sections: Record<string, string[]> }>;
+}
+
+const config: ChecksConfig = JSON.parse(readFileSync("checks.config.json", "utf8"));
 const project = process.argv[2] ?? Object.keys(config.projects)[0];
 const required = config.projects[project].required_sections;
 let bad = false;
@@ -15,7 +21,8 @@ for (const [kind, sections] of Object.entries(required)) {
     bad = true;
     continue;
   }
-  const report = JSON.parse(readFileSync(file, "utf8"));
+  // The report may lack any part, which is what this script checks.
+  const report: Partial<Report> = JSON.parse(readFileSync(file, "utf8"));
   if (report.schema_version !== 1) {
     console.error(`${file}: schema_version must be 1`);
     bad = true;

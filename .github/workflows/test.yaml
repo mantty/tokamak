@@ -46,11 +46,11 @@ jobs:
         run: npm install --global jscpd@5.4.2
 
       - name: Run checks
-        run: node scripts/collect-report.mjs all
+        run: node scripts/collect-report.mts all
 
       - name: Validate reports
         if: ${{ !cancelled() }}
-        run: node scripts/validate-reports.mjs tokamak
+        run: node scripts/validate-reports.mts tokamak
 
       # Pull requests compare their reports with those of main's latest push.
       - name: Upload reports
@@ -74,7 +74,7 @@ jobs:
           if [ -n "$run" ]; then
             gh run download "$run" --repo "$GITHUB_REPOSITORY" --name check-reports --dir "$RUNNER_TEMP/main-reports"
           fi
-          node scripts/check-comment.mjs tokamak "$RUNNER_TEMP/main-reports" "$HEAD_SHA" > "$RUNNER_TEMP/check-comment.md"
+          node scripts/check-comment.mts tokamak "$RUNNER_TEMP/main-reports" "$HEAD_SHA" > "$RUNNER_TEMP/check-comment.md"
           comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
             --jq '.[] | select(.body | startswith("<!-- check-results -->")) | .id')
           comment=${comments%%$'\n'*}
