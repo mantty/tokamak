@@ -29,6 +29,13 @@ export type Duplex = stream.Duplex;
 // Node's internal state classes, which readable-stream exposes.
 type StreamState = new (options: object | undefined, stream: stream.Stream, isDuplex?: boolean) => object;
 
+/** The fields of a stream's internal state that tokamak reads and sets. */
+interface StreamStateFields {
+  autoDestroy: boolean;
+  errored: unknown;
+  errorEmitted: boolean;
+}
+
 export class Readable extends stream.Readable {
   static ReadableState: StreamState;
   /** Takes `n` bytes or objects from the buffered `state`. */
@@ -37,10 +44,14 @@ export class Readable extends stream.Readable {
   static wrap(source: NodeJS.ReadableStream, options?: stream.ReadableOptions): Readable;
   /** Destroys the stream, taking any value as its error. */
   destroy(error?: unknown): this;
+  _readableState: StreamStateFields;
 }
 
 export class Writable extends stream.Writable {
   static WritableState: StreamState;
+  _writableState: StreamStateFields;
+  /** Sets the default encoding of strings written, which readable-stream validates. */
+  setDefaultEncoding(encoding: unknown): this;
 }
 
 /** Wraps a stream written in the style before Node 0.10 as a `Duplex`. */
