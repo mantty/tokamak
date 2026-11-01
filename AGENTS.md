@@ -31,6 +31,23 @@ Never write:
 Bad: "WebAssembly still works there through DrumBrake, V8's own wasm interpreter, built for exactly this scenario -- its source comment cites tvOS, where JIT is unavailable."
 Good: "jitless WebAssembly is supported via V8's own wasm interpreter, DrumBrake."
 
+## TypeScript
+
+Write tokamak's JavaScript as TypeScript checked by `tsc` in strict mode: `.ts`
+for runtime and plugin modules, `.mts` for Node scripts and tests. Only
+configuration files whose tools expect JavaScript (`astro.config.mjs`,
+`eslint.config.mjs`), generated vendor output, and modules Node loads from an
+installed package (Node does not strip types under `node_modules`) stay
+JavaScript.
+
+Values that cross between Rust and JavaScript have types generated from the Rust
+code: host functions use `#[host_function]`, the structs and enums they exchange
+derive `JsType`, and `tokamak/src/host.generated.d.ts` is regenerated, not edited.
+Do not hand-write declarations for them.
+
+Tests that pass deliberately invalid input mark each call with
+`// @ts-expect-error <reason>`.
+
 ## The vendored QuickJS engine (`rquickjs/`)
 
 The JS engine is a vendored copy of the `rquickjs-sys` crate at the repo root

@@ -853,7 +853,8 @@ tok build macos --project examples/astro
 
 - Rust 1.96 through `rustup`; the repository selects it with
   `rust-toolchain.toml`.
-- Node.js 22 and pnpm 9.9.
+- Node.js 22.18 or newer and pnpm 9.9. Building the runtime crate runs Node to
+  strip the types from its TypeScript modules.
 - CMake, Clang and libclang, and the native C/C++ toolchain for your host.
 
 Platform-pack work additionally requires:
@@ -870,6 +871,7 @@ installs `@tokamakdev/tok` from `tokamak-cli/npm`, so build that package first:
 ```sh
 npm ci --prefix tokamak-cli/npm
 npm run build --prefix tokamak-cli/npm
+pnpm --dir tokamak install --frozen-lockfile
 pnpm --dir plugins install --frozen-lockfile
 pnpm --dir examples/astro install --frozen-lockfile
 ```
@@ -1013,10 +1015,11 @@ Run the common checks before submitting a change:
 npm ci --prefix tokamak-cli/npm
 npm run build --prefix tokamak-cli/npm
 npm test --prefix tokamak-cli/npm
-pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
+pnpm --dir tokamak install --frozen-lockfile
 pnpm --dir examples/astro install --frozen-lockfile
 pnpm --dir examples/astro run build
 cargo fmt --all --check
+node scripts/collect-report.mts typecheck
 cargo test -p tokamak --features native
 node --test tokamak/tests/quickjs_runtime/runtime.test.mts
 cargo test -p tokamak-cli --lib --bin tok --test cli --test platform_pack
@@ -1028,6 +1031,20 @@ pnpm --dir plugins test:ts
 
 Platform-specific lint and build-test commands are kept in
 [the Checks workflow](.github/workflows/test.yaml).
+
+The `typecheck` report runs `cargo check` and `tsc` for every TypeScript
+project. The runtime's builtin modules are TypeScript; the runtime's build
+strips their types with Node before compiling them to bytecode.
+`tokamak/src/host.generated.d.ts` declares the functions, objects and globals
+the Rust code gives them, and is generated from that code. After changing a
+host function or a type it passes to JavaScript, regenerate it:
+
+```sh
+TOKAMAK_GENERATE=1 cargo test -p tokamak --features native generated_declarations
+```
+
+The same test without `TOKAMAK_GENERATE` fails when the committed file is
+stale.
 
 A first-party plugin's TypeScript API, `src/apple.generated.ts` and
 `src/android.generated.ts`, and native dispatch are generated from its native
