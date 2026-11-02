@@ -56,6 +56,10 @@ const upstream = createServer(async (request, response) => {
     response.writeHead(Number(url.searchParams.get("status")), { Location: url.searchParams.get("to") ?? "/echo" });
     return response.end();
   }
+  if (url.pathname === "/cacheable") {
+    response.writeHead(200, { "cache-control": "max-age=600" });
+    return response.end("cacheable");
+  }
   if (url.pathname === "/loop") {
     response.writeHead(302, { Location: "/loop" });
     return response.end();

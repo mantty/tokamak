@@ -468,15 +468,17 @@ export function hostRequest(request: RequestDescriptor, body: Uint8Array | undef
 // The status line, headers, encoding, body (bytes or a host stream reader) and native WebSocket
 // end the host sends for a Worker's response.
 let hostResponse: (response: unknown) => ResponseParts;
+// A fetch's response, with the URL it came from and whether a redirect led
+// there, which only fetch sets: a Response's init cannot.
+let fetchedResponse: (body: ReadableStream<Uint8Array> | null, init: object, url: string, redirected: boolean) => Response;
 
 export class Response extends Body {
   #status: number;
   #statusText: string;
   #encodeBody: string;
   #headers: Headers;
-  #redirected: boolean;
-  #type: string;
-  #url: string;
+  #redirected = false;
+  #url = "";
   #cf: unknown;
   #webSocket: WebSocket | null;
 
@@ -506,9 +508,6 @@ export class Response extends Body {
     this.#statusText = statusText;
     this.#encodeBody = encodeBody;
     this.#headers = headers;
-    this.#redirected = Boolean(propertyOf(init, "redirected"));
-    this.#type = string(propertyOf(init, "type") ?? "default");
-    this.#url = string(propertyOf(init, "url") ?? "");
     this.#cf = propertyOf(init, "cf");
     this.#webSocket = webSocket;
   }
@@ -519,30 +518,30 @@ export class Response extends Body {
   get redirected(): boolean { return this.#redirected; }
   get status(): number { return this.#status; }
   get statusText(): string { return this.#statusText; }
-  get type(): string { return this.#type; }
+  // Only Response.error() has status 0; workerd has no other response types.
+  get type(): string { return this.#status === 0 ? "error" : "default"; }
   get url(): string { return this.#url; }
   get webSocket(): WebSocket | null { return this.#webSocket; }
   get [Symbol.toStringTag]() { return "Response"; }
 
   clone(): Response {
     if (this.#status === 0) return Response.error();
-    return new Response(cloneBody(this), {
+    const clone = new Response(cloneBody(this), {
       status: this.#status,
       statusText: this.#statusText,
       headers: this.#headers,
-      url: this.#url,
-      redirected: this.#redirected,
-      type: this.#type,
       cf: this.#cf,
       webSocket: this.#webSocket,
     });
+    clone.#url = this.#url;
+    clone.#redirected = this.#redirected;
+    return clone;
   }
 
   static error(): Response {
     const response = new Response(null);
     response.#status = 0;
     response.#statusText = "";
-    response.#type = "error";
     return response;
   }
   static json(data: unknown, init: unknown = {}): Response {
@@ -577,6 +576,12 @@ export class Response extends Body {
         body: bytes ?? (stream === null ? new Uint8Array() : hostStreamReader(stream)),
         webSocket: response.#webSocket === null ? undefined : nativeWebSocket(response.#webSocket),
       };
+    };
+    fetchedResponse = (body, init, url, redirected) => {
+      const response = new Response(body, init);
+      response.#url = url;
+      response.#redirected = redirected;
+      return response;
     };
   }
 }
@@ -906,13 +911,7 @@ export async function fetch(input: unknown, init?: unknown): Promise<Response> {
   });
   if (response.bodyless) finish();
   if (body !== null && response.length !== undefined) setStreamLength(body, response.length);
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-    url: response.url,
-    redirected: response.redirected,
-  });
+  return fetchedResponse(body, { status: response.status, statusText: response.statusText, headers: response.headers }, response.url, response.redirected);
 }
 
 function fetchAbortReason(signal: AbortSignal): Error {
@@ -938,9 +937,6 @@ export class Cache {
         status: copy.status,
         statusText: copy.statusText,
         headers: [...copy.headers],
-        url: copy.url,
-        redirected: copy.redirected,
-        type: copy.type,
       }, new Uint8Array(await copy.arrayBuffer()),
     );
   }

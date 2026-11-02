@@ -208,6 +208,18 @@ export default {
         redirects.push([status, method, response.redirected, method === "HEAD" ? response.body === null : await response.json()]);
       }
     }
+    // Only fetch gives a response its url and redirected flag, which clone()
+    // keeps and a Response's init and the cache do not.
+    const origin = (response: Response) => [response.url === "" ? "" : new URL(response.url).pathname, response.redirected, response.type];
+    const fetched = await fetch(`${base}/redirect?status=302&to=/cacheable`);
+    const cache = await caches.open("origins");
+    await cache.put(`${base}/cacheable`, fetched.clone());
+    results.responseOrigins = [
+      origin(fetched),
+      origin(fetched.clone()),
+      origin(present(await cache.match(`${base}/cacheable`))),
+      origin(new Response(fetched.body, fetched)),
+    ];
     const manual = await fetch(`${base}/redirect?status=302`, { redirect: "manual" });
     results.manual = [manual.status, manual.redirected, manual.headers.get("location")];
     const reusable = new Request(`${base}/redirect?status=307`, { method: "POST", body: "reusable" });
