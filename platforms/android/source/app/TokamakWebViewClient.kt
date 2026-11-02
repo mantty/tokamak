@@ -19,13 +19,13 @@ import java.security.spec.PKCS8EncodedKeySpec
 
 /**
  * Answers the app origin's TLS challenges with the runtime's decision, and
- * calls `appPageFinished` when a page of the app origin has loaded.
+ * calls `pageFinished` as each page finishes loading or fails to.
  */
 internal class TokamakWebViewClient(
     private val activity: Activity,
     private val host: String,
     private val runtime: TokamakRuntime,
-    private val appPageFinished: () -> Unit,
+    private val pageFinished: () -> Unit,
 ) : WebViewClient() {
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         val uri = Uri.parse(url)
@@ -35,9 +35,7 @@ internal class TokamakWebViewClient(
         }
     }
 
-    override fun onPageFinished(view: WebView, url: String) {
-        if (Uri.parse(url).isAppOrigin(host)) appPageFinished()
-    }
+    override fun onPageFinished(view: WebView, url: String) = pageFinished()
 
     override fun shouldOverrideUrlLoading(
         view: WebView,

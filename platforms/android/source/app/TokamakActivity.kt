@@ -129,7 +129,7 @@ class TokamakActivity : Activity() {
     private fun load(runtime: TokamakRuntime) {
         if (destroyed) return
         webView.webViewClient =
-            TokamakWebViewClient(this, tokamak.appHost, runtime, ::appPageFinished)
+            TokamakWebViewClient(this, tokamak.appHost, runtime, ::pageFinished)
         webView.loadUrl("https://${tokamak.appHost}/")
     }
 
@@ -143,7 +143,7 @@ class TokamakActivity : Activity() {
     }
 
     /** Removes the splash at the WebView's next frame, which shows the loaded page. */
-    private fun appPageFinished() {
+    private fun pageFinished() {
         if (splash == null) return
         webView.postVisualStateCallback(0, object : WebView.VisualStateCallback() {
             override fun onComplete(requestId: Long) = removeSplash()
