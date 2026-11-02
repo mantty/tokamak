@@ -1,15 +1,15 @@
 //! The TypeScript types of the JSON that tok and the runtime exchange with
-//! Node: the CLI's npm package reads them, and `@tokamakdev/plugin` exports
-//! them for plugins.
+//! Node, and the plugin id words tok reserves: the CLI's npm package reads
+//! them, and `@tokamakdev/plugin` exports the types for plugins.
 
 use tokamak::native_protocol::Header;
 use tokamak::typescript::{JsType, Types};
 
-use super::plugins::{BuildScriptInput, Plugin};
+use super::plugins::{BuildScriptInput, Plugin, RESERVED_WORDS};
 use super::vite::{ConfigReport, ServerFile};
 
 /// Each generated module, by its path in the repository.
-fn contracts() -> [(&'static str, String); 2] {
+fn contracts() -> serde_json::Result<[(&'static str, String); 2]> {
     let mut npm = Types::default();
     ConfigReport::typescript(&mut npm);
     ServerFile::typescript(&mut npm);
@@ -27,10 +27,18 @@ fn contracts() -> [(&'static str, String); 2] {
             types.exports()
         )
     };
-    [
-        ("tokamak-cli/npm/src/contracts.generated.mts", module(&npm)),
+    let reserved = format!(
+        "\n/** The words a plugin id must not be or start with, since tok's options use them. */\n\
+         export const reservedPluginWords: readonly string[] = {};\n",
+        serde_json::to_string_pretty(RESERVED_WORDS)?
+    );
+    Ok([
+        (
+            "tokamak-cli/npm/src/contracts.generated.mts",
+            module(&npm) + &reserved,
+        ),
         ("plugins/core/src/contracts.generated.ts", module(&plugin)),
-    ]
+    ])
 }
 
 #[cfg(test)]
@@ -40,7 +48,7 @@ mod tests {
     #[test]
     fn generated_contracts_are_current() -> std::io::Result<()> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        for (path, generated) in super::contracts() {
+        for (path, generated) in super::contracts()? {
             if std::env::var_os("TOKAMAK_GENERATE").is_some() {
                 std::fs::write(root.join(path), &generated)?;
             }

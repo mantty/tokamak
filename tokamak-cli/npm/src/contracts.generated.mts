@@ -29,3 +29,26 @@ export interface ServerReport {
   workerName?: string;
   socketPort: number;
 }
+
+/** The words a plugin id must not be or start with, since tok's options use them. */
+export const reservedPluginWords: readonly string[] = [
+  "tokamak",
+  "android",
+  "ios",
+  "macos",
+  "windows",
+  "name",
+  "identifier",
+  "icon",
+  "version",
+  "module",
+  "build",
+  "project",
+  "platform",
+  "skip",
+  "update",
+  "host",
+  "help",
+  "vite",
+  "session"
+];

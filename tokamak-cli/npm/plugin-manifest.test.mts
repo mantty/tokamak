@@ -20,7 +20,7 @@ test("workspace plugin packages resolve without publishing or exporting their ma
 
 test("plugin IDs obey the native packager's reserved option namespaces", t => {
   const { root, dependency } = project(t);
-  for (const id of ["ios-location", "session-store", "name", "platform-camera"]) {
+  for (const id of ["ios-location", "session-store", "name", "platform-camera", "update-widgets"]) {
     fs.writeFileSync(path.join(dependency, "tokamak-plugin.json"), JSON.stringify({
       schemaVersion: 2, id, api: { module: "./src/index.ts", export: "widgets" },
     }));

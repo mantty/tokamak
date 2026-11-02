@@ -46,8 +46,8 @@ code: host functions use `#[host_function]`, the structs and enums they exchange
 derive `JsType`, and `tokamak/src/host.generated.d.ts` is regenerated, not edited.
 The serde types of JSON that Rust exchanges with Node also derive `JsType`;
 `tokamak-cli/npm/src/contracts.generated.mts` and
-`plugins/core/src/contracts.generated.ts` are generated from them. Do not
-hand-write declarations for them.
+`plugins/core/src/contracts.generated.ts` are generated from them, with the
+reserved plugin id words. Do not hand-write declarations or copies of them.
 
 Tests that pass deliberately invalid input mark each call with
 `// @ts-expect-error <reason>`.

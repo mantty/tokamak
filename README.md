@@ -1062,9 +1062,10 @@ stale.
 
 The JSON that tok and the runtime exchange with Node has types generated from
 their serde types: `tokamak-cli/npm/src/contracts.generated.mts` holds the Vite
-plugin's reports and the plugin manifest, and
-`plugins/core/src/contracts.generated.ts`, which `@tokamakdev/plugin/contracts`
-exports, holds the native message header and a plugin build script's input.
+plugin's reports, the plugin manifest and the words a plugin id must not start
+with, and `plugins/core/src/contracts.generated.ts`, which
+`@tokamakdev/plugin/contracts` exports, holds the native message header and a
+plugin build script's input.
 After changing one of those types, regenerate them:
 
 ```sh
