@@ -156,20 +156,19 @@ test("development routes device calls and reloaded events through the native wor
   t.after(() => socket.close());
   await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
   const calls: string[] = [];
-  const pending = new Map<number | undefined, (message: DeviceMessage) => void>();
+  // One event is sent at a time, so one resolver receives its reply.
+  const eventId = 100;
+  let reply: ((message: DeviceMessage) => void) | undefined;
   socket.on("message", data => {
     const message = decodeDevice(data);
     if (message.type === "call") {
       calls.push(`${message.plugin}.${message.method}`);
       socket.send(encodeDevice({ type: "result", id: message.id, result: { value: "background", done: true } }));
-    } else {
-      pending.get(message.id)?.(message);
-      pending.delete(message.id);
-    }
+    } else if (message.id === eventId) reply?.(message);
   });
   const event = async (name = "start") => {
-    const result = new Promise<DeviceMessage>(resolve => pending.set(100, resolve));
-    socket.send(encodeDevice({ type: "event", id: 100, name, event: { foreground: false } }));
+    const result = new Promise<DeviceMessage>(resolve => { reply = resolve; });
+    socket.send(encodeDevice({ type: "event", id: eventId, name, event: { foreground: false } }));
     return result;
   };
   assert.deepEqual(await (await fetch(report.url + "isolation")).json(), { bridge: "undefined", loaded: false, platform: "android" });

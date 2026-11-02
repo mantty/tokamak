@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Validates that every required report exists and contains its required sections.
 // Only structural validation; the underlying tools enforce their own rules.
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Report } from "./collect-report.mts";
 
@@ -39,11 +39,10 @@ for (const [kind, sections] of Object.entries(required)) {
     }
   }
 }
-const extra = readdirSync("reports").filter((f) => new RegExp(`^${project}-(lint|format|typecheck|test)\\.json$`).test(f));
-for (const f of extra) {
-  const kind = f.replace(/^[^-]+-/, "").replace(/\.json$/, "");
-  if (!required[kind]) {
-    console.error(`reports/${f}: no required_sections entry for kind "${kind}" in checks.config.json`);
+for (const kind of ["lint", "format", "typecheck", "test"]) {
+  const file = path.join("reports", `${project}-${kind}.json`);
+  if (!required[kind] && existsSync(file)) {
+    console.error(`${file}: no required_sections entry for kind "${kind}" in checks.config.json`);
     bad = true;
   }
 }
