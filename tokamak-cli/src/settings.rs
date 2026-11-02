@@ -1059,8 +1059,9 @@ mod tests {
     fn relative_splash_options_are_in_the_current_directory() {
         let mut fixture = Fixture::new();
         fixture.top.splash_image = Some("splash.png".to_owned());
+        let image = path("/work", "splash.png");
         fixture.assert_rejects(Platform::Ios, |error| {
-            error.starts_with("iOS splash-image cannot be read: /work/splash.png: ")
+            error.starts_with(&format!("iOS splash-image cannot be read: {image}: "))
         });
     }
 
