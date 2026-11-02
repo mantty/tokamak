@@ -8,7 +8,7 @@ import { Readable, Writable } from "node:stream";
 // The global URL, which @types/node declares apart from workers-types.
 import { URL } from "node:url";
 import { byteInputs } from "./bytes.ts";
-import { failure as namedFailure, isObject, member, present } from "./outcome.ts";
+import { callMember, failure as namedFailure, isObject, member, present } from "./outcome.ts";
 
 const SIZE_LIMIT = 128 * 1024 * 1024;
 
@@ -1451,12 +1451,9 @@ async function formOutcome(form: "sync" | "callback" | "promise", operation: str
   const settled = Promise.withResolvers<unknown>();
   let value: unknown;
   try {
-    // @ts-expect-error Each call names its own operation and arguments.
-    if (form === "sync") value = fs[`${operation}Sync`](...args);
-    // @ts-expect-error Each call names its own operation and arguments.
-    else if (form === "callback") fs[operation](...args, (error: NodeJS.ErrnoException | null, result: unknown) => (error ? settled.reject(error) : settled.resolve(result)));
-    // @ts-expect-error Each call names its own operation and arguments.
-    else fs.promises[operation](...args).then(settled.resolve, settled.reject);
+    if (form === "sync") value = callMember(fs, `${operation}Sync`, args);
+    else if (form === "callback") callMember(fs, operation, [...args, (error: NodeJS.ErrnoException | null, result: unknown) => (error ? settled.reject(error) : settled.resolve(result))]);
+    else void Promise.resolve(callMember(fs.promises, operation, args)).then(settled.resolve, settled.reject);
   } catch (error) { return { thrown: failure(error) }; }
   try { return (form === "sync" ? value : await settled.promise) ?? "ok"; } catch (error) { return failure(error); }
 }
@@ -1765,8 +1762,7 @@ function callOutcomes(calls: Record<string, [string, ...unknown[]]>, base: strin
     build(root);
     const resolved = args.map(arg => (typeof arg === "string" ? arg.replace(/^\$/, root) : arg));
     const result = attempt(() => {
-      // @ts-expect-error Each call names its own operation and arguments.
-      const value: unknown = fs[`${operation}Sync`](...resolved);
+      const value = callMember(fs, `${operation}Sync`, resolved);
       if (operation !== "open") return slashResult(value);
       if (typeof value !== "number") throw new TypeError("openSync returned no descriptor");
       fs.closeSync(value);

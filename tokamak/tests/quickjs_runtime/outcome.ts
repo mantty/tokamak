@@ -3,6 +3,14 @@ export function member(value: unknown, name: PropertyKey): unknown {
   return value == null ? undefined : Reflect.get(Object(value), name);
 }
 
+// Calls the method `name` of `object` with `args`, as `object[name](...args)`
+// does, for a test whose cases name the method each one calls.
+export function callMember(object: object, name: string, args: unknown[]): unknown {
+  const method = member(object, name);
+  if (typeof method !== "function") throw new TypeError(`${name} is not a function`);
+  return Reflect.apply(method, object, args);
+}
+
 // Whether `value` is an object, whose members can be read by name.
 export function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
