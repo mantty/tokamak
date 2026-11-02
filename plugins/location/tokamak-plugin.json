@@ -35,7 +35,7 @@
       "description": "Apple only: the reasons for temporary precise location, by purpose key"
     }
   },
-  "build": "build/index.mjs",
+  "build": "dist/build/index.js",
   "platforms": {
     "macos": {
       "class": "TokamakLocation.TokamakLocationPlugin"

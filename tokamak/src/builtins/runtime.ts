@@ -5,7 +5,7 @@ import type { AssetFetcher, BodyChunk, Bootstrap, NativeHost, NativePlatform, Pl
 import type { NativeConnection } from "../context.ts";
 import { Request, Response, hostRequest, hostResponse } from "../network/fetch.ts";
 import { URL } from "../network/url.ts";
-import { nativeError, platformGlobal } from "../native-protocol.mjs";
+import { nativeError, platformGlobal } from "../native-protocol.ts";
 import { installServices, invokeService } from "../services/bindings.ts";
 import { serviceStreamCodec } from "../services/streams.ts";
 import { callMethod, propertyOf } from "../globals/objects.ts";

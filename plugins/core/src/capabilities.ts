@@ -8,4 +8,10 @@ export type Availability = Readonly<Record<string, Readonly<Record<string, reado
 export function capabilitiesFor(
   availability: Availability,
   platform: NativePlatform | undefined,
-): Record<string, Record<string, boolean>>;
+): Record<string, Record<string, boolean>> {
+  return Object.fromEntries(Object.entries(availability).map(([plugin, operations]) => [
+    plugin,
+    Object.fromEntries(Object.entries(operations).map(([operation, platforms]) =>
+      [operation, platform !== undefined && platforms.includes(platform)])),
+  ]));
+}

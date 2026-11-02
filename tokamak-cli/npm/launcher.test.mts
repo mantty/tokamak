@@ -1,18 +1,16 @@
-"use strict";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
 
-const assert = require("node:assert/strict");
-const { spawnSync } = require("node:child_process");
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const { test } = require("node:test");
+import { packageFor } from "./dist/platform.mjs";
 
-const { packageFor } = require("./platform.js");
-
-const LAUNCHER = path.join(__dirname, "bin", "tok.js");
+const LAUNCHER = path.join(import.meta.dirname, "dist", "bin", "tok.mjs");
 const unix = { skip: process.platform === "win32" };
 
-function fakeInstall(script, mode, platformPacks = []) {
+function fakeInstall(script: string, mode: number, platformPacks: string[] = []) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tok-launcher-")));
   const modules = path.join(root, "node_modules");
   const bin = path.join(modules, packageFor(process.platform, process.arch), "bin");
@@ -22,7 +20,7 @@ function fakeInstall(script, mode, platformPacks = []) {
     fs.mkdirSync(path.join(modules, name), { recursive: true });
     fs.writeFileSync(path.join(modules, name, "package.json"), "{}");
   }
-  const env = { ...process.env, NODE_PATH: modules };
+  const env: NodeJS.ProcessEnv = { ...process.env, NODE_PATH: modules };
   delete env.TOKAMAK_PLATFORM_PACK_PATH;
   return { env, modules };
 }

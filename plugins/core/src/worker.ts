@@ -1,11 +1,11 @@
-import { capabilitiesFor } from "./capabilities.mjs";
+import { capabilitiesFor } from "./capabilities.js";
 import { nativeAvailability, type TokamakContext } from "./context.js";
 import type { TokamakEvent } from "./events.js";
 import { dispatch } from "./registry.js";
 
-export { capabilitiesFor } from "./capabilities.mjs";
+export { capabilitiesFor } from "./capabilities.js";
 export { createNativeContext, nativeAvailability, nativeConnection, platform } from "./context.js";
-export type { Availability, NativePlatform } from "./capabilities.mjs";
+export type { Availability, NativePlatform } from "./capabilities.js";
 export type { TokamakContext } from "./context.js";
 export type { WebView } from "./webview.js";
 export type { EventReply, EventType, TokamakEvent } from "./events.js";

@@ -49,15 +49,20 @@ const CLIPPY_TARGETS = [
 ];
 
 // Each TypeScript project, with the package whose compiler checks it. The CLI
-// package's project builds the declarations its tests' project reads.
+// package's project builds the declarations its tests' project reads, and the
+// plugins' build projects build the scripts tok's tests run.
 const TYPESCRIPT_PROJECTS = [
   ["tokamak", "tokamak"],
   ["tokamak", "tokamak/tests"],
   ["tokamak", "tokamak/tests/fixtures"],
+  ["tokamak", "tokamak-cli/tests/fixtures"],
   ["tokamak", "scripts"],
   ["plugins", "plugins"],
   ["plugins", "plugins/core"],
   ["plugins", "plugins/core/tests"],
+  ["plugins", "plugins/core/tsconfig.build.json"],
+  ["plugins", "plugins/location/tsconfig.build.json"],
+  ["plugins", "plugins/notifications/tsconfig.build.json"],
   ["tokamak-cli/npm", "tokamak-cli/npm"],
   ["tokamak-cli/npm", "tokamak-cli/npm/tsconfig.test.json"],
 ];

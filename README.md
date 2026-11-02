@@ -956,14 +956,20 @@ To package the plugins locally:
 pnpm --dir plugins --filter '@tokamakdev/*' exec pnpm pack --pack-destination "$PWD/artifacts"
 ```
 
+Packing compiles the JavaScript a package ships into its `dist/`: the build
+scripts of the location and notifications plugins, and the
+`@tokamakdev/plugin` modules Node loads, `native-protocol` and
+`capabilities`. pnpm also replaces `@tokamakdev/plugin`'s `exports` with its
+`publishConfig.exports`, which name those compiled modules; npm does not, so
+publish the tarballs pnpm packs.
+
 The shared plugin transport package must be published before a plugin that
-depends on it. To publish the first plugin packages locally:
+depends on it. To publish the first plugin packages locally, after packaging
+them:
 
 ```sh
-cd plugins/core
-npm publish --access public
-cd ../location
-npm publish --access public
+npm publish ./artifacts/tokamakdev-plugin-<version>.tgz --access public
+npm publish ./artifacts/tokamakdev-plugin-location-<version>.tgz --access public
 ```
 
 A new plugin, CLI or platform-pack package fails to publish from its first
@@ -984,6 +990,14 @@ new plugin's tarball, for example
 `./artifacts/tokamakdev-plugin-notifications-<version>.tgz`.
 
 ### Build the example against local sources
+
+tok runs the location and notifications plugins' build scripts from their
+`dist/`, which the plugins' build compiles:
+
+```sh
+pnpm --dir plugins install --frozen-lockfile
+pnpm --dir plugins build
+```
 
 After building a platform pack:
 

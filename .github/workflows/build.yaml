@@ -124,6 +124,7 @@ jobs:
           npm ci --prefix tokamak-cli/npm --omit=optional --ignore-scripts
           npm run build --prefix tokamak-cli/npm
           pnpm --dir plugins install --frozen-lockfile
+          pnpm --dir plugins build
           pnpm --dir examples/astro install --frozen-lockfile
 
       - name: Select the newest Xcode
@@ -310,9 +311,6 @@ jobs:
           cache: npm
           cache-dependency-path: tokamak-cli/npm/package-lock.json
 
-      - name: Check CLI launcher
-        run: node --test tokamak-cli/npm/*.test.js
-
       - name: Download CLI artifacts
         uses: actions/download-artifact@v8.0.1
         with:
@@ -335,6 +333,11 @@ jobs:
 
       - name: Install CLI package dependencies
         run: npm ci --prefix tokamak-cli/npm
+
+      - name: Check CLI launcher
+        run: |
+          npm run build --prefix tokamak-cli/npm
+          node --test tokamak-cli/npm/launcher.test.mts tokamak-cli/npm/platform.test.mts
 
       - name: Set beta version
         id: package-version

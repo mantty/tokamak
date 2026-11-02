@@ -36,9 +36,10 @@ Good: "jitless WebAssembly is supported via V8's own wasm interpreter, DrumBrake
 Write tokamak's JavaScript as TypeScript checked by `tsc` in strict mode: `.ts`
 for runtime and plugin modules, `.mts` for Node scripts and tests. Only
 configuration files whose tools expect JavaScript (`astro.config.mjs`,
-`eslint.config.mjs`), generated vendor output, and modules Node loads from an
-installed package (Node does not strip types under `node_modules`) stay
-JavaScript.
+`eslint.config.mjs`) and generated vendor output stay JavaScript. Node does not
+strip types under `node_modules`, so a module Node loads from an installed
+package is compiled by `tsc` into the package's `dist/` when the package is
+built or packed.
 
 Values that cross between Rust and JavaScript have types generated from the Rust
 code: host functions use `#[host_function]`, the structs and enums they exchange

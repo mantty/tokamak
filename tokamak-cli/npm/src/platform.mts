@@ -1,18 +1,22 @@
-"use strict";
+import { createRequire } from "node:module";
+import path from "node:path";
 
-const path = require("node:path");
-const { optionalDependencies } = require("./package.json");
+/** Resolves a module request to its file, as `require.resolve` does. */
+export type Resolve = (request: string) => string;
 
+const { optionalDependencies } = createRequire(import.meta.url)("../package.json") as {
+  optionalDependencies: Record<string, string>;
+};
 
-const PLATFORM_PACKS = Object.keys(optionalDependencies).filter((name) => name.startsWith("@tokamakdev/platform-"));
+export const PLATFORM_PACKS = Object.keys(optionalDependencies).filter((name) => name.startsWith("@tokamakdev/platform-"));
 
-function packageFor(platform, arch) {
+export function packageFor(platform: string, arch: string): string {
   const name = `@tokamakdev/tok-${platform}-${arch}`;
   if (!Object.hasOwn(optionalDependencies, name)) throw new Error(`tokamak does not publish a CLI for ${platform} ${arch}`);
   return name;
 }
 
-function binaryPath(platform, arch, resolve) {
+export function binaryPath(platform: string, arch: string, resolve: Resolve): string {
   const name = packageFor(platform, arch);
   const file = platform === "win32" ? "bin/tok.exe" : "bin/tok";
   try {
@@ -23,7 +27,7 @@ function binaryPath(platform, arch, resolve) {
 }
 
 // npm installs only the platform packs whose os and cpu match this host.
-function platformPackRoots(resolve) {
+export function platformPackRoots(resolve: Resolve): string[] {
   return PLATFORM_PACKS.flatMap((name) => {
     try {
       return [path.dirname(resolve(`${name}/package.json`))];
@@ -32,5 +36,3 @@ function platformPackRoots(resolve) {
     }
   });
 }
-
-module.exports = { PLATFORM_PACKS, packageFor, binaryPath, platformPackRoots };

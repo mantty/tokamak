@@ -4,6 +4,7 @@
   "packageManager": "pnpm@9.9.0",
   "type": "module",
   "scripts": {
+    "build": "pnpm --recursive build",
     "lint:ts": "eslint \"**/*.ts\" --max-warnings 0 && tsc --project tsconfig.json && tsc --project core/tsconfig.json && tsc --project core/tests/tsconfig.json",
     "test:ts": "node --import tsx --test \"**/*.test.ts\""
   },

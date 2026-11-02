@@ -1,5 +1,5 @@
-import { capabilitiesFor, type Availability, type NativePlatform } from "./capabilities.mjs";
-import { platformGlobal } from "./native-protocol.mjs";
+import { capabilitiesFor, type Availability, type NativePlatform } from "./capabilities.js";
+import { platformGlobal } from "./native-protocol.js";
 import { webview, type WebView } from "./webview.js";
 
 /** The native connection supplied by the host. */
@@ -8,7 +8,7 @@ export const nativeConnection = Symbol.for("tokamak.native");
 /** Each plugin operation's native platforms, by plugin ID, which the plugins' manifests declare. */
 export const nativeAvailability = Symbol.for("tokamak.availability");
 
-export type { Availability, NativePlatform } from "./capabilities.mjs";
+export type { Availability, NativePlatform } from "./capabilities.js";
 
 /** A native call's request body and cancellation. */
 export interface CallOptions {

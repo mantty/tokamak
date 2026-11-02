@@ -1,6 +1,31 @@
 // The location plugin's declarations, from its build settings: the Info.plist on Apple platforms
 // and the Android manifest.
 
+/** The location plugin's build settings, with their defaults applied. */
+export interface Settings {
+  "background-always": boolean;
+  "background-updates": boolean;
+  precision: "precise" | "approximate";
+  "when-in-use-description"?: string;
+  "always-description"?: string;
+  "accuracy-purposes"?: Record<string, string>;
+}
+
+/**
+ * The file that declares what the settings ask for, the plugin section key naming it, the Swift
+ * compilation conditions of an Apple build, and notices.
+ */
+export interface Declarations {
+  key: "plist" | "manifest";
+  name: string;
+  contents: string;
+  notices: string[];
+  conditions?: string[];
+}
+
+/** A property list value. */
+type PlistValue = boolean | string | PlistValue[] | { [key: string]: PlistValue };
+
 const WHEN_IN_USE = "This app uses your location when you request location features.";
 const ALWAYS = "This app uses your location in the background for location features you turn on.";
 
@@ -9,7 +34,7 @@ const ALWAYS = "This app uses your location in the background for location featu
  * it, the Swift compilation conditions of an Apple build, and notices for the build; or the
  * problems with the settings.
  */
-export function declarations(platform, settings) {
+export function declarations(platform: string, settings: Settings): Declarations | { problems: string[] } {
   if (settings["always-description"] !== undefined && !settings["background-always"]) {
     return { problems: ["always-description needs background-always, which declares the permission it describes"] };
   }
@@ -33,10 +58,11 @@ export function declarations(platform, settings) {
 }
 
 /** The Info.plist keys of `settings` on the Apple `platform`. */
-function appleKeys(platform, settings) {
+function appleKeys(platform: string, settings: Settings): Record<string, PlistValue> {
   const whenInUse = settings["when-in-use-description"] ?? WHEN_IN_USE;
   const purposes = settings["accuracy-purposes"] ?? {};
-  const temporary = Object.keys(purposes).length > 0 ? { NSLocationTemporaryUsageDescriptionDictionary: purposes } : {};
+  const temporary: Record<string, PlistValue> =
+    Object.keys(purposes).length > 0 ? { NSLocationTemporaryUsageDescriptionDictionary: purposes } : {};
   if (platform === "macos") {
     // macOS reads NSLocationUsageDescription, and its SDK headers name the iOS keys.
     return {
@@ -46,7 +72,7 @@ function appleKeys(platform, settings) {
       ...temporary,
     };
   }
-  const keys = { NSLocationWhenInUseUsageDescription: whenInUse };
+  const keys: Record<string, PlistValue> = { NSLocationWhenInUseUsageDescription: whenInUse };
   if (settings["background-always"]) keys.NSLocationAlwaysAndWhenInUseUsageDescription = settings["always-description"] ?? ALWAYS;
   if (settings["background-updates"]) keys.UIBackgroundModes = ["location"];
   if (settings.precision === "approximate") keys.NSLocationDefaultAccuracyReduced = true;
@@ -54,7 +80,7 @@ function appleKeys(platform, settings) {
 }
 
 /** The Android manifest of `settings`. */
-function androidManifest(settings) {
+function androidManifest(settings: Settings): string {
   const permissions = ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED"];
   if (settings.precision !== "approximate") permissions.push("ACCESS_FINE_LOCATION");
   if (settings["background-always"]) permissions.push("ACCESS_BACKGROUND_LOCATION");
@@ -84,7 +110,7 @@ function androidManifest(settings) {
 }
 
 /** `keys` as an XML property list. */
-function plist(keys) {
+function plist(keys: Record<string, PlistValue>): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -96,7 +122,7 @@ function plist(keys) {
 }
 
 /** The lines of `value` as a property list element, indented by `indent`. */
-function element(value, indent) {
+function element(value: PlistValue, indent: string): string[] {
   if (typeof value === "boolean") return [`${indent}<${String(value)}/>`];
   if (typeof value === "string") return [`${indent}<string>${escaped(value)}</string>`];
   const inner = `${indent}\t`;
@@ -110,6 +136,6 @@ function element(value, indent) {
   return [`${indent}<dict>`, ...entries, `${indent}</dict>`];
 }
 
-function escaped(text) {
+function escaped(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }

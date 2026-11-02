@@ -10,6 +10,7 @@
   "absolute": false,
   "ignore": [
     "**/node_modules/**",
+    "**/dist/**",
     "**/target/**",
     "**/reports/**",
     "**/libsqlite3-sys/**",

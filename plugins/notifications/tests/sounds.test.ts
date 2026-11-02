@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { appleSound, bundledSounds } from "../build/sounds.mjs";
+import { appleSound, bundledSounds } from "../build/sounds.ts";
 
 /** A WAV file of `seconds` of 8 kHz mono audio in WAVE format `format`. */
 function wav(seconds: number, format = 1): Uint8Array {
@@ -138,7 +138,7 @@ void test("follows symbolic links to sound files", () => {
   assert.deepEqual(bundledSounds("android", path).problems, ["notifications sound broken.wav is a link to nothing"]);
 });
 
-const BUILD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "../build/index.mjs");
+const BUILD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "../build/index.ts");
 
 /** What the build script prints and exits with for `input`. */
 function build(input: unknown): { status: number | null; stdout: string; stderr: string } {

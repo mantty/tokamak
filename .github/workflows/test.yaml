@@ -244,6 +244,17 @@ jobs:
       - name: Test the Apple platform pack
         run: cargo test -p tokamak-apple-signing
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.8
+        with:
+          version: 9.9.0
+
+      # tok's tests run the location plugin's compiled build script.
+      - name: Build the plugin packages
+        run: |
+          pnpm --dir plugins install --frozen-lockfile
+          pnpm --dir plugins build
+
       - name: Test the CLI
         run: cargo test -p tokamak-cli
 

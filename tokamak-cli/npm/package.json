@@ -26,12 +26,10 @@
     }
   },
   "bin": {
-    "tok": "bin/tok.js"
+    "tok": "dist/bin/tok.mjs"
   },
   "files": [
-    "bin",
     "dist",
-    "platform.js",
     "README.md"
   ],
   "scripts": {

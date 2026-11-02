@@ -20,7 +20,7 @@ const PLUGIN_MODULES: [&str; 4] = [
     "rpc/values.ts",
     "rpc/streams.ts",
     "rpc/http.ts",
-    "native-protocol.mjs",
+    "native-protocol.ts",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

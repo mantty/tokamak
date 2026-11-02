@@ -1,0 +1,14 @@
+{
+  // The modules Node loads from the packed package, which it cannot strip the
+  // types from under node_modules, compiled to dist/.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [],
+  "files": ["src/native-protocol.ts", "src/capabilities.ts"]
+}

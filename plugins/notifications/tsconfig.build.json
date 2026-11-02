@@ -1,0 +1,12 @@
+{
+  // The build script tok runs with Node, which cannot strip its types under
+  // node_modules, compiled to dist/build/.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["build"]
+}

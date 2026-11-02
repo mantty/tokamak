@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { encodeMessage, decodeMessage, messages } from "../src/native-protocol.mjs";
+import { encodeMessage, decodeMessage, messages } from "../src/native-protocol.js";
 
 void test("native routing preserves arbitrary bytes independently of completion metadata", () => {
   const header = { type: "result", id: 42, failed: false, done: true };

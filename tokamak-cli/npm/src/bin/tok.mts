@@ -1,25 +1,27 @@
 #!/usr/bin/env node
-"use strict";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import path from "node:path";
 
-const { spawnSync } = require("node:child_process");
-const path = require("node:path");
-const { binaryPath, platformPackRoots } = require("../platform.js");
+import { binaryPath, platformPackRoots } from "../platform.mjs";
 
-let binary;
+const { resolve } = createRequire(import.meta.url);
+
+let binary: string;
 try {
-  binary = binaryPath(process.platform, process.arch, require.resolve);
+  binary = binaryPath(process.platform, process.arch, resolve);
 } catch (error) {
-  console.error(error.message);
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
 
 // The terminal delivers Ctrl-C to both processes; tok shuts down gracefully on its own,
 // so the launcher only waits for it.
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => {});
 
 const env = { ...process.env };
 if (!env.TOKAMAK_PLATFORM_PACK_PATH) {
-  const roots = platformPackRoots(require.resolve);
+  const roots = platformPackRoots(resolve);
   if (roots.length > 0) env.TOKAMAK_PLATFORM_PACK_PATH = roots.join(path.delimiter);
 }
 
