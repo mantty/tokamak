@@ -34,6 +34,7 @@ pub(crate) const RESERVED_WORDS: &[&str] = &[
     "name",
     "identifier",
     "icon",
+    "splash",
     "version",
     "module",
     "build",

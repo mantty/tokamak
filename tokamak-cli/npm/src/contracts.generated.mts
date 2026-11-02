@@ -40,6 +40,7 @@ export const reservedPluginWords: readonly string[] = [
   "name",
   "identifier",
   "icon",
+  "splash",
   "version",
   "module",
   "build",

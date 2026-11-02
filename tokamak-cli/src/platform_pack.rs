@@ -14,10 +14,35 @@ use thiserror::Error;
 pub const MANIFEST_FILE: &str = "platform-pack.json";
 /// Keys a platform object shares with the top level, with their kind and
 /// description; tokamak validates them.
-pub const SHARED_PLATFORM_KEYS: [(&str, VariableKind, &str); 3] = [
+pub const SHARED_PLATFORM_KEYS: [(&str, VariableKind, &str); 8] = [
     ("name", VariableKind::String, "Display name"),
     ("identifier", VariableKind::String, "Application identifier"),
     ("icon", VariableKind::Path, "Icon in the platform's format"),
+    (
+        "splash-image",
+        VariableKind::Path,
+        "Splash image: PNG, JPEG or GIF",
+    ),
+    (
+        "splash-image-dark",
+        VariableKind::Path,
+        "Splash image in dark mode",
+    ),
+    (
+        "splash-width",
+        VariableKind::String,
+        "Splash image width in points, dp or device-independent pixels [default: 100]",
+    ),
+    (
+        "splash-background",
+        VariableKind::String,
+        "Splash background colour, #RRGGBB [default: #FFFFFF]",
+    ),
+    (
+        "splash-background-dark",
+        VariableKind::String,
+        "Splash background colour in dark mode, #RRGGBB",
+    ),
 ];
 
 /// Whether `key` is lowercase ASCII words joined by single hyphens, the form of
@@ -266,8 +291,9 @@ impl FromStr for Target {
 /// `build/entrypoint.ps1` for Windows), which the CLI runs from the pack root.
 /// `build INPUT OUTPUT` builds the app; an iOS pack's `certs` lists the local
 /// signing assets. The entrypoint receives the user's environment plus
-/// `TOKAMAK_<PLATFORM>_<KEY>` for each variable and for the app's `icon` path,
-/// and owns every platform-specific project, signing, and packaging step.
+/// `TOKAMAK_<PLATFORM>_<KEY>` for each variable, for the app's `icon` path,
+/// and for each splash key when the app has a splash, and owns every
+/// platform-specific project, signing, and packaging step.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformPackManifest {

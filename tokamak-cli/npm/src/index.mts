@@ -12,6 +12,16 @@ export interface PlatformConfig {
   identifier?: string;
   /** Icon in the platform's format, relative to the Vite root. */
   icon?: string;
+  /** Splash image: a PNG, JPEG or GIF file, relative to the Vite root. */
+  "splash-image"?: string;
+  /** Splash image in dark mode, relative to the Vite root. Defaults to `splash-image`. */
+  "splash-image-dark"?: string;
+  /** Splash image width in points, dp or device-independent pixels. Defaults to 100. */
+  "splash-width"?: number;
+  /** Splash background colour, `#RRGGBB`. Defaults to `#FFFFFF`. */
+  "splash-background"?: string;
+  /** Splash background colour in dark mode, `#RRGGBB`. Defaults to `splash-background`. */
+  "splash-background-dark"?: string;
   /** A setting the platform pack declares; `tok` validates it. */
   [key: string]: Value | undefined;
 }
@@ -40,6 +50,16 @@ export interface Config {
   identifier?: string;
   /** Icon for every platform, relative to the Vite root. */
   icon?: string;
+  /** Splash image: a PNG, JPEG or GIF file, relative to the Vite root. */
+  "splash-image"?: string;
+  /** Splash image in dark mode, relative to the Vite root. Defaults to `splash-image`. */
+  "splash-image-dark"?: string;
+  /** Splash image width in points, dp or device-independent pixels. Defaults to 100. */
+  "splash-width"?: number;
+  /** Splash background colour, `#RRGGBB`. Defaults to `#FFFFFF`. */
+  "splash-background"?: string;
+  /** Splash background colour in dark mode, `#RRGGBB`. Defaults to `splash-background`. */
+  "splash-background-dark"?: string;
   /** App version. */
   version?: string;
   android?: PlatformConfig;
@@ -47,5 +67,5 @@ export interface Config {
   macos?: PlatformConfig;
   windows?: PlatformConfig;
   /** A plugin's settings, by its ID. */
-  [plugin: string]: string | PlatformConfig | PluginConfig | undefined;
+  [plugin: string]: string | number | PlatformConfig | PluginConfig | undefined;
 }

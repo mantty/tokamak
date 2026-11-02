@@ -20,6 +20,7 @@ mod plugins;
 mod project;
 mod scaffold;
 mod settings;
+mod splash;
 mod storage;
 mod tokamak_config;
 mod vite;
