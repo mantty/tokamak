@@ -56,6 +56,14 @@ function Invoke-RuntimeLink([string] $Executable) {
   }
 }
 
+# Copy the splash image $Image beside the executable as $Name with the image's
+# extension, returning the file's name.
+function Copy-SplashImage([string] $Image, [string] $Name) {
+  $file = $Name + [System.IO.Path]::GetExtension($Image).ToLowerInvariant()
+  Copy-Item -LiteralPath $Image (Join-Path $output $file)
+  return $file
+}
+
 # The CLI runs the entrypoint from the pack root.
 $pack = (Get-Location).Path
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
@@ -86,6 +94,26 @@ $config = [ordered]@{
 if (Test-Path (Join-Path $InputDirectory "metadata/dev-endpoint")) {
   $config.devEndpoint = Read-TokamakValue "dev-endpoint"
   $config.devSessionToken = Read-TokamakValue "dev-session-token"
+}
+# tok passes every splash setting when the app has a splash. A dark image that
+# is the light one shares its file.
+if ($env:TOKAMAK_WINDOWS_SPLASH_WIDTH) {
+  $splash = [ordered]@{
+    width = [int] $env:TOKAMAK_WINDOWS_SPLASH_WIDTH
+    background = $env:TOKAMAK_WINDOWS_SPLASH_BACKGROUND
+    backgroundDark = $env:TOKAMAK_WINDOWS_SPLASH_BACKGROUND_DARK
+  }
+  $image = $env:TOKAMAK_WINDOWS_SPLASH_IMAGE
+  $imageDark = $env:TOKAMAK_WINDOWS_SPLASH_IMAGE_DARK
+  if ($image) {
+    $splash.image = Copy-SplashImage $image "splash"
+  }
+  if ($imageDark -and $imageDark -eq $image) {
+    $splash.imageDark = $splash.image
+  } elseif ($imageDark) {
+    $splash.imageDark = Copy-SplashImage $imageDark "splash-dark"
+  }
+  $config.splash = $splash
 }
 $config = $config | ConvertTo-Json
 $encoding = New-Object System.Text.UTF8Encoding($false)

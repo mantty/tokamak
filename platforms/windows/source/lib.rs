@@ -4,6 +4,7 @@
 
 mod controls;
 mod shell;
+mod splash;
 
 /// The app executable's entry point, which the C runtime's startup for
 /// Windows applications calls.
