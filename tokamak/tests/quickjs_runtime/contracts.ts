@@ -2648,6 +2648,43 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
         const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": 'multipart/form-data; boundary="b"' } });
         return [...await request.formData()];
       }),
+      // Each body uses the boundary workerd reads from the parameters.
+      boundaryParameters: await asyncResult(async () => {
+        const values: unknown[] = [];
+        for (const [parameters, boundary] of [
+          ['boundary="abc', "abc"],
+          ['boundary="abc\\"', 'abc"'],
+          ['boundary="abc\\', "abc\\"],
+          ['boundary="a\\b\\\\c"', "ab\\c"],
+          ['boundary="ab"c', "ab"],
+          ['boundary="a;b"', "a;b"],
+          ['boundary= "ab"', ' "ab"'],
+          ['boundary ="ab"', "ab"],
+          ["BOUNDARY=ab cd ", "ab cd"],
+          ['boundary=""', ""],
+          ['x="a;boundary=ab";boundary=cd', "cd"],
+          ["boundary=;boundary=cd", "cd"],
+          ["boundary=ab;boundary=cd", "ab"],
+          ['boundary="' + "\\!".repeat(50000), "!".repeat(50000)],
+          ["boundary=a" + " ".repeat(50000) + "b", "a" + " ".repeat(50000) + "b"],
+        ]) {
+          const body = `--${boundary}\r\nContent-Disposition: form-data; name="field"\r\n\r\nvalue\r\n--${boundary}--\r\n`;
+          const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; " + parameters } });
+          values.push(await asyncResult(async () => [...await request.formData()]));
+        }
+        return values;
+      }),
+      longWhitespace: await asyncResult(async () => {
+        const spaces = " ".repeat(50000);
+        const body = `--b\r\nContent-Disposition: form-data; name="field"\r\nX-Padding: a${spaces}b\r\n\r\nvalue\r\n--b--\r\n`;
+        const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; boundary=b" } });
+        const response = new Response("", { headers: { "content-type": `text/plain${spaces}x` } });
+        return {
+          header: new Headers({ name: `a${spaces}b` }).get("name")?.length,
+          form: await asyncResult(async () => [...await request.formData()]),
+          type: (await response.blob()).type,
+        };
+      }),
       missingBoundary: await asyncResult(async () => {
         const request = new Request("https://example.test", { method: "POST", body: "body", headers: { "content-type": "multipart/form-data" } });
         return [...await request.formData()];

@@ -87,9 +87,22 @@ function validateHeaderName(name: unknown): string {
 }
 
 function normalizeHeaderValue(value: unknown): string {
-  const normalized = string(value).replace(/^[\t ]+|[\t ]+$/g, "");
+  const normalized = trimTabsAndSpaces(string(value));
   if (/[\0-\x08\x0a-\x1f\x7f]/.test(normalized)) throw new TypeError("Invalid header value");
   return normalized;
+}
+
+// `value` without leading or trailing tabs and spaces.
+function trimTabsAndSpaces(value: string): string {
+  return trimEnd(value.replace(/^[\t ]+/, ""), "\t ");
+}
+
+// `value` without trailing `characters`. A loop, since a regular expression
+// anchored only at the end takes quadratic time on a long run of them.
+function trimEnd(value: string, characters: string): string {
+  let end = value.length;
+  while (end > 0 && characters.includes(value[end - 1])) end -= 1;
+  return value.slice(0, end);
 }
 
 export class Headers {
@@ -590,6 +603,7 @@ function mimeType(value: unknown): string {
   return /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : "";
 }
 
+const HTTP_WHITESPACE = "\t\n\r ";
 // workerd's token characters, which include a backslash.
 const MIME_TOKEN = /^[!#$%&'*+\\\-.^_`|~0-9A-Za-z]+$/;
 // workerd checks a parameter value's UTF-8 bytes, which every non-ASCII
@@ -606,17 +620,15 @@ interface MimeType {
 // `MimeType::extract` and `toString` give it; "" when there is none.
 function extractMimeType(value: string): string {
   let found: MimeType | null = null;
-  let rest = value;
-  while (rest !== "") {
-    const separator = mimeListSeparator(rest);
-    const parsed = parseMimeType(separator < 0 ? rest : rest.slice(0, separator));
+  for (let start = 0; start < value.length;) {
+    const separator = mimeListSeparator(value, start);
+    const parsed = parseMimeType(value.slice(start, separator));
     if (parsed && parsed.essence !== "*/*") {
       const charset = found?.essence === parsed.essence ? found.parameters.get("charset") : undefined;
       if (charset !== undefined && !parsed.parameters.has("charset")) parsed.parameters.set("charset", charset);
       found = parsed;
     }
-    if (separator < 0) break;
-    rest = rest.slice(separator + 1);
+    start = separator + 1;
   }
   if (found === null) return "";
   let type = found.essence;
@@ -628,68 +640,81 @@ function extractMimeType(value: string): string {
   return type;
 }
 
-// The index of the first comma in `value` outside quotes and not after a
-// backslash, or -1.
-function mimeListSeparator(value: string): number {
-  for (let index = 0; index < value.length; index += 1) {
+// The index of the first comma in `value` from `start` outside quotes and not
+// after a backslash, or the length of `value`.
+function mimeListSeparator(value: string, start: number): number {
+  for (let index = start; index < value.length; index += 1) {
     if (value[index] === '"' && value[index - 1] !== "\\") {
       index += 1;
       while (index < value.length && (value[index] !== '"' || value[index - 1] === "\\")) index += 1;
     } else if (value[index] === "," && value[index - 1] !== "\\") return index;
   }
-  return -1;
+  return value.length;
 }
 
 // `{ essence, parameters }` for one MIME type, as workerd's
-// `MimeType::tryParse` reads it, or null.
+// `MimeType::tryParse` reads it, or null. The parsers read by index: slicing
+// off the rest of the value at each parameter would take quadratic time.
 function parseMimeType(value: string): MimeType | null {
-  let rest = value.replace(/^[\t\n\r ]+/, "");
-  const slash = rest.indexOf("/");
-  const type = rest.slice(0, slash);
+  const start = skipWhitespace(value, 0);
+  const slash = value.indexOf("/", start);
+  const type = value.slice(start, slash);
   if (slash < 0 || !MIME_TOKEN.test(type)) return null;
-  rest = rest.slice(slash + 1);
-  const semicolon = rest.indexOf(";");
-  const subtype = (semicolon < 0 ? rest : rest.slice(0, semicolon)).replace(/[\t\n\r ]+$/, "");
+  const semicolon = indexOrEnd(value, ";", slash + 1);
+  const subtype = trimEnd(value.slice(slash + 1, semicolon), HTTP_WHITESPACE);
   if (!MIME_TOKEN.test(subtype)) return null;
   const parameters = new Map<string, string>();
-  const addParameter = (name: string, parameter: string) => {
-    const key = name.toLowerCase();
-    if (MIME_PARAMETER_VALUE.test(parameter) && !parameters.has(key)) parameters.set(key, parameter);
-  };
-  rest = semicolon < 0 ? "" : rest.slice(semicolon + 1);
-  while ((rest = rest.replace(/^[\t\n\r ]+/, "")) !== "") {
-    const delimiter = rest.search(/[;=]/);
-    if (delimiter < 0) break;
-    const name = rest.slice(0, delimiter);
-    const assigns = rest[delimiter] === "=";
-    rest = rest.slice(delimiter + 1);
-    if (!assigns) continue;
-    let end: number;
-    if (MIME_TOKEN.test(name) && rest.startsWith('"')) {
-      const [parameter, length] = mimeQuotedString(rest);
-      addParameter(name, parameter);
-      end = rest.indexOf(";", length);
-    } else {
-      end = rest.indexOf(";");
-      const parameter = (end < 0 ? rest : rest.slice(0, end)).replace(/[\t\n\r ]+$/, "");
-      if (MIME_TOKEN.test(name) && parameter !== "") addParameter(name, parameter);
-    }
-    if (end < 0) break;
-    rest = rest.slice(end + 1);
-  }
+  for (let index = semicolon + 1; index < value.length;) index = readMimeParameter(value, index, parameters);
   return { essence: type.toLowerCase() + "/" + subtype.toLowerCase(), parameters };
 }
 
-// The value of the quoted string that starts `value`, and the index after it.
-function mimeQuotedString(value: string): [string, number] {
+// Adds the parameter at `start` in `value` to `parameters` unless workerd
+// ignores it, and returns the index after it.
+function readMimeParameter(value: string, start: number, parameters: Map<string, string>): number {
+  const nameStart = skipWhitespace(value, start);
+  let equals = nameStart;
+  while (equals < value.length && value[equals] !== ";" && value[equals] !== "=") equals += 1;
+  if (value[equals] !== "=") return equals + 1;
+  const name = value.slice(nameStart, equals);
+  let parameter: string;
+  let end: number;
+  if (MIME_TOKEN.test(name) && value[equals + 1] === '"') {
+    [parameter, end] = mimeQuotedString(value, equals + 1);
+    end = indexOrEnd(value, ";", end);
+  } else {
+    end = indexOrEnd(value, ";", equals + 1);
+    parameter = trimEnd(value.slice(equals + 1, end), HTTP_WHITESPACE);
+    if (parameter === "") return end + 1;
+  }
+  const key = name.toLowerCase();
+  if (MIME_TOKEN.test(name) && MIME_PARAMETER_VALUE.test(parameter) && !parameters.has(key)) parameters.set(key, parameter);
+  return end + 1;
+}
+
+// The value of the quoted string at `start` in `value`, and the index after it.
+function mimeQuotedString(value: string, start: number): [string, number] {
   let result = "";
-  let index = 1;
+  let index = start + 1;
   while (index < value.length) {
     const character = value[index++];
     if (character === '"') break;
     result += character === "\\" && index < value.length ? value[index++] : character;
   }
   return [result, index];
+}
+
+// The index of the first character from `start` in `value` that is not HTTP
+// whitespace.
+function skipWhitespace(value: string, start: number): number {
+  let index = start;
+  while (index < value.length && HTTP_WHITESPACE.includes(value[index])) index += 1;
+  return index;
+}
+
+// The index of `search` in `value` from `start`, or the length of `value`.
+function indexOrEnd(value: string, search: string, start: number): number {
+  const index = value.indexOf(search, start);
+  return index < 0 ? value.length : index;
 }
 
 function parseUrlEncoded(value: string): FormData {
@@ -744,10 +769,8 @@ function parseMultipart(data: Uint8Array, contentType: string): FormData {
 }
 
 function multipartBoundary(contentType: string): string {
-  const match = /(?:^|;)\s*boundary\s*=\s*(?:"((?:\\.|[^"])*)"|([^;\s]*))/i.exec(contentType);
-  if (!match) throw new TypeError("Multipart boundary is missing");
-  const boundary = (match[1] ?? match[2]).replace(/\\(.)/g, "$1");
-  if (boundary === "") throw new TypeError("Multipart boundary is empty");
+  const boundary = parseMimeType(contentType)?.parameters.get("boundary");
+  if (boundary === undefined) throw new TypeError("Multipart boundary is missing");
   return boundary;
 }
 
@@ -756,8 +779,8 @@ function parseMultipartHeaders(value: string): Record<string, string | undefined
   for (const line of value.split("\r\n")) {
     const separator = line.indexOf(":");
     if (separator <= 0) throw new TypeError("Invalid multipart headers");
-    const name = line.slice(0, separator).replace(/^[\t ]+|[\t ]+$/g, "").toLowerCase();
-    headers[name] = line.slice(separator + 1).replace(/^[\t ]+|[\t ]+$/g, "");
+    const name = trimTabsAndSpaces(line.slice(0, separator)).toLowerCase();
+    headers[name] = trimTabsAndSpaces(line.slice(separator + 1));
   }
   return headers;
 }
