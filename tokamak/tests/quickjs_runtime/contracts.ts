@@ -56,11 +56,16 @@ async function asyncResult<T>(callback: () => T | Promise<T>) {
   catch (error) { return errorResult(error); }
 }
 
-/** The entries of a one-part multipart request, with each file as its name, or the error. */
-function multipartEntries(parameters: string, boundary: string, disposition: string) {
-  const body = `--${boundary}\r\nContent-Disposition: ${disposition}\r\n\r\nvalue\r\n--${boundary}--\r\n`;
+/** The entries of a multipart request, with each file as its name and type, or the error. */
+function multipartEntries(body: string, parameters = "boundary=b") {
   const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; " + parameters } });
-  return asyncResult(async () => [...await request.formData()].map(([key, value]) => [key, typeof value === "string" ? value : value.name]));
+  return asyncResult(async () => [...await request.formData()].map(([key, value]) =>
+    [key, typeof value === "string" ? value : { name: value.name, type: value.type }]));
+}
+
+/** A multipart body of one part with `disposition` and the value "value". */
+function onePart(boundary: string, disposition: string) {
+  return `--${boundary}\r\nContent-Disposition: ${disposition}\r\n\r\nvalue\r\n--${boundary}--\r\n`;
 }
 
 function detailedResult<T>(callback: () => T) {
@@ -2674,7 +2679,7 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
           ["boundary=ab;boundary=cd", "ab"],
           ['boundary="' + "\\!".repeat(50000), "!".repeat(50000)],
           ["boundary=a" + " ".repeat(50000) + "b", "a" + " ".repeat(50000) + "b"],
-        ]) values.push(await multipartEntries(parameters, boundary, 'form-data; name="field"'));
+        ]) values.push(await multipartEntries(onePart(boundary, 'form-data; name="field"'), parameters));
         return values;
       }),
       // workerd reads quoted parameters until one does not match.
@@ -2698,7 +2703,41 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
           "form-data",
           'form-data; filename=a.txt; name="field"',
           ' form-data ; name = "field" ',
-        ]) values.push(await multipartEntries("boundary=b", "b", disposition));
+        ]) values.push(await multipartEntries(onePart("b", disposition)));
+        return values;
+      }),
+      // workerd skips a preamble, accepts LF line breaks and reads part
+      // headers as kj's HttpHeaders does.
+      bodies: await asyncResult(async () => {
+        const values: unknown[] = [];
+        const field = 'Content-Disposition: form-data; name="f"';
+        for (const body of [
+          `--b\n${field}\n\nv\n--b--\n`,
+          `--b\r\n${field}\r\n\r\nv\n--b--`,
+          `--b\r\n${field}\n\nv\r\n--b--`,
+          `--b\r\n${field}\r\n\nv\r\n--b--`,
+          `--b\r\n${field}\n\r\nv\r\n--b--`,
+          `preamble\r\n--b\r\n${field}\r\n\r\nv\r\n--b--`,
+          `xx--b\r\n${field}\r\n\r\nv\r\n--b--epilogue`,
+          `--b\r\n${field}\r\n\r\nx--by\r\n--b--`,
+          `--b\r\n${field}\r\n\r\nv\r\n--b\r\n`,
+          `--b\r\n${field}\r\n\r\nv\r\n--b`,
+          `--b\r\n${field}\r\n\r\nv\r\n--bx`,
+          "--b--",
+          "--b",
+          "no boundary",
+          `--b\n${field.replace('"f"', '"a"')}\n\n1\n--b\r\n${field.replace('"f"', '"b"')}\r\n\r\n2\r\n--b--`,
+          '--b\r\nContent-Disposition: form-data;\r\n name="f"\r\n\r\nv\r\n--b--',
+          `--b\r\n${field}\r\n\r\nv\r\r\n--b--`,
+          `--b\r\n${field}\r\n\r\n\r\n--b--`,
+          "--b\r\n\r\nv\r\n--b--",
+          `--b\r\n${field}\r\nContent-Disposition: form-data; name="g"\r\n\r\nv\r\n--b--`,
+          '--b\r\nContent-Disposition : form-data; name="f"\r\n\r\nv\r\n--b--',
+          `--b\r\nX-Nul: a\0b\r\n${field}\r\n\r\nv\r\n--b--`,
+          `--b\r\nX-Cr: 1\r${field}\r\n\r\nv\r\n--b--`,
+          `--b\r\n${field}; filename="a.txt"\r\ncontent-type:\tText/Plain  \r\n\r\nv\r\n--b--`,
+          `--b\r\n${field}; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-Type: text/html\r\n\r\nv\r\n--b--`,
+        ]) values.push(await multipartEntries(body));
         return values;
       }),
       longWhitespace: await asyncResult(async () => {

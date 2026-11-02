@@ -87,14 +87,9 @@ function validateHeaderName(name: unknown): string {
 }
 
 function normalizeHeaderValue(value: unknown): string {
-  const normalized = trimTabsAndSpaces(string(value));
+  const normalized = trimEnd(string(value).replace(/^[\t ]+/, ""), "\t ");
   if (/[\0-\x08\x0a-\x1f\x7f]/.test(normalized)) throw new TypeError("Invalid header value");
   return normalized;
-}
-
-// `value` without leading or trailing tabs and spaces.
-function trimTabsAndSpaces(value: string): string {
-  return trimEnd(value.replace(/^[\t ]+/, ""), "\t ");
 }
 
 // `value` without trailing `characters`. A loop, since a regular expression
@@ -740,32 +735,56 @@ function decodeFormComponent(value: string): string {
   return new TextDecoder().decode(joinBytes(chunks));
 }
 
+// The entries of a multipart/form-data body, read as workerd's
+// `FormData::parseFormDataImpl` reads them: text before the first boundary is
+// skipped, and line breaks are CRLF or LF.
 function parseMultipart(data: Uint8Array, contentType: string): FormData {
-  const boundary = multipartBoundary(contentType);
-  const delimiter = new TextEncoder().encode("--" + boundary);
-  if (!matchesBytes(data, delimiter, 0)) throw new TypeError("Invalid multipart body");
+  const delimiter = new TextEncoder().encode("\n--" + multipartBoundary(contentType));
+  const first = indexOfBytes(data, delimiter.subarray(1));
+  let position = first < 0 ? data.length : first + delimiter.length - 1;
+  if (position >= data.length) throw new TypeError("Multipart body has no initial boundary");
   const form = new FormData();
-  let position = 0;
-  while (true) {
-    const afterBoundary = position + delimiter.length;
-    if (data[afterBoundary] === 45 && data[afterBoundary + 1] === 45) return form;
-    if (data[afterBoundary] !== 13 || data[afterBoundary + 1] !== 10) throw new TypeError("Invalid multipart body");
-    const headerStart = afterBoundary + 2;
-    const headerEnd = indexOfBytes(data, new Uint8Array([13, 10, 13, 10]), headerStart);
-    if (headerEnd < 0) throw new TypeError("Invalid multipart headers");
-    const headers = parseMultipartHeaders(new TextDecoder("utf-8", { ignoreBOM: true }).decode(data.subarray(headerStart, headerEnd)));
-    const contentStart = headerEnd + 4;
-    const nextBoundary = nextMultipartBoundary(data, delimiter, contentStart);
-    if (nextBoundary < 0) throw new TypeError("Invalid multipart body");
-    const value = data.subarray(contentStart, nextBoundary - 2);
-    const disposition = multipartDisposition(headers["content-disposition"]);
-    if (disposition.filename !== undefined) {
-      const file = new File([value], disposition.filename);
-      setBlobType(file, headers["content-type"] ?? "");
-      form.append(disposition.name, file);
-    } else form.append(disposition.name, new TextDecoder().decode(value));
-    position = nextBoundary;
+  while (data[position] !== 45 || data[position + 1] !== 45) {
+    position = appendMultipartPart(form, data, afterLineBreak(data, position), delimiter);
   }
+  return form;
+}
+
+// The index after the line break at `position`, which follows a boundary.
+function afterLineBreak(data: Uint8Array, position: number): number {
+  if (data[position] === 10) return position + 1;
+  if (data[position] === 13 && data[position + 1] === 10) return position + 2;
+  throw new TypeError("Multipart boundary is not followed by a line break or --");
+}
+
+// Appends the part at `start` to `form`, and returns the index after the
+// delimiter that ends it.
+function appendMultipartPart(form: FormData, data: Uint8Array, start: number, delimiter: Uint8Array): number {
+  const headerEnd = multipartHeaderEnd(data, start);
+  if (headerEnd < 0) throw new TypeError("Multipart headers have no end");
+  const lastLineBreak = data[headerEnd - 2] === 13 ? 2 : 1;
+  const headerText = new TextDecoder("utf-8", { ignoreBOM: true }).decode(data.subarray(start, headerEnd - lastLineBreak));
+  const headers = parseMultipartHeaders(headerText);
+  const disposition = multipartDisposition(headers.get("content-disposition"));
+  const end = indexOfBytes(data, delimiter, headerEnd);
+  if (end < 0 || end + delimiter.length >= data.length) throw new TypeError("Multipart part has no closing boundary");
+  const value = data.subarray(headerEnd, data[end - 1] === 13 ? end - 1 : end);
+  if (disposition.filename !== undefined) {
+    const file = new File([value], disposition.filename);
+    setBlobType(file, headers.get("content-type") ?? "");
+    form.append(disposition.name, file);
+  } else form.append(disposition.name, new TextDecoder().decode(value));
+  return end + delimiter.length;
+}
+
+// The index after the first match of /\r?\n\r?\n/ from `start`, which ends a
+// part's headers, or -1.
+function multipartHeaderEnd(data: Uint8Array, start: number): number {
+  for (let index = data.indexOf(10, start); index >= 0; index = data.indexOf(10, index + 1)) {
+    if (data[index + 1] === 10) return index + 2;
+    if (data[index + 1] === 13 && data[index + 2] === 10) return index + 3;
+  }
+  return -1;
 }
 
 function multipartBoundary(contentType: string): string {
@@ -774,13 +793,20 @@ function multipartBoundary(contentType: string): string {
   return boundary;
 }
 
-function parseMultipartHeaders(value: string): Record<string, string | undefined> {
-  const headers: Record<string, string | undefined> = {};
-  for (const line of value.split("\r\n")) {
-    const separator = line.indexOf(":");
-    if (separator <= 0) throw new TypeError("Invalid multipart headers");
-    const name = trimTabsAndSpaces(line.slice(0, separator)).toLowerCase();
-    headers[name] = trimTabsAndSpaces(line.slice(separator + 1));
+// A header line as kj's `HttpHeaders::tryParse` reads it: a token, a colon,
+// the value without leading tabs and spaces, and a line break that no folded
+// line follows.
+const MULTIPART_HEADER = /([^\0-\x20\x7f()<>@,;:\\"/[\]?={}]+):[\t ]*((?:[^\0\r\n\t ][^\0\r\n]*)?)(?:\r\n|\r(?!\n)|\n|$)(?![\t ])/y;
+
+// A part's headers by lowercase name, with repeated headers joined by commas.
+function parseMultipartHeaders(text: string): Map<string, string> {
+  const headers = new Map<string, string>();
+  for (MULTIPART_HEADER.lastIndex = 0; MULTIPART_HEADER.lastIndex < text.length;) {
+    const match = MULTIPART_HEADER.exec(text);
+    if (!match) throw new TypeError("Invalid multipart headers");
+    const name = match[1].toLowerCase();
+    const previous = headers.get(name);
+    headers.set(name, previous === undefined ? match[2] : `${previous}, ${match[2]}`);
   }
   return headers;
 }
@@ -804,15 +830,6 @@ function multipartDisposition(value: string | undefined): { name: string; filena
   }
   if (name === undefined) throw new TypeError("Invalid multipart disposition");
   return { name, filename };
-}
-
-function nextMultipartBoundary(data: Uint8Array, delimiter: Uint8Array, start: number): number {
-  let position = indexOfBytes(data, delimiter, start);
-  while (position >= 0) {
-    if (position >= 2 && data[position - 2] === 13 && data[position - 1] === 10) return position;
-    position = indexOfBytes(data, delimiter, position + 1);
-  }
-  return -1;
 }
 
 function matchesBytes(haystack: Uint8Array, needle: Uint8Array, start: number): boolean {
