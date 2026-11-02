@@ -58,7 +58,6 @@ impl<'js, Args, R> Trace<'js> for JsFunction<'js, Args, R> {
     }
 }
 
-#[cfg(test)]
 impl<Args: crate::typescript::JsArguments, R: crate::typescript::JsReturn> crate::typescript::JsType
     for JsFunction<'_, Args, R>
 {
@@ -126,7 +125,6 @@ impl<'js, T> IntoJs<'js> for JsPromise<'js, T> {
     }
 }
 
-#[cfg(test)]
 impl<T: crate::typescript::JsReturn> crate::typescript::JsType for JsPromise<'_, T> {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         crate::typescript::promise(&T::returns(types))
@@ -156,7 +154,6 @@ impl<'js> IntoJs<'js> for JsReadableStream<'js> {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for JsReadableStream<'_> {
     fn typescript(_: &mut crate::typescript::Types) -> String {
         "ReadableStream".to_owned()
@@ -182,7 +179,6 @@ impl<'js> IntoJs<'js> for StringPairs {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for StringPairs {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         Vec::<List<(String, String)>>::typescript(types)
@@ -213,7 +209,6 @@ impl<'js, T: serde::Serialize> IntoJs<'js> for Serde<T> {
     }
 }
 
-#[cfg(test)]
 impl<T: crate::typescript::JsType> crate::typescript::JsType for Serde<T> {
     const OPTIONAL: bool = T::OPTIONAL;
 

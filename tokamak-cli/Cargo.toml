@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 tokamak = { path = "../tokamak" }
+tokamak-macros = { path = "../tokamak-macros" }
 clap.workspace = true
 ctrlc.workspace = true
 getrandom.workspace = true

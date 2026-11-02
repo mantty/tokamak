@@ -1,5 +1,4 @@
 // Projects and Vite servers for the tokamak Vite plugin's tests.
-import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +6,7 @@ import { after, type TestContext } from "node:test";
 
 import { tokamak, type TokamakOptions } from "@tokamakdev/tok/vite";
 import { createBuilder, createServer, type InlineConfig, type ServerOptions, type ViteDevServer } from "vite";
-import type { ConfigReport, ServerFailure, ServerReport } from "./dist/native-worker.mjs";
+import type { ConfigReport, ServerFile, ServerReport } from "./src/contracts.generated.mts";
 import { workerTypes, writeFiles } from "./worker-fixtures.mts";
 
 /** A project for the plugin, with the plugin's options and the directory it reports to. */
@@ -20,7 +19,7 @@ export interface App {
 /** The reports the plugin writes, by file name. */
 interface Reports {
   "config.json": ConfigReport;
-  "server.json": ServerReport | ServerFailure;
+  "server.json": ServerFile;
 }
 
 export const WORKER = `export default {
@@ -109,11 +108,10 @@ export function readOutput<Name extends keyof Reports>(app: App, name: Name): Re
 }
 
 /** The plugin's server.json, which reports a server and its URL. */
-export function serverReport(app: App): ServerReport & { url: string } {
+export function serverReport(app: App): ServerReport {
   const report = readOutput(app, "server.json");
   if ("error" in report) throw new Error(report.error);
-  assert.ok(report.url, "the plugin reported no URL");
-  return { ...report, url: report.url };
+  return report;
 }
 
 /** Sets the global `name` to `value` until `t` ends, as a page provides the generated clients' `location` and `WebSocket`. */

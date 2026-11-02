@@ -262,7 +262,6 @@ pub(crate) enum HtmlContent {
     Stream { source: usize },
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for HtmlContent {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         types.named("HtmlContent", std::any::type_name::<Self>(), |_| {

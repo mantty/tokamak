@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use tokamak_macros::JsType;
 
 use tokamak_cli::{
     Platform, PlatformPackManifest, PluginKeyKind, copy_dir_contents_except, copy_file,
@@ -46,8 +47,9 @@ pub(crate) const RESERVED_WORDS: &[&str] = &[
     "session",
 ];
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// A plugin package's `tokamak-plugin.json`, and where the package is.
+#[derive(Debug, Deserialize, JsType)]
+#[serde(rename_all = "camelCase", rename = "PluginManifest")]
 pub(crate) struct Plugin {
     schema_version: u32,
     pub(crate) id: String,
@@ -67,6 +69,17 @@ pub(crate) struct Plugin {
 /// The keys each plugin's build script added to its section for a platform,
 /// by plugin ID.
 pub(crate) type Generated = BTreeMap<String, Map<String, Value>>;
+
+/// What a plugin's build script reads, as JSON, from stdin.
+#[derive(Serialize, JsType)]
+pub(crate) struct BuildScriptInput<'a> {
+    /// The namespace of the platform the app is built for.
+    platform: &'a str,
+    /// The plugin's resolved settings, by key.
+    settings: Map<String, Value>,
+    /// An empty directory for the files the script generates.
+    output: String,
+}
 
 /// The plugin packages the app at `project` depends on, and those they
 /// depend on: a plugin may build on another plugin's native code.
@@ -157,11 +170,11 @@ pub(crate) fn generate(
         };
         let script = plugin.package_file("build script", script)?;
         let output = empty_directory(&output.join(&plugin.id))?;
-        let input = json!({
-            "platform": namespace,
-            "settings": settings.get(&plugin.id).cloned().unwrap_or_default(),
-            "output": output,
-        });
+        let input = BuildScriptInput {
+            platform: namespace,
+            settings: settings.get(&plugin.id).cloned().unwrap_or_default(),
+            output,
+        };
         let (keys, notices) = run_build_script(&script, &input).with_context(|| {
             format!("plugin '{}' build script failed for {namespace}", plugin.id)
         })?;
@@ -185,7 +198,10 @@ fn empty_directory(directory: &Path) -> Result<String> {
 
 /// The object `script` writes to stdout, and what it writes to stderr, given
 /// `input` as JSON on stdin.
-fn run_build_script(script: &Path, input: &Value) -> Result<(Map<String, Value>, String)> {
+fn run_build_script(
+    script: &Path,
+    input: &BuildScriptInput,
+) -> Result<(Map<String, Value>, String)> {
     let mut child = Command::new("node")
         .arg(command_path(script))
         .stdin(Stdio::piped())
@@ -197,7 +213,7 @@ fn run_build_script(script: &Path, input: &Value) -> Result<(Map<String, Value>,
         .stdin
         .take()
         .context("open the script's stdin")?
-        .write_all(input.to_string().as_bytes());
+        .write_all(&serde_json::to_vec(input)?);
     // A script that exits without reading its input closes the pipe; its exit status says why.
     if let Err(error) = written
         && error.kind() != std::io::ErrorKind::BrokenPipe

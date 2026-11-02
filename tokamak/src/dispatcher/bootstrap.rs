@@ -95,7 +95,6 @@ impl<'js> FromJs<'js> for ResponseBody<'js> {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for ResponseBody<'_> {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         format!("Uint8Array | {}", BodyReader::typescript(types))
@@ -142,7 +141,6 @@ impl<'js> IntoJs<'js> for WebSocketData {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for WebSocketData {
     fn typescript(_: &mut crate::typescript::Types) -> String {
         "string | ArrayBuffer".to_owned()
@@ -179,7 +177,6 @@ impl<'js> FromJs<'js> for OutboxFrame {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for OutboxFrame {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         types.named("OutboxFrame", std::any::type_name::<Self>(), |_| {

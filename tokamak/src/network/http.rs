@@ -167,7 +167,6 @@ impl<'js> FromJs<'js> for FetchBody<'js> {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for FetchBody<'_> {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         format!("Uint8Array | {}", JsReadableStream::typescript(types))

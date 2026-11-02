@@ -43,7 +43,10 @@ JavaScript.
 Values that cross between Rust and JavaScript have types generated from the Rust
 code: host functions use `#[host_function]`, the structs and enums they exchange
 derive `JsType`, and `tokamak/src/host.generated.d.ts` is regenerated, not edited.
-Do not hand-write declarations for them.
+The serde types of JSON that Rust exchanges with Node also derive `JsType`;
+`tokamak-cli/npm/src/contracts.generated.mts` and
+`plugins/core/src/contracts.generated.ts` are generated from them. Do not
+hand-write declarations for them.
 
 Tests that pass deliberately invalid input mark each call with
 `// @ts-expect-error <reason>`.

@@ -108,7 +108,6 @@ impl<'js> FromJs<'js> for Overflow {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for Overflow {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         types.named("Overflow", std::any::type_name::<Self>(), |_| {
@@ -156,7 +155,6 @@ impl<'js> IntoJs<'js> for Platform {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for Platform {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         types.named("NativePlatform", std::any::type_name::<Self>(), |_| {
@@ -251,7 +249,6 @@ impl<'js> IntoJs<'js> for PluginReply {
 
 /// A native call's result: its encoded value, or its encoded error when
 /// `failed`, and whether it is the last.
-#[cfg(test)]
 impl crate::typescript::JsType for PluginReply {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         types.named("PluginReply", std::any::type_name::<Self>(), |_| {

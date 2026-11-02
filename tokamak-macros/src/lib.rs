@@ -1,12 +1,14 @@
-//! Macros that describe the Rust values tokamak hands to JavaScript as
-//! TypeScript types. What they generate for that compiles only in tests, where
-//! tokamak's `typescript` module writes the declarations its TypeScript is
-//! checked against.
+//! Macros that describe the Rust values tokamak hands to JavaScript, and the
+//! JSON Rust exchanges with Node, as TypeScript types. Their `JsType` impls
+//! always compile; the host functions' declarations compile only in tests,
+//! where tokamak's `typescript` module writes the declarations its TypeScript
+//! is checked against.
 
 use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Tokens;
 use quote::{format_ident, quote};
+use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::visit_mut::VisitMut;
@@ -19,8 +21,10 @@ use syn::{
 /// Implements `JsType` for a type that rquickjs's `FromJs` and `IntoJs`
 /// derives, or serde through `Serde`, convert: for a struct with named fields,
 /// an interface of its fields, with the property names those derives use; for
-/// a serde enum, a union of its unit variants' names or, with
-/// `#[serde(tag = ...)]`, of objects whose tag names their variant.
+/// a serde enum, a union of its unit variants' names, with
+/// `#[serde(tag = ...)]` of objects whose tag names their variant, or with
+/// `#[serde(untagged)]` of its variants' contents. A type serde converts
+/// through `try_from` or `from` has the type it converts from.
 #[proc_macro_derive(JsType, attributes(qjs))]
 pub fn derive_js_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
@@ -35,7 +39,31 @@ fn js_type(input: &DeriveInput) -> syn::Result<Tokens> {
         return Err(syn::Error::new_spanned(&input.generics, message));
     }
     let name = &input.ident;
-    let label = name.to_string();
+    let typescript = typescript(input)?;
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    Ok(quote! {
+        impl #impl_generics ::tokamak::typescript::JsType for #name #type_generics #where_clause {
+            fn typescript(types: &mut ::tokamak::typescript::Types) -> String {
+                #typescript
+            }
+        }
+    })
+}
+
+/// The body of a derived `typescript`: the type a serde `try_from` or `from`
+/// type converts from, or else a declaration named for the type, or for its
+/// `rename`.
+fn typescript(input: &DeriveInput) -> syn::Result<Tokens> {
+    for option in ["try_from", "from"] {
+        if let Some(source) = attribute_value(&input.attrs, "serde", option)? {
+            let source: Type = syn::parse_str(&source)?;
+            return Ok(quote!(<#source as ::tokamak::typescript::JsType>::typescript(types)));
+        }
+    }
+    let label = match attribute_value(&input.attrs, "serde", "rename")? {
+        Some(label) => label,
+        None => input.ident.to_string(),
+    };
     let rename = rename_all(&input.attrs)?;
     let declaration = match &input.data {
         Data::Struct(data) => {
@@ -46,60 +74,61 @@ fn js_type(input: &DeriveInput) -> syn::Result<Tokens> {
                 ));
             };
             let properties = properties(fields, rename)?;
-            quote!(crate::typescript::interface(#label, &[#(#properties),*]))
+            quote!(::tokamak::typescript::interface(#label, &[#(#properties),*]))
         }
         Data::Enum(data) => {
             let variants = variants(input, data, rename)?;
-            quote!(crate::typescript::alias(#label, &[#(#variants),*].join(" | ")))
+            quote!(::tokamak::typescript::alias(#label, &[#(#variants),*].join(" | ")))
         }
         Data::Union(_) => {
             let message = "JsType is derived for structs and enums";
             return Err(syn::Error::new_spanned(input, message));
         }
     };
-    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
-    Ok(quote! {
-        #[cfg(test)]
-        impl #impl_generics crate::typescript::JsType for #name #type_generics #where_clause {
-            fn typescript(types: &mut crate::typescript::Types) -> String {
-                types.named(#label, ::std::any::type_name::<Self>(), |types| #declaration)
-            }
-        }
-    })
+    Ok(quote!(types.named(#label, ::std::any::type_name::<Self>(), |types| #declaration)))
 }
 
 /// Each field's property: its name, whether it may be missing, and its type.
-/// A field serde defaults or skips may be missing.
+/// A field serde defaults or skips when serializing may be missing, and one
+/// serde skips has no property.
 fn properties(fields: &FieldsNamed, rename: Option<Rename>) -> syn::Result<Vec<Tokens>> {
-    fields
-        .named
-        .iter()
-        .map(|field| {
-            let ident = field.ident.as_ref();
-            let ident = ident.ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?;
-            let name = js_name(&field.attrs, &ident.to_string(), rename)?;
-            let defaulted = attribute_option(&field.attrs, "serde", "default")?.is_some()
-                || attribute_option(&field.attrs, "serde", "skip_serializing_if")?.is_some();
-            let field_type = &field.ty;
-            Ok(quote! {
-                (
-                    #name,
-                    #defaulted || <#field_type as crate::typescript::JsType>::OPTIONAL,
-                    <#field_type as crate::typescript::JsType>::typescript(types),
-                )
-            })
-        })
-        .collect()
+    let mut properties = Vec::new();
+    for field in &fields.named {
+        if attribute_option(&field.attrs, "serde", "skip")?.is_some() {
+            continue;
+        }
+        properties.push(property(field, rename)?);
+    }
+    Ok(properties)
+}
+
+fn property(field: &syn::Field, rename: Option<Rename>) -> syn::Result<Tokens> {
+    let ident = field.ident.as_ref();
+    let ident = ident.ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?;
+    let name = js_name(&field.attrs, &ident.unraw().to_string(), rename)?;
+    let defaulted = attribute_option(&field.attrs, "serde", "default")?.is_some()
+        || attribute_option(&field.attrs, "serde", "skip_serializing_if")?.is_some();
+    let field_type = &field.ty;
+    Ok(quote! {
+        (
+            #name,
+            #defaulted || <#field_type as ::tokamak::typescript::JsType>::OPTIONAL,
+            <#field_type as ::tokamak::typescript::JsType>::typescript(types),
+        )
+    })
 }
 
 /// Each variant's type in a serde enum: its name, or, with a tag, an object
 /// of its fields, which the variant's `rename_all` renames, whose tag
-/// property is its name.
+/// property is its name. An untagged variant is its content alone.
 fn variants(
     input: &DeriveInput,
     data: &DataEnum,
     rename: Option<Rename>,
 ) -> syn::Result<Vec<Tokens>> {
+    if attribute_option(&input.attrs, "serde", "untagged")?.is_some() {
+        return data.variants.iter().map(untagged_variant).collect();
+    }
     let tag = attribute_value(&input.attrs, "serde", "tag")?;
     data.variants
         .iter()
@@ -109,12 +138,12 @@ fn variants(
             match (&tag, &variant.fields) {
                 (None, Fields::Unit) => Ok(quote!(#literal.to_owned())),
                 (Some(tag), Fields::Unit) => {
-                    Ok(quote!(crate::typescript::object(&[(#tag, false, #literal.to_owned())])))
+                    Ok(quote!(::tokamak::typescript::object(&[(#tag, false, #literal.to_owned())])))
                 }
                 (Some(tag), Fields::Named(fields)) => {
                     let properties = properties(fields, rename_all(&variant.attrs)?)?;
                     Ok(quote! {
-                        crate::typescript::object(&[(#tag, false, #literal.to_owned()), #(#properties),*])
+                        ::tokamak::typescript::object(&[(#tag, false, #literal.to_owned()), #(#properties),*])
                     })
                 }
                 _ => Err(syn::Error::new_spanned(
@@ -124,6 +153,25 @@ fn variants(
             }
         })
         .collect()
+}
+
+/// The type of a variant of an untagged serde enum: the type of a newtype
+/// variant's field, or an object of a struct variant's fields.
+fn untagged_variant(variant: &syn::Variant) -> syn::Result<Tokens> {
+    match &variant.fields {
+        Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+            let field_type = &fields.unnamed[0].ty;
+            Ok(quote!(<#field_type as ::tokamak::typescript::JsType>::typescript(types)))
+        }
+        Fields::Named(fields) => {
+            let properties = properties(fields, rename_all(&variant.attrs)?)?;
+            Ok(quote!(::tokamak::typescript::object(&[#(#properties),*])))
+        }
+        _ => Err(syn::Error::new_spanned(
+            variant,
+            "JsType is derived for untagged enums of newtype and struct variants",
+        )),
+    }
 }
 
 /// How a `rename_all` option renames fields and variants.
@@ -269,13 +317,13 @@ fn host_declaration(function: &ItemFn) -> syn::Result<Tokens> {
     Ok(quote! {
         #[cfg(test)]
         #[doc(hidden)]
-        #visibility fn #name(types: &mut crate::typescript::Types) -> crate::typescript::Signature {
+        #visibility fn #name(types: &mut ::tokamak::typescript::Types) -> ::tokamak::typescript::Signature {
             #declaration
         }
     })
 }
 
-/// The expression of a function's `crate::typescript::Signature`, which uses
+/// The expression of a function's `::tokamak::typescript::Signature`, which uses
 /// `types`. A method's receiver is not a parameter.
 fn signature_declaration(signature: &Signature) -> Tokens {
     let parameters = signature
@@ -289,12 +337,12 @@ fn signature_declaration(signature: &Signature) -> Tokens {
         .map(|(index, typed)| {
             let name = parameter_name(&typed.pat).unwrap_or_else(|| format!("arg{index}"));
             let parameter_type = erased(&typed.ty);
-            quote!(<#parameter_type as crate::typescript::JsParameter>::parameter(#name, types))
+            quote!(<#parameter_type as ::tokamak::typescript::JsParameter>::parameter(#name, types))
         });
     let returns = returns(signature);
     quote! {
-        crate::typescript::Signature::new(
-            crate::typescript::parameters([#(#parameters),*]),
+        ::tokamak::typescript::Signature::new(
+            ::tokamak::typescript::parameters([#(#parameters),*]),
             #returns,
         )
     }
@@ -327,12 +375,12 @@ fn returns(signature: &Signature) -> Tokens {
     if signature.asyncness.is_some() {
         promise(&output)
     } else {
-        quote!(<#output as crate::typescript::JsReturn>::returns(types))
+        quote!(<#output as ::tokamak::typescript::JsReturn>::returns(types))
     }
 }
 
 fn promise(output: &Tokens) -> Tokens {
-    quote!(crate::typescript::promise(&<#output as crate::typescript::JsReturn>::returns(types)))
+    quote!(::tokamak::typescript::promise(&<#output as ::tokamak::typescript::JsReturn>::returns(types)))
 }
 
 /// `Output` of `impl Future<Output = Output>`.
@@ -381,9 +429,8 @@ pub fn derive_js_class(input: TokenStream) -> TokenStream {
     let label = class.to_string();
     let class_type = erased(&syn::parse_quote!(#class));
     quote! {
-        #[cfg(test)]
-        impl crate::typescript::JsType for rquickjs::Class<'_, #class_type> {
-            fn typescript(types: &mut crate::typescript::Types) -> String {
+        impl ::tokamak::typescript::JsType for rquickjs::Class<'_, #class_type> {
+            fn typescript(types: &mut ::tokamak::typescript::Types) -> String {
                 types.class(#label, ::std::any::type_name::<Self>(), |_| Vec::new())
             }
         }
@@ -438,16 +485,15 @@ fn class_declaration(implementation: &syn::ItemImpl) -> syn::Result<Tokens> {
         ReplaceSelf(&implementation.self_ty).visit_signature_mut(&mut signature);
         members.push(if qjs_flag(&method.attrs, "get")? {
             let returns = returns(&signature);
-            quote!(crate::typescript::getter(#name, &#returns))
+            quote!(::tokamak::typescript::getter(#name, &#returns))
         } else {
             let declaration = signature_declaration(&signature);
             quote!(#declaration.method(#name))
         });
     }
     Ok(quote! {
-        #[cfg(test)]
-        impl crate::typescript::JsType for rquickjs::Class<'_, #class_type> {
-            fn typescript(types: &mut crate::typescript::Types) -> String {
+        impl ::tokamak::typescript::JsType for rquickjs::Class<'_, #class_type> {
+            fn typescript(types: &mut ::tokamak::typescript::Types) -> String {
                 types.class(#label, ::std::any::type_name::<Self>(), |types| vec![#(#members),*])
             }
         }
@@ -542,8 +588,8 @@ pub fn host_functions(input: TokenStream) -> TokenStream {
 
         #[cfg(test)]
         #visibility fn host_declarations(
-            types: &mut crate::typescript::Types,
-        ) -> Vec<(&'static str, crate::typescript::Signature)> {
+            types: &mut ::tokamak::typescript::Types,
+        ) -> Vec<(&'static str, ::tokamak::typescript::Signature)> {
             vec![#(#declarations),*]
         }
     }

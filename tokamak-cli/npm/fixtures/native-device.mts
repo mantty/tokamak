@@ -1,11 +1,11 @@
-import { decodeMessage, encodeMessage, type MessageHeader } from "@tokamakdev/plugin/native-protocol";
+import { decodeMessage, encodeMessage, type RoutingHeader } from "@tokamakdev/plugin/native-protocol";
 import type { RawData } from "ws";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /** A native message with its payload as a field, as the JSON endpoint fixtures write it. */
-export interface DeviceMessage extends MessageHeader {
+export interface DeviceMessage extends RoutingHeader {
   arguments?: unknown;
   event?: unknown;
   reply?: unknown;

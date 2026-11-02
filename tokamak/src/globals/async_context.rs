@@ -22,7 +22,6 @@ impl<'js> IntoJs<'js> for AsyncContextFrame<'js> {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for AsyncContextFrame<'_> {
     fn typescript(_: &mut crate::typescript::Types) -> String {
         "AsyncContextFrame".to_owned()

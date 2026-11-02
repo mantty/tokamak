@@ -289,7 +289,6 @@ impl<'js> IntoJs<'js> for ParserEvent<'js> {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for ParserEvent<'_> {
     fn typescript(types: &mut crate::typescript::Types) -> String {
         types.named("ParserEvent", std::any::type_name::<Self>(), |types| {

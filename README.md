@@ -1046,6 +1046,17 @@ TOKAMAK_GENERATE=1 cargo test -p tokamak --features native generated_declaration
 The same test without `TOKAMAK_GENERATE` fails when the committed file is
 stale.
 
+The JSON that tok and the runtime exchange with Node has types generated from
+their serde types: `tokamak-cli/npm/src/contracts.generated.mts` holds the Vite
+plugin's reports and the plugin manifest, and
+`plugins/core/src/contracts.generated.ts`, which `@tokamakdev/plugin/contracts`
+exports, holds the native message header and a plugin build script's input.
+After changing one of those types, regenerate them:
+
+```sh
+TOKAMAK_GENERATE=1 cargo test -p tokamak-cli generated_contracts
+```
+
 A first-party plugin's TypeScript API, `src/apple.generated.ts` and
 `src/android.generated.ts`, and native dispatch are generated from its native
 code. After changing a registered method,

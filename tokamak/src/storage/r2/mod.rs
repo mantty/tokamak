@@ -110,7 +110,6 @@ impl Serialize for Json {
 }
 
 /// JSON the JavaScript binding wrote, whose shape Rust does not read.
-#[cfg(test)]
 impl crate::typescript::JsType for Json {
     fn typescript(_: &mut crate::typescript::Types) -> String {
         "unknown".to_owned()

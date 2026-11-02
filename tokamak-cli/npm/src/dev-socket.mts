@@ -5,7 +5,7 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream } from "node:stream/web";
 
 import { WebSocketServer, type WebSocket } from "ws";
-import { decodeMessage, encodeMessage, messages, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
+import { decodeMessage, encodeMessage, messages, type MessageHeader, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
 import { DevWorker, type WorkerSocket } from "./dev-worker.mjs";
 
 /** The header that carries the device's session token, which `tok dev`'s relay forwards. */
@@ -145,17 +145,18 @@ function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
       return;
     }
     const { header, payload } = message;
-    if (header.type === "result" && header.id !== undefined) {
-      device.receive(header.id, pluginResult(message));
+    const { id } = header;
+    if (header.type === "result" && id !== undefined) {
+      device.receive(id, pluginResult(message));
       return;
     }
-    if (header.type === "pull" && header.id !== undefined) {
-      device.pull(header.id);
+    if (header.type === "pull" && id !== undefined) {
+      device.pull(id);
       return;
     }
-    if (header.type !== "event" || header.id === undefined || !header.name) return;
+    if (header.type !== "event" || id === undefined || !header.name) return;
     const send = (type: string, value: Uint8Array) => {
-      if (websocket.readyState === websocket.OPEN) websocket.send(encodeMessage({ type, id: header.id }, value));
+      if (websocket.readyState === websocket.OPEN) websocket.send(encodeMessage({ type, id } satisfies MessageHeader, value));
     };
     worker.dispatch(header.name, payload).then(
       (reply) => send("reply", reply),
@@ -286,7 +287,7 @@ class Device {
   pull(id: number): void {
     const pending = this.#pending.get(id);
     void pending?.pull?.().then(({ payload, failed, done }) => {
-      if (this.#pending.get(id) === pending) pending.socket.send(encodeMessage({ type: "chunk", id, failed, done }, payload));
+      if (this.#pending.get(id) === pending) pending.socket.send(encodeMessage({ type: "chunk", id, failed, done } satisfies MessageHeader, payload));
     });
   }
 
@@ -305,14 +306,14 @@ class Device {
         return;
       }
       this.#pending.set(id, { type, socket, receive, pull });
-      socket.send(encodeMessage({ ...request.header, type, id }, request.payload));
+      socket.send(encodeMessage({ ...request.header, type, id } satisfies MessageHeader, request.payload));
     });
     return () => {
       cancelled = true;
       const pending = this.#pending.get(id);
       if (!pending) return;
       this.#pending.delete(id);
-      pending.socket.send(encodeMessage({ type: "cancel", id }));
+      pending.socket.send(encodeMessage({ type: "cancel", id } satisfies MessageHeader));
     };
   }
 

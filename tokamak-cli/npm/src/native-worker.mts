@@ -7,6 +7,7 @@ import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type Environment, type Plugin, type ViteDevServer } from "vite";
 
 import { capabilitiesFor, type NativePlatform } from "@tokamakdev/plugin/capabilities";
+import type { ConfigReport, ServerFile } from "./contracts.generated.mjs";
 import { openDevSocket, type DevSocket } from "./dev-socket.mjs";
 import type { Config } from "./index.mjs";
 import { findModule } from "./worker-contract.mjs";
@@ -16,25 +17,6 @@ export type TokamakOptions = Config & {
   /** Native worker entrypoint, relative to the Vite root; defaults to src/tokamak.ts or .js. */
   module?: string;
 };
-
-/** config.json, which tok reads: the Vite root and the app's configuration. */
-export interface ConfigReport {
-  root: string;
-  config: Config;
-}
-
-/** server.json, which tok reads: the development server, its Worker and the plugin's dev socket. */
-export interface ServerReport {
-  url: string | undefined;
-  workerName: string;
-  certificates: string | undefined;
-  socketPort: number;
-}
-
-/** server.json when the plugin cannot report the development server. */
-export interface ServerFailure {
-  error: string;
-}
 
 const MIDDLEWARE_MODE_ERROR =
   "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
@@ -132,19 +114,21 @@ async function serveNativeWorker(
   const httpServer = server.httpServer;
   if (!httpServer) {
     if (!fs.existsSync(path.join(output, "server.json"))) {
-      writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR } satisfies ServerFailure);
+      writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR } satisfies ServerFile);
     }
     return;
   }
   const socket = await openDevSocket(names.native, token);
   httpServer.once("listening", () => {
     const urls = server.resolvedUrls;
-    writeJson(output, "server.json", {
-      url: urls?.local[0] ?? urls?.network[0],
+    const url = urls?.local[0] ?? urls?.network[0];
+    const report = url === undefined ? { error: "Vite reported no URL for the development server" } : {
+      url,
       workerName: names.app,
       certificates: endEntityCertificates(server.config.server.https),
       socketPort: socket.port,
-    } satisfies ServerReport);
+    };
+    writeJson(output, "server.json", report satisfies ServerFile);
   });
   return socket;
 }

@@ -4581,6 +4581,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokamak",
+ "tokamak-macros",
  "tokio",
  "tokio-rustls",
  "tokio-util",

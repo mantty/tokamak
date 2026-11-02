@@ -28,7 +28,6 @@ impl<'js> IntoJs<'js> for AnyArrayBuffer<'js> {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for AnyArrayBuffer<'_> {
     fn typescript(_: &mut crate::typescript::Types) -> String {
         "ArrayBufferLike".to_owned()

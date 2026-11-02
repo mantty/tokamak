@@ -1,9 +1,11 @@
-//! The TypeScript types of the Rust values tokamak hands to JavaScript, and
-//! `src/host.generated.d.ts`, the declarations generated from them that the
-//! runtime's TypeScript is checked against.
+//! The TypeScript types of the Rust values tokamak hands to JavaScript and of
+//! the JSON Rust exchanges with Node, and `src/host.generated.d.ts`, the
+//! declarations generated from them that the runtime's TypeScript is checked
+//! against.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use rquickjs::function::{Opt, Rest, This};
 use rquickjs::prelude::List;
@@ -13,7 +15,7 @@ use rquickjs::{
 };
 
 /// A Rust value's JavaScript form, as a TypeScript type.
-pub(crate) trait JsType {
+pub trait JsType {
     /// Whether the value may be missing, which makes a property of this type
     /// optional.
     const OPTIONAL: bool = false;
@@ -26,7 +28,7 @@ pub(crate) trait JsType {
 }
 
 /// A host function parameter's TypeScript form.
-pub(crate) trait JsParameter {
+pub trait JsParameter {
     /// The parameter named `name`, or `None` for a value rquickjs supplies
     /// rather than the caller, such as the context.
     fn parameter(name: &str, types: &mut Types) -> Option<String>;
@@ -71,7 +73,8 @@ impl<T: JsType> JsParameter for This<T> {
 }
 
 /// A function result's TypeScript type.
-pub(crate) trait JsReturn {
+pub trait JsReturn {
+    /// The result type, after adding the named types it uses to `types`.
     fn returns(types: &mut Types) -> String;
 }
 
@@ -94,7 +97,9 @@ impl<T: JsReturn> JsReturn for rquickjs::Result<T> {
 }
 
 /// A function's parameters, given as a tuple of their types.
-pub(crate) trait JsArguments {
+pub trait JsArguments {
+    /// Each parameter's declaration, after adding the named types they use to
+    /// `types`.
     fn parameters(types: &mut Types) -> Vec<String>;
 }
 
@@ -175,6 +180,25 @@ impl JsType for Value<'_> {
     }
 }
 
+/// serde writes a path as a string.
+impl JsType for PathBuf {
+    fn typescript(_: &mut Types) -> String {
+        "string".to_owned()
+    }
+}
+
+impl JsType for serde_json::Value {
+    fn typescript(_: &mut Types) -> String {
+        "unknown".to_owned()
+    }
+}
+
+impl JsType for serde_json::Map<String, serde_json::Value> {
+    fn typescript(_: &mut Types) -> String {
+        "Record<string, unknown>".to_owned()
+    }
+}
+
 /// A value converted with JavaScript's coercion rules accepts any value.
 impl<T> JsType for Coerced<T> {
     fn typescript(_: &mut Types) -> String {
@@ -182,6 +206,8 @@ impl<T> JsType for Coerced<T> {
     }
 }
 
+/// `None` is a missing property, as rquickjs converts it and serde reads it;
+/// a serialized `Option` field skips `None` to match.
 impl<T: JsType> JsType for Option<T> {
     const OPTIONAL: bool = true;
 
@@ -248,23 +274,27 @@ fn array(element: &str) -> String {
 
 /// The parameters a function declares, without those its caller does not
 /// pass.
-pub(crate) fn parameters<const N: usize>(parameters: [Option<String>; N]) -> Vec<String> {
+#[must_use]
+pub fn parameters<const N: usize>(parameters: [Option<String>; N]) -> Vec<String> {
     parameters.into_iter().flatten().collect()
 }
 
 /// A promise of `output`.
-pub(crate) fn promise(output: &str) -> String {
+#[must_use]
+pub fn promise(output: &str) -> String {
     format!("Promise<{output}>")
 }
 
 /// A tuple of `elements`.
-pub(crate) fn tuple(elements: &[String]) -> String {
+#[must_use]
+pub fn tuple(elements: &[String]) -> String {
     format!("[{}]", elements.join(", "))
 }
 
 /// An interface declaration named `name` with `properties`: each one's name,
 /// whether it is optional, and its type.
-pub(crate) fn interface(name: &str, properties: &[(&str, bool, String)]) -> String {
+#[must_use]
+pub fn interface(name: &str, properties: &[(&str, bool, String)]) -> String {
     let mut declaration = format!("export interface {name} {{\n");
     for property in properties {
         let _ = writeln!(declaration, "  {};", member(property));
@@ -274,7 +304,7 @@ pub(crate) fn interface(name: &str, properties: &[(&str, bool, String)]) -> Stri
 }
 
 /// An object type with `properties`, given as `interface` takes them.
-pub(crate) fn object(properties: &[(&str, bool, String)]) -> String {
+pub fn object(properties: &[(&str, bool, String)]) -> String {
     let members: Vec<_> = properties.iter().map(member).collect();
     format!("{{ {} }}", members.join("; "))
 }
@@ -286,13 +316,14 @@ fn member((property, optional, typescript): &(&str, bool, String)) -> String {
 }
 
 /// A type alias declaration named `name` for `typescript`.
-pub(crate) fn alias(name: &str, typescript: &str) -> String {
+#[must_use]
+pub fn alias(name: &str, typescript: &str) -> String {
     format!("export type {name} = {typescript};")
 }
 
 /// The named types one declared module uses, by TypeScript name.
 #[derive(Default)]
-pub(crate) struct Types {
+pub struct Types {
     declarations: BTreeMap<String, Declaration>,
     /// Whether a class uses `classBrand`.
     branded: bool,
@@ -305,9 +336,13 @@ struct Declaration {
 }
 
 impl Types {
-    /// `name`, after declaring it with `declare` if it is new. Two Rust types
-    /// may not share a TypeScript name.
-    pub(crate) fn named(
+    /// `name`, after declaring it with `declare` if it is new.
+    ///
+    /// # Panics
+    ///
+    /// Panics when another Rust type has declared `name`: two Rust types may
+    /// not share a TypeScript name.
+    pub fn named(
         &mut self,
         name: &str,
         rust: &'static str,
@@ -333,11 +368,22 @@ impl Types {
         name.to_owned()
     }
 
+    /// A module that exports the declared types and nothing else.
+    #[must_use]
+    pub fn exports(&self) -> String {
+        let declarations: Vec<_> = self
+            .declarations
+            .values()
+            .map(|declared| declared.typescript.as_str())
+            .collect();
+        format!("{}\n", declarations.join("\n\n"))
+    }
+
     /// `name`, after declaring it if it is new as the interface of an rquickjs
     /// class with `members`, its methods and getters. A property keyed by a
     /// symbol only the declarations name keeps TypeScript code from building
     /// one or passing one class for another.
-    pub(crate) fn class(
+    pub fn class(
         &mut self,
         name: &str,
         rust: &'static str,
@@ -357,13 +403,15 @@ impl Types {
 }
 
 /// A function's TypeScript parameters and result type.
-pub(crate) struct Signature {
+pub struct Signature {
     parameters: Vec<String>,
     returns: String,
 }
 
 impl Signature {
-    pub(crate) fn new(parameters: Vec<String>, returns: String) -> Self {
+    /// A signature of `parameters`, each declared, and the `returns` type.
+    #[must_use]
+    pub fn new(parameters: Vec<String>, returns: String) -> Self {
         Self {
             parameters,
             returns,
@@ -376,25 +424,27 @@ impl Signature {
     }
 
     /// An interface member for a method named `name` with this signature.
-    pub(crate) fn method(&self, name: &str) -> String {
+    #[must_use]
+    pub fn method(&self, name: &str) -> String {
         format!("{name}{}", self.declaration())
     }
 }
 
 /// An interface member for a getter named `name` returning `returns`.
-pub(crate) fn getter(name: &str, returns: &str) -> String {
+#[must_use]
+pub fn getter(name: &str, returns: &str) -> String {
     format!("readonly {name}: {returns}")
 }
 
 /// One declared module: its exported functions and the types they use.
-#[cfg(feature = "native")]
+#[cfg(all(test, feature = "native"))]
 struct Module {
     name: &'static str,
     functions: Vec<(&'static str, Signature)>,
     types: Types,
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(test, feature = "native"))]
 impl Module {
     fn new(
         name: &'static str,
@@ -433,6 +483,7 @@ impl Module {
 }
 
 /// The contents of `src/host.generated.d.ts`.
+#[cfg(all(test, feature = "native"))]
 fn declarations() -> String {
     let modules = [
         Module::new("tokamak:host", |types| {
@@ -454,7 +505,7 @@ fn declarations() -> String {
     file
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use std::path::Path;
 

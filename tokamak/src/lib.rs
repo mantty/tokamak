@@ -6,6 +6,10 @@
 //! starts a [`Runtime`] for a packaged app, answers platform TLS challenges
 //! with [`Certificates`], and reports runtime events.
 
+// `tokamak-macros` names this crate's items by `::tokamak` paths, which then
+// resolve here as they do in crates that depend on it.
+extern crate self as tokamak;
+
 #[cfg(all(feature = "native", target_os = "android"))]
 mod android_jni;
 #[cfg(all(feature = "native", target_vendor = "apple"))]
@@ -48,8 +52,7 @@ mod globals;
 mod lifecycle_events;
 #[cfg(feature = "native")]
 mod linked;
-#[cfg(feature = "native")]
-mod native_protocol;
+pub mod native_protocol;
 #[cfg(feature = "native")]
 mod network;
 mod packaging;
@@ -81,8 +84,7 @@ mod readiness;
 mod tls;
 #[cfg(feature = "native")]
 mod transport;
-#[cfg(all(test, feature = "native"))]
-mod typescript;
+pub mod typescript;
 #[cfg(feature = "native")]
 mod worker_events;
 

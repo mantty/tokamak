@@ -14,6 +14,7 @@
     "./worker": "./src/worker.ts",
     "./testing": "./src/testing.ts",
     "./native-protocol": "./src/native-protocol.mjs",
+    "./contracts": "./src/contracts.generated.ts",
     "./capabilities": "./src/capabilities.mjs"
   },
   "files": [

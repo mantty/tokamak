@@ -130,7 +130,6 @@ impl<'js> IntoJs<'js> for ModuleNamespace<'js> {
     }
 }
 
-#[cfg(test)]
 impl crate::typescript::JsType for ModuleNamespace<'_> {
     fn typescript(_: &mut crate::typescript::Types) -> String {
         "Record<string, unknown>".to_owned()
