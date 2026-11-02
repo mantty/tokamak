@@ -337,13 +337,14 @@ tokamak({
 });
 ```
 
-The top-level keys are `name`, `identifier`, `icon`, and `version`, which are
-defaults for every platform, and `module`. Another top-level object holds a
-plugin's settings, by plugin ID, such as `notifications: { sounds: "sounds" }`;
-other top-level keys are rejected.
+The top-level keys are `name`, `identifier`, `icon`, `version`, and the
+[splash screen](#splash-screen) keys, which are defaults for every platform,
+and `module`. Another top-level object holds a plugin's settings, by plugin ID,
+such as `notifications: { sounds: "sounds" }`; other top-level keys are
+rejected.
 A platform object (`android`, `ios`, `macos`, `windows`) overrides `name`,
-`identifier`, or `icon` for that platform, and its other keys are settings for
-that platform's pack. `version` is top-level only. `ios` covers iOS devices
+`identifier`, `icon`, or a splash screen key for that platform, and its other
+keys are settings for that platform's pack. `version` is top-level only. `ios` covers iOS devices
 and simulators. Relative paths are relative to the Vite root, which is the
 project directory unless the Vite config sets `root`.
 
@@ -408,11 +409,12 @@ over the configuration. Within each source, a platform's own value takes
 precedence over a top-level one, so `--ios-identifier` overrides
 `--identifier`.
 
-- **Top-level settings:** `name`, `identifier`, `icon`, and `version`. The
-  project build command is an option and environment variable only:
-  `--build` or `TOKAMAK_BUILD`, for `tok build`.
-- **Platform settings:** `name`, `identifier`, and `icon` for each platform,
-  which tokamak validates, plus the settings that platform's pack declares.
+- **Top-level settings:** `name`, `identifier`, `icon`, `version`, and the
+  splash screen keys. The project build command is an option and environment
+  variable only: `--build` or `TOKAMAK_BUILD`, for `tok build`.
+- **Platform settings:** `name`, `identifier`, `icon`, and the splash screen
+  keys for each platform, which tokamak validates, plus the settings that
+  platform's pack declares.
   `tok build <platform> --help` and `tok dev <platform> --help` list them. A
   setting the pack does not declare is an error for the platform being built;
   settings for other platforms are ignored.
@@ -519,6 +521,48 @@ The Apple `.icon` package must be created by Icon Composer and kept as a
 package directory; do not point to a flattened export. Apple builds compile
 the package into the platform bundle. Invalid paths or platform formats fail
 the native build.
+
+### Splash screen
+
+A splash screen shows an image centred on a background colour from launch
+until the app's first page has loaded:
+
+```ts
+tokamak({
+  "splash-image": "assets/splash.png",
+  "splash-image-dark": "assets/splash-dark.gif",
+  "splash-width": 120,
+  "splash-background": "#0B1220",
+  "splash-background-dark": "#000000",
+});
+```
+
+| Key | Value | Default |
+|---|---|---|
+| `splash-image` | PNG, JPEG, or GIF file | none |
+| `splash-image-dark` | The image in dark mode | `splash-image` |
+| `splash-width` | The image's width in points (Apple), dp (Android), or device-independent pixels (Windows); its height follows the image's aspect ratio | `100` |
+| `splash-background` | `#RRGGBB` colour around the image | `#FFFFFF` |
+| `splash-background-dark` | The colour in dark mode | `splash-background` |
+
+An app has a splash screen when it sets an image or a background. Like `icon`,
+each key is a default for every platform at the top level and an override in a
+platform object, and is also an option and environment variable, such as
+`--splash-image` and `TOKAMAK_IOS_SPLASH_BACKGROUND`.
+
+- tokamak checks that each image is a PNG, JPEG, or GIF file whose name ends
+  in an extension of its format: `.png`, `.jpg` or `.jpeg`, or `.gif`. A GIF
+  animates with the frame delays and loop count stored in the file.
+- The light or dark values are chosen from the system's appearance when the
+  app opens.
+- The splash screen shows until the first page finishes loading or fails to
+  load. Later navigations do not show it. The page loads behind it as a
+  visible page. Touches and clicks do not reach the page, and screen readers
+  skip the splash screen.
+- iOS's launch screen and the system splash screen of Android 12 and later
+  show the background colour without the image until the app draws its splash
+  screen. iOS caches launch screens, so a changed colour may not show until
+  the app is deleted and the device restarted.
 
 ### Signing
 
@@ -905,7 +949,10 @@ Each pack declares the settings it accepts in
 `description` for `--help`. The build writes the target platform's declarations
 into `platform-pack.json`, and `tok` passes each setting to the entrypoint as
 `TOKAMAK_<PLATFORM>_<KEY>`, including the app's icon as the absolute path
-`TOKAMAK_<PLATFORM>_ICON`, whose format the pack checks. `tok` runs the
+`TOKAMAK_<PLATFORM>_ICON`, whose format the pack checks. When the app has a
+splash screen, `tok` passes all of `TOKAMAK_<PLATFORM>_SPLASH_IMAGE`,
+`_IMAGE_DARK`, `_WIDTH`, `_BACKGROUND`, and `_BACKGROUND_DARK` that have a
+value, with defaults applied and the images as absolute paths. `tok` runs the
 entrypoint from the pack root, where it reads the pack's runtime and shell.
 
 `tok plugin generate` and `tok plugin check` run the entrypoint as
