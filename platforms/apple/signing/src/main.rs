@@ -11,7 +11,8 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 
 use tokamak_apple_signing::{
-    inventory, sign_ios_bundle, sign_macos_bundle, write_info_plist, write_simulator_entitlements,
+    Splash, inventory, sign_ios_bundle, sign_macos_bundle, write_info_plist,
+    write_simulator_entitlements,
 };
 
 fn main() -> ExitCode {
@@ -40,9 +41,10 @@ fn run() -> Result<()> {
         }
         Some("plist") => plist(arguments),
         Some("sign") => sign(arguments),
+        Some("splash") => splash(arguments),
         Some("simulator-entitlements") => simulator_entitlements(arguments),
         _ => bail!(
-            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | sign --platform ios|macos --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE] | simulator-entitlements --identifier ID --output OUTPUT"
+            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | sign --platform ios|macos --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE] | simulator-entitlements --identifier ID --output OUTPUT | splash --platform ios|macos --resources DIR --catalog CATALOG"
         ),
     }
 }
@@ -85,6 +87,20 @@ fn sign(arguments: impl Iterator<Item = OsString>) -> Result<()> {
         ("macos", Some(_)) => bail!("macOS signing does not take --device-id"),
         (platform, _) => bail!("unknown signing platform: {platform}"),
     }
+}
+
+fn splash(arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let mut options = Options::parse(
+        "splash",
+        arguments,
+        &["--platform", "--resources", "--catalog"],
+    )?;
+    let platform = options.required("--platform")?;
+    let resources = PathBuf::from(options.required("--resources")?);
+    let catalog = PathBuf::from(options.required("--catalog")?);
+    let splash = Splash::from_environment(&platform)?
+        .with_context(|| format!("{platform} has no splash settings"))?;
+    splash.write_files(&resources, &catalog)
 }
 
 fn simulator_entitlements(arguments: impl Iterator<Item = OsString>) -> Result<()> {

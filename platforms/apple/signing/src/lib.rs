@@ -5,9 +5,11 @@
 
 mod entitlements;
 mod info_plist;
+mod splash;
 #[cfg(target_os = "macos")]
 use info_plist::configured_file;
 pub use info_plist::write_info_plist;
+pub use splash::Splash;
 
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;

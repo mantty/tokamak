@@ -127,14 +127,16 @@ if [[ "$platform" == macos ]]; then
   resources_dir=$contents/Resources
   app_dir=$resources_dir/app
   icon=${TOKAMAK_MACOS_ICON:-}
-  app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}")
+  splash=${TOKAMAK_MACOS_SPLASH_WIDTH:-}
+  app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}" "${TOKAMAK_MACOS_SPLASH_IMAGE:-}" "${TOKAMAK_MACOS_SPLASH_IMAGE_DARK:-}")
 else
   contents=$bundle
   executable_dir=$bundle
   resources_dir=$bundle
   app_dir=$bundle/app
   icon=${TOKAMAK_IOS_ICON:-}
-  app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}")
+  splash=${TOKAMAK_IOS_SPLASH_WIDTH:-}
+  app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}" "${TOKAMAK_IOS_SPLASH_IMAGE:-}" "${TOKAMAK_IOS_SPLASH_IMAGE_DARK:-}")
 fi
 if [[ -n "$icon" && ! ( -d "$icon" && "$icon" == *.[iI][cC][oO][nN] ) ]]; then
   echo "$platform.icon must be an Icon Composer .icon package: $icon" >&2
@@ -200,23 +202,34 @@ rm -rf "$bundle"
 mkdir -p "$executable_dir" "$app_dir" "$output_parent/.tokamak"
 cp -R "$input/app/." "$app_dir/"
 
+# The asset catalog holds the app icon and the splash background colour.
+asset_options=()
+asset_inputs=()
+if [[ -n "$splash" ]]; then
+  "$apple_tool" splash --platform "$platform" --resources "$resources_dir" --catalog "$temporary/TokamakSplash.xcassets"
+  asset_inputs+=("$temporary/TokamakSplash.xcassets")
+fi
 if [[ -n "$icon" ]]; then
-  if [[ "$platform" == macos ]]; then
-    icon_targets=(--target-device mac)
-  else
-    icon_targets=(--target-device iphone --target-device ipad)
-  fi
   # actool names the app icon after its package.
   cp -R "$icon" "$temporary/AppIcon.icon"
+  asset_options+=(--app-icon AppIcon)
+  asset_inputs+=("$temporary/AppIcon.icon")
+fi
+if [[ ${#asset_inputs[@]} -gt 0 ]]; then
+  if [[ "$platform" == macos ]]; then
+    asset_targets=(--target-device mac)
+  else
+    asset_targets=(--target-device iphone --target-device ipad)
+  fi
   xcrun --sdk "$sdk" actool \
     --compile "$resources_dir" \
     --platform "$sdk" \
     --minimum-deployment-target "$minimum" \
-    --app-icon AppIcon \
-    "${icon_targets[@]}" \
+    ${asset_options[@]+"${asset_options[@]}"} \
+    "${asset_targets[@]}" \
     --output-partial-info-plist "$icon_info_plist" \
     --output-format human-readable-text \
-    "$temporary/AppIcon.icon"
+    "${asset_inputs[@]}"
 fi
 
 shopt -s nullglob

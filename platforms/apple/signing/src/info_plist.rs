@@ -8,6 +8,8 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use plist::{Dictionary, Value};
 
+use crate::Splash;
+
 /// The oldest iOS version the pack's apps support.
 const IOS_DEPLOYMENT_TARGET: &str = include_str!("../../build/ios-deployment-target");
 
@@ -179,6 +181,9 @@ fn build_info_plist(
     let user = user_plist.map(read_dictionary).transpose()?;
     let mut result = Dictionary::new();
     add_generated_plist(&mut result, metadata, toolchain)?;
+    if let Some(splash) = Splash::from_environment(&metadata.platform)? {
+        splash.add_to_plist(&mut result, &metadata.platform)?;
+    }
 
     if let Some(path) = icon_info_plist {
         overlay_dictionary(&mut result, read_dictionary(path)?);
