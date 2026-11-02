@@ -56,6 +56,13 @@ async function asyncResult<T>(callback: () => T | Promise<T>) {
   catch (error) { return errorResult(error); }
 }
 
+/** The entries of a one-part multipart request, with each file as its name, or the error. */
+function multipartEntries(parameters: string, boundary: string, disposition: string) {
+  const body = `--${boundary}\r\nContent-Disposition: ${disposition}\r\n\r\nvalue\r\n--${boundary}--\r\n`;
+  const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; " + parameters } });
+  return asyncResult(async () => [...await request.formData()].map(([key, value]) => [key, typeof value === "string" ? value : value.name]));
+}
+
 function detailedResult<T>(callback: () => T) {
   try { return callback(); }
   catch (error) { return { ...errorResult(error), message: member(error, "message") }; }
@@ -2667,11 +2674,31 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
           ["boundary=ab;boundary=cd", "ab"],
           ['boundary="' + "\\!".repeat(50000), "!".repeat(50000)],
           ["boundary=a" + " ".repeat(50000) + "b", "a" + " ".repeat(50000) + "b"],
-        ]) {
-          const body = `--${boundary}\r\nContent-Disposition: form-data; name="field"\r\n\r\nvalue\r\n--${boundary}--\r\n`;
-          const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; " + parameters } });
-          values.push(await asyncResult(async () => [...await request.formData()]));
-        }
+        ]) values.push(await multipartEntries(parameters, boundary, 'form-data; name="field"'));
+        return values;
+      }),
+      // workerd reads quoted parameters until one does not match.
+      dispositions: await asyncResult(async () => {
+        const values: unknown[] = [];
+        for (const disposition of [
+          'form-data; name="field"   x',
+          'form-data; name="field"x',
+          "form-data; name=field",
+          'form-data;name="field"',
+          'FORM-DATA; name="field"',
+          'form-data; NAME="field"',
+          'form-data; name="a\\"b\\\\c"',
+          'form-data name="field"',
+          'attachment; name="field"',
+          'form-data; x; name="field"',
+          'form-data; name="field"; filename="a.txt"; x',
+          'form-data; filename="a.txt"; name="field"',
+          'form-data; name="field"; name="other"',
+          'form-data; name=""',
+          "form-data",
+          'form-data; filename=a.txt; name="field"',
+          ' form-data ; name = "field" ',
+        ]) values.push(await multipartEntries("boundary=b", "b", disposition));
         return values;
       }),
       longWhitespace: await asyncResult(async () => {

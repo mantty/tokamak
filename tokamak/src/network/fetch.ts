@@ -785,25 +785,22 @@ function parseMultipartHeaders(value: string): Record<string, string | undefined
   return headers;
 }
 
+// workerd's Content-Disposition grammar: a type, then parameters with
+// non-empty quoted values, read until one does not match.
+const DISPOSITION_TYPE = /^[\t\n\v\f\r ]*([\w-]+)[\t\n\v\f\r ]*/;
+const DISPOSITION_PARAMETERS = /;[\t\n\v\f\r ]*([\w-]+)[\t\n\v\f\r ]*=[\t\n\v\f\r ]*"((?:[^"\n\\]|\\[^\n])+)"[\t\n\v\f\r ]*/gy;
+
+// The last name and filename a form-data part's disposition gives.
 function multipartDisposition(value: string | undefined): { name: string; filename: string | undefined } {
   const input = value ?? "";
-  const prefix = /^form-data\b/i.exec(input);
-  if (!prefix) throw new TypeError("Invalid multipart disposition");
-  let rest = input.slice(prefix[0].length);
+  const type = DISPOSITION_TYPE.exec(input);
+  if (type?.[1] !== "form-data") throw new TypeError("Invalid multipart disposition");
   let name: string | undefined;
   let filename: string | undefined;
-  while (rest.trim() !== "") {
-    rest = rest.trimStart();
-    if (!rest.startsWith(";")) throw new TypeError("Invalid multipart disposition");
-    rest = rest.slice(1);
-    const match = /^\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^;\s]*))/.exec(rest);
-    if (!match) throw new TypeError("Invalid multipart disposition");
-    const key = match[1].toLowerCase();
-    if (key === "name") {
-      if (match[2] === undefined) throw new TypeError("Invalid multipart disposition");
-      name = match[2].replace(/\\(.)/g, "$1");
-    } else if (key === "filename" && match[2] !== undefined) filename = match[2].replace(/\\(.)/g, "$1");
-    rest = rest.slice(match[0].length);
+  for (const [, key, quoted] of input.slice(type[0].length).matchAll(DISPOSITION_PARAMETERS)) {
+    const parameter = quoted.replace(/\\([^\n])/g, "$1");
+    if (key === "name") name = parameter;
+    else if (key === "filename") filename = parameter;
   }
   if (name === undefined) throw new TypeError("Invalid multipart disposition");
   return { name, filename };
