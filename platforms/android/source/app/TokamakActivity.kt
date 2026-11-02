@@ -27,6 +27,7 @@ class TokamakActivity : Activity() {
     private var proxyPort: Int? = null
     private var restoreGeneration = 0L
     private var destroyed = false
+    private var splash: TokamakSplash? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,6 +39,7 @@ class TokamakActivity : Activity() {
         }
         webView.webChromeClient = TokamakWebChromeClient(tokamak, tokamak.appHost)
         setContentView(webViewContainer())
+        splash = TokamakSplash.show(this, tokamak.metadata())
         // A recreated activity or one reopened from Recents carries an intent plugins have had.
         val launchedFromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
         if (savedInstanceState == null && !launchedFromHistory) deliver(intent)
@@ -127,7 +129,7 @@ class TokamakActivity : Activity() {
     private fun load(runtime: TokamakRuntime) {
         if (destroyed) return
         webView.webViewClient =
-            TokamakWebViewClient(this, tokamak.appHost, runtime)
+            TokamakWebViewClient(this, tokamak.appHost, runtime, ::appPageFinished)
         webView.loadUrl("https://${tokamak.appHost}/")
     }
 
@@ -135,7 +137,23 @@ class TokamakActivity : Activity() {
         WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) &&
             WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS)
 
-    private fun show(html: String) = webView.loadData(html, "text/html", "utf-8")
+    private fun show(html: String) {
+        removeSplash()
+        webView.loadData(html, "text/html", "utf-8")
+    }
+
+    /** Removes the splash at the WebView's next frame, which shows the loaded page. */
+    private fun appPageFinished() {
+        if (splash == null) return
+        webView.postVisualStateCallback(0, object : WebView.VisualStateCallback() {
+            override fun onComplete(requestId: Long) = removeSplash()
+        })
+    }
+
+    private fun removeSplash() {
+        splash?.remove()
+        splash = null
+    }
 
     private fun webViewContainer(): FrameLayout =
         FrameLayout(this).apply {
