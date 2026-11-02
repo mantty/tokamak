@@ -32,6 +32,7 @@ use tokamak_cli::{
 
 use super::plugin_settings::{Kind, Setting, option_name, option_namespaces, option_text};
 use super::plugins::Plugin;
+use super::splash;
 use super::tokamak_config::{TokamakConfig, app_name_problem, valid};
 
 /// Top-level settings from command-line options.
@@ -49,6 +50,38 @@ pub(crate) struct TopOptions {
     /// App version [`TOKAMAK_VERSION`, `version`].
     #[arg(long)]
     pub(crate) version: Option<String>,
+    /// Splash image for every platform: PNG, JPEG or GIF [`TOKAMAK_SPLASH_IMAGE`, `splash-image`].
+    #[arg(long, value_name = "PATH")]
+    pub(crate) splash_image: Option<String>,
+    /// Splash image in dark mode [`TOKAMAK_SPLASH_IMAGE_DARK`, `splash-image-dark`].
+    #[arg(long, value_name = "PATH")]
+    pub(crate) splash_image_dark: Option<String>,
+    /// Splash image width in points, dp or device-independent pixels [default: 100]
+    /// [`TOKAMAK_SPLASH_WIDTH`, `splash-width`].
+    #[arg(long, value_name = "WIDTH")]
+    pub(crate) splash_width: Option<String>,
+    /// Splash background colour, #RRGGBB [default: #FFFFFF] [`TOKAMAK_SPLASH_BACKGROUND`,
+    /// `splash-background`].
+    #[arg(long, value_name = "COLOUR")]
+    pub(crate) splash_background: Option<String>,
+    /// Splash background colour in dark mode, #RRGGBB [`TOKAMAK_SPLASH_BACKGROUND_DARK`,
+    /// `splash-background-dark`].
+    #[arg(long, value_name = "COLOUR")]
+    pub(crate) splash_background_dark: Option<String>,
+}
+
+impl TopOptions {
+    /// The `--<key>` option of the splash key `key`.
+    fn splash(&self, key: &str) -> Option<&String> {
+        match key {
+            "splash-image" => self.splash_image.as_ref(),
+            "splash-image-dark" => self.splash_image_dark.as_ref(),
+            "splash-width" => self.splash_width.as_ref(),
+            "splash-background" => self.splash_background.as_ref(),
+            "splash-background-dark" => self.splash_background_dark.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 /// Values from `--<namespace>-<key>` options: platforms' text, by namespace
@@ -136,8 +169,8 @@ pub(crate) fn process_environment(name: &str) -> Result<Option<String>> {
 pub(crate) struct PlatformSettings {
     pub(crate) name: Option<String>,
     pub(crate) identifier: Option<String>,
-    /// The platform pack's variables and the icon path, as its entrypoint's
-    /// environment.
+    /// The platform pack's variables, the icon path and the splash values, as
+    /// its entrypoint's environment.
     pub(crate) pack_environment: BTreeMap<String, OsString>,
 }
 
@@ -238,11 +271,35 @@ pub(crate) fn resolve(
         let name = environment_name(Some(platform.namespace()), "icon");
         pack_environment.insert(name, icon.into_os_string());
     }
+    for (key, value) in splash_values(sources, platform, configured.splash)? {
+        pack_environment.insert(environment_name(Some(platform.namespace()), key), value);
+    }
     Ok(PlatformSettings {
         name: name.or(configured.name),
         identifier: identifier.or(configured.identifier),
         pack_environment,
     })
+}
+
+/// `platform`'s completed splash values, by key: options and environment
+/// variables, with relative image paths in the current directory, over the
+/// configured values.
+fn splash_values(
+    sources: &Sources<'_>,
+    platform: Platform,
+    mut values: BTreeMap<&'static str, OsString>,
+) -> Result<BTreeMap<&'static str, OsString>> {
+    for (key, kind) in splash::keys() {
+        let Some(value) = shared_value(sources, platform, key, sources.top.splash(key))? else {
+            continue;
+        };
+        let value = match kind {
+            VariableKind::Path => sources.current_dir.join(value).into_os_string(),
+            VariableKind::String => value.into(),
+        };
+        values.insert(key, value);
+    }
+    splash::complete(platform, values)
 }
 
 /// A top-level key's option or environment value.
@@ -911,6 +968,104 @@ mod tests {
     }
 
     #[test]
+    fn passes_the_splash_to_the_pack_with_options_over_environment_over_configuration() -> Result<()>
+    {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path();
+        std::fs::write(root.join("config.png"), b"\x89PNG\r\n\x1a\n")?;
+        std::fs::write(root.join("env.gif"), b"GIF89a")?;
+        std::fs::write(root.join("option.jpg"), b"\xff\xd8\xff\xe0")?;
+        let splash = |settings: PlatformSettings| {
+            settings
+                .pack_environment
+                .into_iter()
+                .filter(|(name, _)| name.contains("_SPLASH_"))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let expected = |entries: &[(&str, OsString)]| {
+            entries
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let mut fixture = Fixture::new();
+        fixture.assert_resolves(Platform::Ios, splash, &BTreeMap::new())?;
+
+        fixture.config = Some(parse_config(
+            root,
+            &json!({
+                "splash-image": "config.png",
+                "splash-background": "#0B1220",
+                "android": { "splash-width": 140 },
+            }),
+        )?);
+        let config_image = root.join("config.png").into_os_string();
+        fixture.assert_resolves(
+            Platform::IosSimulator,
+            splash,
+            &expected(&[
+                ("TOKAMAK_IOS_SPLASH_IMAGE", config_image.clone()),
+                ("TOKAMAK_IOS_SPLASH_IMAGE_DARK", config_image.clone()),
+                ("TOKAMAK_IOS_SPLASH_WIDTH", "100".into()),
+                ("TOKAMAK_IOS_SPLASH_BACKGROUND", "#0B1220".into()),
+                ("TOKAMAK_IOS_SPLASH_BACKGROUND_DARK", "#0B1220".into()),
+            ]),
+        )?;
+        fixture.assert_resolves(
+            Platform::Android,
+            |settings| splash(settings).remove("TOKAMAK_ANDROID_SPLASH_WIDTH"),
+            &Some("140".into()),
+        )?;
+
+        let env_image = root.join("env.gif");
+        fixture.environment.insert(
+            "TOKAMAK_SPLASH_IMAGE_DARK".to_owned(),
+            env_image.to_string_lossy().into_owned(),
+        );
+        fixture
+            .environment
+            .insert("TOKAMAK_ANDROID_SPLASH_WIDTH".to_owned(), "160".to_owned());
+        fixture.top.splash_background_dark = Some("#000000".to_owned());
+        fixture.options = namespaced_options(&[
+            "--android-splash-image",
+            &root.join("option.jpg").to_string_lossy(),
+        ])?;
+        fixture.assert_resolves(
+            Platform::Android,
+            splash,
+            &expected(&[
+                (
+                    "TOKAMAK_ANDROID_SPLASH_IMAGE",
+                    root.join("option.jpg").into_os_string(),
+                ),
+                (
+                    "TOKAMAK_ANDROID_SPLASH_IMAGE_DARK",
+                    env_image.into_os_string(),
+                ),
+                ("TOKAMAK_ANDROID_SPLASH_WIDTH", "160".into()),
+                ("TOKAMAK_ANDROID_SPLASH_BACKGROUND", "#0B1220".into()),
+                ("TOKAMAK_ANDROID_SPLASH_BACKGROUND_DARK", "#000000".into()),
+            ]),
+        )?;
+
+        fixture.top.splash_width = Some("wide".to_owned());
+        fixture.assert_rejects(Platform::Macos, |error| {
+            error == "macOS splash-width must be a positive integer"
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn relative_splash_options_are_in_the_current_directory() {
+        let mut fixture = Fixture::new();
+        fixture.top.splash_image = Some("splash.png".to_owned());
+        let image = path("/work", "splash.png");
+        fixture.assert_rejects(Platform::Ios, |error| {
+            error.starts_with(&format!("iOS splash-image cannot be read: {image}: "))
+        });
+    }
+
+    #[test]
     fn rejects_invalid_option_and_environment_names() {
         let mut fixture = Fixture::new();
         fixture.top.name = Some("!!!".to_owned());
@@ -1411,7 +1566,9 @@ mod tests {
         fixture.assert_rejects(Platform::Ios, |error| {
             error
                 == "unknown option --ios-manifest; iOS accepts --ios-name, --ios-identifier, \
-                    --ios-icon, --ios-plist, --ios-team-id"
+                    --ios-icon, --ios-splash-image, --ios-splash-image-dark, --ios-splash-width, \
+                    --ios-splash-background, --ios-splash-background-dark, --ios-plist, \
+                    --ios-team-id"
         });
         assert!(fixture.resolve(Platform::Macos).is_ok());
 
@@ -1459,12 +1616,21 @@ mod tests {
         assert!(help.starts_with(
             "iOS options (also TOKAMAK_IOS_<KEY>, or ios.<key> in the tokamak() options):\n"
         ));
-        assert!(help.contains("\n  --ios-icon <PATH>         Icon in the platform's format\n"));
-        assert!(help.contains("\n  --ios-plist <PATH>        User plist\n"));
-        assert!(help.contains("\n  --ios-team-id <VALUE>     Signing team\n"));
+        assert!(
+            help.contains(
+                "\n  --ios-icon <PATH>                     Icon in the platform's format\n"
+            )
+        );
+        assert!(help.contains(
+            "\n  --ios-splash-width <VALUE>            Splash image width in points, dp or device-independent pixels [default: 100]\n"
+        ));
+        assert!(help.contains("\n  --ios-plist <PATH>                    User plist\n"));
+        assert!(help.contains("\n  --ios-team-id <VALUE>                 Signing team\n"));
 
         let help = platform_help(Platform::Android, Err("no platform pack found".to_owned()));
-        assert!(help.contains("\n  --android-identifier <VALUE>  Application identifier\n"));
+        assert!(
+            help.contains("\n  --android-identifier <VALUE>              Application identifier\n")
+        );
         assert!(
             help.ends_with(
                 "  The platform pack's options are unavailable: no platform pack found\n"

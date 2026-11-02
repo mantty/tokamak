@@ -87,7 +87,9 @@ else
   pack=$TOKAMAK_TEST_ANDROID_PACK
 fi
 unset TOKAMAK_ANDROID_KEYSTORE TOKAMAK_ANDROID_KEYSTORE_PASSWORD TOKAMAK_ANDROID_KEY_ALIAS \
-  TOKAMAK_ANDROID_KEY_PASSWORD TOKAMAK_ANDROID_MANIFEST TOKAMAK_ANDROID_ICON
+  TOKAMAK_ANDROID_KEY_PASSWORD TOKAMAK_ANDROID_MANIFEST TOKAMAK_ANDROID_ICON \
+  TOKAMAK_ANDROID_SPLASH_IMAGE TOKAMAK_ANDROID_SPLASH_IMAGE_DARK TOKAMAK_ANDROID_SPLASH_WIDTH \
+  TOKAMAK_ANDROID_SPLASH_BACKGROUND TOKAMAK_ANDROID_SPLASH_BACKGROUND_DARK
 
 # Stage a build input for the case $1 in $case, whose app the entrypoint builds
 # into $output and whose Gradle project is $gradle.
@@ -213,6 +215,47 @@ test_uses_the_icon_resources() {
   contains "$gradle/app/src/main/AndroidManifest.xml" 'android:icon="@mipmap/ic_launcher"'
 }
 
+test_stages_the_splash_images_and_background_theme() {
+  new_case splash
+  local splash=(
+    TOKAMAK_ANDROID_SPLASH_WIDTH=120
+    TOKAMAK_ANDROID_SPLASH_BACKGROUND='#0B1220'
+    TOKAMAK_ANDROID_SPLASH_BACKGROUND_DARK='#000000'
+  )
+  entrypoint
+  local manifest=$gradle/app/src/main/AndroidManifest.xml
+  contains "$manifest" 'android:theme="@android:style/Theme.Material.NoActionBar"'
+  lacks "$manifest" tokamak.splash
+  [[ ! -e "$gradle/app/src/main/res/values/tokamak_splash.xml" ]] || fail "an app without a splash has a splash theme"
+
+  printf png > "$case/logo.PNG"
+  printf gif > "$case/dark.gif"
+  entrypoint "${splash[@]}" TOKAMAK_ANDROID_SPLASH_IMAGE="$case/logo.PNG" TOKAMAK_ANDROID_SPLASH_IMAGE_DARK="$case/dark.gif"
+  contains "$manifest" 'android:theme="@style/Tokamak.Splash"'
+  contains "$manifest" '<meta-data android:name="tokamak.splash.width" android:value="120" />'
+  contains "$manifest" '<meta-data android:name="tokamak.splash.background" android:value="#0B1220" />'
+  contains "$manifest" '<meta-data android:name="tokamak.splash.background-dark" android:value="#000000" />'
+  contains "$manifest" '<meta-data android:name="tokamak.splash.image" android:value="tokamak/splash-image.png" />'
+  contains "$manifest" '<meta-data android:name="tokamak.splash.image-dark" android:value="tokamak/splash-image-dark.gif" />'
+  [[ $(<"$gradle/app/src/main/assets/tokamak/splash-image.png") == png ]] || fail "the splash image was not staged"
+  [[ $(<"$gradle/app/src/main/assets/tokamak/splash-image-dark.gif") == gif ]] || fail "the dark splash image was not staged"
+  local res=$gradle/app/src/main/res
+  contains "$res/values/tokamak_splash.xml" '<color name="tokamak_splash_background">#0B1220</color>'
+  contains "$res/values/tokamak_splash.xml" '<item name="android:windowBackground">@color/tokamak_splash_background</item>'
+  contains "$res/values-night/tokamak_splash.xml" '<color name="tokamak_splash_background">#000000</color>'
+  contains "$res/values-v31/tokamak_splash.xml" '<item name="android:windowSplashScreenBackground">@color/tokamak_splash_background</item>'
+  contains "$res/values-v31/tokamak_splash.xml" '<item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>'
+
+  entrypoint "${splash[@]}" TOKAMAK_ANDROID_SPLASH_IMAGE="$case/logo.PNG" TOKAMAK_ANDROID_SPLASH_IMAGE_DARK="$case/logo.PNG"
+  contains "$manifest" '<meta-data android:name="tokamak.splash.image-dark" android:value="tokamak/splash-image.png" />'
+  [[ ! -e "$gradle/app/src/main/assets/tokamak/splash-image-dark.gif" ]] || fail "a stale dark splash image was kept"
+  [[ ! -e "$gradle/app/src/main/assets/tokamak/splash-image-dark.png" ]] || fail "a shared dark splash image was copied"
+
+  entrypoint "${splash[@]}"
+  lacks "$manifest" tokamak.splash.image
+  [[ ! -e "$gradle/app/src/main/assets/tokamak/splash-image.png" ]] || fail "a stale splash image was kept"
+}
+
 test_builds_each_plugin_s_gradle_module_into_the_app() {
   new_case plugins
   stage_plugin
@@ -328,6 +371,7 @@ else
     test_builds_development_apps_as_debug_builds
     test_merges_the_app_manifest_while_it_is_set
     test_uses_the_icon_resources
+    test_stages_the_splash_images_and_background_theme
     test_builds_each_plugin_s_gradle_module_into_the_app
     test_builds_the_files_plugins_build_scripts_generate_as_library_modules
     test_creates_the_dispatch_of_plugins_that_export_methods

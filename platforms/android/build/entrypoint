@@ -200,6 +200,8 @@ if [[ -n "$icon" && ! -d "$icon" ]]; then
   echo "android.icon must be an Android res directory: $icon" >&2
   exit 1
 fi
+# tok passes every splash setting when the app has a splash.
+splash=${TOKAMAK_ANDROID_SPLASH_WIDTH:-}
 project=$(dirname "$output")/.tokamak
 app=$project/app
 native=$app/src/main/jniLibs/arm64-v8a
@@ -297,6 +299,55 @@ if [[ -n "$icon" ]]; then
     exit 1
   fi
   has_icon=true
+fi
+
+# The splash images are assets the activity decodes, and its colours make a
+# theme, from which Android 12 and later draws the system splash without an
+# icon.
+theme=@android:style/Theme.Material.NoActionBar
+splash_metadata=
+if [[ -n "$splash" ]]; then
+  theme=@style/Tokamak.Splash
+  splash_assets=$app/src/main/assets/tokamak
+  res=$app/src/main/res
+  mkdir -p "$splash_assets" "$res/values" "$res/values-night" "$res/values-v31"
+  splash_metadata+="    <meta-data android:name=\"tokamak.splash.width\" android:value=\"$splash\" />"$'\n'
+  splash_metadata+="    <meta-data android:name=\"tokamak.splash.background\" android:value=\"$TOKAMAK_ANDROID_SPLASH_BACKGROUND\" />"$'\n'
+  splash_metadata+="    <meta-data android:name=\"tokamak.splash.background-dark\" android:value=\"$TOKAMAK_ANDROID_SPLASH_BACKGROUND_DARK\" />"$'\n'
+  for key in image image-dark; do
+    variable=TOKAMAK_ANDROID_SPLASH_$(printf '%s' "$key" | tr 'a-z-' 'A-Z_')
+    image=${!variable:-}
+    [[ -n "$image" ]] || continue
+    name=splash-$key.$(printf '%s' "${image##*.}" | tr 'A-Z' 'a-z')
+    # A dark image that is the light one shares its file.
+    if [[ "$key" == image-dark && "$image" == "${TOKAMAK_ANDROID_SPLASH_IMAGE:-}" ]]; then
+      name=splash-image.${name##*.}
+    fi
+    cp "$image" "$splash_assets/$name"
+    splash_metadata+="    <meta-data android:name=\"tokamak.splash.$key\" android:value=\"tokamak/$name\" />"$'\n'
+  done
+  cat > "$res/values/tokamak_splash.xml" <<EOF
+<resources>
+  <color name="tokamak_splash_background">$TOKAMAK_ANDROID_SPLASH_BACKGROUND</color>
+  <style name="Tokamak.Splash" parent="@android:style/Theme.Material.NoActionBar">
+    <item name="android:windowBackground">@color/tokamak_splash_background</item>
+  </style>
+</resources>
+EOF
+  cat > "$res/values-night/tokamak_splash.xml" <<EOF
+<resources>
+  <color name="tokamak_splash_background">$TOKAMAK_ANDROID_SPLASH_BACKGROUND_DARK</color>
+</resources>
+EOF
+  cat > "$res/values-v31/tokamak_splash.xml" <<'EOF'
+<resources>
+  <style name="Tokamak.Splash" parent="@android:style/Theme.Material.NoActionBar">
+    <item name="android:windowBackground">@color/tokamak_splash_background</item>
+    <item name="android:windowSplashScreenBackground">@color/tokamak_splash_background</item>
+    <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
+  </style>
+</resources>
+EOF
 fi
 
 # Each plugin's Gradle module is a library module of the app, so its manifest
@@ -484,12 +535,13 @@ manifest=$app/src/main/AndroidManifest.xml
   fi
   printf '  <application android:name=".TokamakApplication" android:label="%s"%s>\n' "$(xml_escape "$app_name")" "$icon_attribute"
   printf '    <meta-data android:name="tokamak.host" android:value="%s" />\n' "$host"
+  printf '%s' "$splash_metadata"
   if [[ -n "$dev_endpoint" ]]; then
     printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"
     printf '    <meta-data android:name="tokamak.dev.session-token" android:value="%s" />\n' "$dev_session_token"
   fi
   printf '%s\n' \
-    '    <activity android:name=".TokamakActivity" android:exported="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">' \
+    "    <activity android:name=\".TokamakActivity\" android:exported=\"true\" android:launchMode=\"singleTask\" android:theme=\"$theme\" android:configChanges=\"colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode\">" \
     '      <intent-filter>' \
     '        <action android:name="android.intent.action.MAIN" />' \
     '        <category android:name="android.intent.category.LAUNCHER" />' \

@@ -4,15 +4,16 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::controls::{self, Controls, ShellEvent};
+use crate::splash::{Splash, SplashConfig};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKey, PrivateKeyChain};
 use rustls_pki_types::{CertificateDer, pem::PemObject};
 use serde::Deserialize;
-use tao::event::{Event as TaoEvent, WindowEvent};
+use tao::event::{Event as TaoEvent, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::windows::IconExtWindows;
@@ -50,14 +51,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR, w};
 use wry::{
-    NewWindowResponse, WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows,
-    WebViewExtWindows,
+    NewWindowResponse, PageLoadEvent, WebContext, WebView, WebViewBuilder,
+    WebViewBuilderExtWindows, WebViewExtWindows,
 };
 
 /// How long the Worker has for `resume` and `suspend`.
 const LIFECYCLE_DEADLINE: Duration = Duration::from_secs(10);
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellConfig {
     name: String,
@@ -65,6 +66,7 @@ struct ShellConfig {
     host: String,
     dev_endpoint: Option<String>,
     dev_session_token: Option<String>,
+    splash: Option<SplashConfig>,
 }
 
 pub(crate) fn run() -> Result<()> {
@@ -73,64 +75,210 @@ pub(crate) fn run() -> Result<()> {
     let root = executable_dir()?;
     let config = read_config(&root)?;
     let state = state_dir(&config.slug)?;
-    let runtime = Arc::new(start_runtime(&config, &root, &state, events.clone())?);
-    let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
+    let start = spawn_runtime(&config, &root, &state, events.clone())?;
     let window = build_window(&event_loop, &root, &config.name)?;
-    let mut app = AppWindow::new(&window, &config, &state, &runtime, identity, events)?;
+    let splash = config
+        .splash
+        .as_ref()
+        .map(|splash| Splash::open(&root, splash, &window))
+        .transpose()?;
+    window.set_visible(true);
+    if let Some(splash) = &splash {
+        // Windows sends WM_PAINT only once its message queue is empty, and
+        // opening the WebView then holds the event loop for about a second.
+        splash.paint(&window);
+    }
+    let mut shell = Shell {
+        window: &window,
+        config: &config,
+        state: &state,
+        events,
+        splash,
+        running: None,
+        pending: Vec::new(),
+        error: None,
+        exit: false,
+    };
+    event_loop.run_return(|event, _, flow| *flow = shell.handle(event));
+    let result = shell.finish();
+    let _ = start.join();
+    result
+}
 
-    let (lifecycle, deliveries) = deliver_lifecycle_events(Arc::clone(&runtime))?;
-    let set_foreground = |foreground| runtime.set_foreground(foreground);
-    let window = &window;
-    let controls_runtime = Arc::clone(&runtime);
-    // The closure, which owns the page, drops as `run_return` returns.
-    event_loop.run_return(move |event, _, flow| {
-        *flow = ControlFlow::Wait;
+/// The shell while its event loop runs: the splash until the app's first page
+/// has loaded, and the app once the runtime has started.
+struct Shell<'a> {
+    window: &'a Window,
+    config: &'a ShellConfig,
+    state: &'a Path,
+    events: EventLoopProxy<ShellEvent>,
+    splash: Option<Splash>,
+    running: Option<Running<'a>>,
+    /// The events that arrived before the runtime started.
+    pending: Vec<ShellEvent>,
+    /// Why the app could not open.
+    error: Option<anyhow::Error>,
+    exit: bool,
+}
+
+impl Shell<'_> {
+    fn handle(&mut self, event: TaoEvent<'_, ShellEvent>) -> ControlFlow {
         match event {
-            TaoEvent::UserEvent(ShellEvent::Call {
-                id,
-                method,
-                payload,
-            }) => app.call(&controls_runtime, id, &method, &payload),
-            TaoEvent::UserEvent(ShellEvent::Unsupported { id, message }) => {
-                controls::respond(&controls_runtime, id, Err(("NotSupportedError", message)));
-            }
-            TaoEvent::UserEvent(ShellEvent::Runtime(Event::CertificatesRenewed)) => {
-                if let Err(error) = app.renew_identity() {
-                    eprintln!("tokamak client certificate renewal failed: {error:#}");
+            TaoEvent::UserEvent(event) => self.shell_event(event),
+            TaoEvent::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                if let Some(splash) = &mut self.splash {
+                    splash.animate(self.window, Instant::now());
                 }
             }
-            TaoEvent::UserEvent(ShellEvent::Runtime(Event::Listening { port })) => {
-                if let Err(error) = app.gateway_moved(port) {
-                    eprintln!("tokamak could not follow the gateway to port {port}: {error:#}");
-                    *flow = ControlFlow::Exit;
-                }
-            }
-            TaoEvent::UserEvent(ShellEvent::BrowserExited) => {
-                if let Err(error) = app.browser_exited() {
-                    eprintln!("tokamak could not reopen the app: {error:#}");
-                    *flow = ControlFlow::Exit;
+            TaoEvent::RedrawRequested(_) => {
+                if let Some(splash) = &self.splash {
+                    splash.paint(self.window);
                 }
             }
             // Windows resizes the window as it is minimised and restored.
             TaoEvent::WindowEvent {
                 event: WindowEvent::Resized(_),
                 ..
-            } => {
-                let foreground = !window.is_minimized();
-                if set_foreground(foreground) {
-                    let _ = lifecycle.send(foreground);
-                }
-            }
+            } => self.follow_foreground(),
             TaoEvent::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
-            } => *flow = ControlFlow::Exit,
+            } => self.exit = true,
             _ => {}
         }
-    });
-    let _ = deliveries.join();
-    drop(runtime);
-    Ok(())
+        if self.exit {
+            return ControlFlow::Exit;
+        }
+        self.splash
+            .as_ref()
+            .and_then(Splash::due)
+            .map_or(ControlFlow::Wait, ControlFlow::WaitUntil)
+    }
+
+    fn shell_event(&mut self, event: ShellEvent) {
+        match (event, &mut self.running) {
+            (ShellEvent::Started(runtime), _) => self.open(runtime),
+            (ShellEvent::PageLoaded, Some(running)) => {
+                if self.splash.take().is_some() {
+                    running.app.show_page();
+                }
+            }
+            (event, Some(running)) => self.exit = !running.handle(event),
+            (event, None) => self.pending.push(event),
+        }
+    }
+
+    /// Opens the app on the started `runtime`, then handles the events that
+    /// arrived before it started.
+    fn open(&mut self, runtime: Result<Runtime>) {
+        let hidden = self.splash.is_some();
+        match Running::open(
+            self.window,
+            self.config,
+            self.state,
+            runtime,
+            &self.events,
+            hidden,
+        ) {
+            Ok(running) => self.running = Some(running),
+            Err(error) => {
+                self.error = Some(error);
+                self.exit = true;
+                return;
+            }
+        }
+        for event in std::mem::take(&mut self.pending) {
+            self.shell_event(event);
+        }
+        self.follow_foreground();
+    }
+
+    fn follow_foreground(&self) {
+        let Some(running) = &self.running else { return };
+        let foreground = !self.window.is_minimized();
+        if running.runtime.set_foreground(foreground) {
+            let _ = running.lifecycle.send(foreground);
+        }
+    }
+
+    /// Closes the app, returning why it could not open.
+    fn finish(self) -> Result<()> {
+        if let Some(running) = self.running {
+            running.stop();
+        }
+        self.error.map_or(Ok(()), Err)
+    }
+}
+
+/// The app once the runtime has started: its window and the runtime's
+/// lifecycle events.
+struct Running<'a> {
+    app: AppWindow<'a>,
+    runtime: Arc<Runtime>,
+    lifecycle: Sender<bool>,
+    deliveries: JoinHandle<()>,
+}
+
+impl<'a> Running<'a> {
+    fn open(
+        window: &'a Window,
+        config: &'a ShellConfig,
+        state: &Path,
+        runtime: Result<Runtime>,
+        events: &EventLoopProxy<ShellEvent>,
+        hidden: bool,
+    ) -> Result<Self> {
+        let runtime = Arc::new(runtime?);
+        let app = AppWindow::new(window, config, state, &runtime, events.clone(), hidden)?;
+        let (lifecycle, deliveries) = deliver_lifecycle_events(Arc::clone(&runtime))?;
+        Ok(Self {
+            app,
+            runtime,
+            lifecycle,
+            deliveries,
+        })
+    }
+
+    /// Handles `event`, returning false when the app must close.
+    fn handle(&mut self, event: ShellEvent) -> bool {
+        match event {
+            ShellEvent::Call {
+                id,
+                method,
+                payload,
+            } => self.app.call(&self.runtime, id, &method, &payload),
+            ShellEvent::Unsupported { id, message } => {
+                controls::respond(&self.runtime, id, Err(("NotSupportedError", message)));
+            }
+            ShellEvent::Runtime(Event::CertificatesRenewed) => {
+                if let Err(error) = self.app.renew_identity() {
+                    eprintln!("tokamak client certificate renewal failed: {error:#}");
+                }
+            }
+            ShellEvent::Runtime(Event::Listening { port }) => {
+                if let Err(error) = self.app.gateway_moved(port) {
+                    eprintln!("tokamak could not follow the gateway to port {port}: {error:#}");
+                    return false;
+                }
+            }
+            ShellEvent::BrowserExited => {
+                if let Err(error) = self.app.browser_exited() {
+                    eprintln!("tokamak could not reopen the app: {error:#}");
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Closes the page, then stops the runtime once its lifecycle events are delivered.
+    fn stop(self) {
+        drop(self.app);
+        drop(self.lifecycle);
+        let _ = self.deliveries.join();
+        drop(self.runtime);
+    }
 }
 
 /// The app's `WebView`, with the handlers installed on it.
@@ -157,18 +305,22 @@ struct AppWindow<'a> {
     page: Option<Page>,
     /// Waits for the browser process of the closed page to exit.
     exit: Option<BrowserExit>,
+    /// Whether the page stays hidden under the splash.
+    hidden: bool,
 }
 
 impl<'a> AppWindow<'a> {
-    /// The app's `window`, with the page open on the gateway's port.
+    /// The app's `window`, with the page open on the gateway's port, hidden
+    /// while `hidden`.
     fn new(
         window: &'a Window,
         config: &'a ShellConfig,
         state: &Path,
         runtime: &Runtime,
-        identity: ClientIdentity,
         events: EventLoopProxy<ShellEvent>,
+        hidden: bool,
     ) -> Result<Self> {
+        let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
         let mut app = Self {
             window,
             context: WebContext::new(Some(state.join("webview"))),
@@ -180,6 +332,7 @@ impl<'a> AppWindow<'a> {
             port: runtime.port(),
             page: None,
             exit: None,
+            hidden,
         };
         app.open()?;
         Ok(app)
@@ -188,7 +341,14 @@ impl<'a> AppWindow<'a> {
     /// Opens the page on the gateway's port.
     fn open(&mut self) -> Result<()> {
         let host = &self.config.host;
-        let webview = build_webview(self.window, &mut self.context, host, self.port)?;
+        let webview = build_webview(
+            self.window,
+            &mut self.context,
+            host,
+            self.port,
+            self.events.clone(),
+            self.hidden,
+        )?;
         let handlers = Handlers::install(
             &webview,
             Arc::clone(&self.certificates),
@@ -204,6 +364,16 @@ impl<'a> AppWindow<'a> {
             webview,
         });
         Ok(())
+    }
+
+    /// Shows the page in place of the splash.
+    fn show_page(&mut self) {
+        self.hidden = false;
+        if let Some(page) = &self.page
+            && let Err(error) = page.webview.set_visible(true)
+        {
+            eprintln!("tokamak could not show the page: {error}");
+        }
     }
 
     /// Performs the Worker's call `id` on the `WebView`, or refuses it while
@@ -284,17 +454,21 @@ impl Drop for BrowserExit {
     }
 }
 
-/// The `WebView` in `window`, which keeps the app's origin and opens other
-/// URLs in the default browser.
+/// The `WebView` in `window`, which keeps the app's origin, opens other URLs
+/// in the default browser and sends `ShellEvent::PageLoaded` as each page
+/// loads. While `hidden`, its window is hidden and `WebView2` loads the page
+/// as a visible one, so the page runs as it does once shown.
 fn build_webview(
     window: &Window,
     context: &mut WebContext,
     host: &str,
     port: u16,
+    events: EventLoopProxy<ShellEvent>,
+    hidden: bool,
 ) -> Result<WebView> {
     let navigation_host = host.to_owned();
     let new_window_host = host.to_owned();
-    WebViewBuilder::new_with_web_context(context)
+    let webview = WebViewBuilder::new_with_web_context(context)
         .with_additional_browser_args(browser_arguments(host, port))
         .with_navigation_handler(move |url| {
             if is_app_origin(&url, &navigation_host) {
@@ -315,8 +489,18 @@ fn build_webview(
             }
             NewWindowResponse::Deny
         })
+        .with_on_page_load_handler(move |event, _| {
+            if matches!(event, PageLoadEvent::Finished) {
+                let _ = events.send_event(ShellEvent::PageLoaded);
+            }
+        })
+        .with_visible(!hidden)
         .build(window)
-        .context("create WebView2")
+        .context("create WebView2")?;
+    if hidden {
+        unsafe { webview.controller().SetIsVisible(true) }.context("load the page hidden")?;
+    }
+    Ok(webview)
 }
 
 /// Delivers `resume` for each `true` the returned sender receives and
@@ -336,6 +520,23 @@ fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, Join
         })
         .context("start lifecycle events")?;
     Ok((sender, deliveries))
+}
+
+/// Starts the runtime on a thread, which sends `ShellEvent::Started` with it.
+fn spawn_runtime(
+    config: &ShellConfig,
+    root: &Path,
+    state: &Path,
+    events: EventLoopProxy<ShellEvent>,
+) -> Result<JoinHandle<()>> {
+    let (config, root, state) = (config.clone(), root.to_owned(), state.to_owned());
+    thread::Builder::new()
+        .name("tokamak-start".to_owned())
+        .spawn(move || {
+            let runtime = start_runtime(&config, &root, &state, events.clone());
+            let _ = events.send_event(ShellEvent::Started(runtime));
+        })
+        .context("start the runtime")
 }
 
 fn start_runtime(
@@ -388,10 +589,13 @@ fn executable_dir() -> Result<PathBuf> {
 }
 
 /// The app's window, titled `title`, with the app icon when the app has one.
+/// It is hidden, and white as an empty `WebView` is.
 fn build_window(event_loop: &EventLoop<ShellEvent>, root: &Path, title: &str) -> Result<Window> {
     WindowBuilder::new()
         .with_title(title)
         .with_window_icon(load_window_icon(root)?)
+        .with_visible(false)
+        .with_background_color((255, 255, 255, 255))
         .build(event_loop)
         .context("create app window")
 }

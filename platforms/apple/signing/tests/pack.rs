@@ -841,6 +841,110 @@ fn compiles_the_icon_package() -> Result<()> {
     Ok(())
 }
 
+/// Splash images, named as `light` and `dark` in the fixture's root, and the
+/// splash settings, as tok passes them.
+struct SplashSettings {
+    image: PathBuf,
+    image_dark: PathBuf,
+}
+
+impl SplashSettings {
+    fn new(fixture: &Fixture, light: &str, dark: &str) -> Result<Self> {
+        let image = fixture.root.path().join(light);
+        let image_dark = fixture.root.path().join(dark);
+        fs::write(&image, "png")?;
+        fs::write(&image_dark, "gif")?;
+        Ok(Self { image, image_dark })
+    }
+
+    fn apply<'a>(&self, fixture: &Fixture, command: &'a mut Command) -> &'a mut Command {
+        command
+            .env(fixture.variable("SPLASH_IMAGE"), &self.image)
+            .env(fixture.variable("SPLASH_IMAGE_DARK"), &self.image_dark)
+            .env(fixture.variable("SPLASH_WIDTH"), "120")
+            .env(fixture.variable("SPLASH_BACKGROUND"), "#0B1220")
+            .env(fixture.variable("SPLASH_BACKGROUND_DARK"), "#000000")
+    }
+}
+
+/// The one actool run the fake tools logged.
+fn single_actool_run(fixture: &Fixture) -> Result<String> {
+    let [actool] = fixture
+        .logged(" actool ")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("actool did not run once"))?;
+    Ok(actool)
+}
+
+#[test]
+fn stages_the_splash_images_and_background_colour() -> Result<()> {
+    for (target, resources, launch_color) in [
+        ("macos-arm64", "Contents/Resources", None),
+        ("ios-simulator-arm64", "", Some("TokamakSplashBackground")),
+    ] {
+        let fixture = Fixture::new(target)?;
+        let splash = SplashSettings::new(&fixture, "Splash.PNG", "dark.gif")?;
+
+        run(splash.apply(&fixture, &mut fixture.fake_build()?))?;
+
+        let resources = fixture.output().join(resources);
+        assert_eq!(fs::read(resources.join("TokamakSplash.png"))?, b"png");
+        assert_eq!(fs::read(resources.join("TokamakSplashDark.gif"))?, b"gif");
+        let plist = fixture.plist()?;
+        assert_eq!(
+            string(&plist, "TokamakSplashImageDark"),
+            Some("TokamakSplashDark.gif")
+        );
+        assert_eq!(
+            plist.get("TokamakSplashWidth"),
+            Some(&Value::Integer(120.into()))
+        );
+        let launch_screen = plist.get("UILaunchScreen").and_then(Value::as_dictionary);
+        assert_eq!(
+            launch_screen.and_then(|launch_screen| string(launch_screen, "UIColorName")),
+            launch_color,
+            "{target}"
+        );
+        let actool = single_actool_run(&fixture)?;
+        assert!(!actool.contains("--app-icon"), "{target}");
+        assert!(actool.ends_with("/TokamakSplash.xcassets"), "{target}");
+    }
+    Ok(())
+}
+
+#[test]
+fn rebuilds_with_a_changed_splash_image_and_compiles_it_with_the_icon() -> Result<()> {
+    let fixture = Fixture::new("ios-simulator-arm64")?;
+    let splash = SplashSettings::new(&fixture, "splash.png", "dark.gif")?;
+    run(splash.apply(&fixture, &mut fixture.fake_build()?))?;
+
+    fs::write(&splash.image, "png 2")?;
+    let icon = fixture.icon()?;
+    run(splash.apply(
+        &fixture,
+        fixture.fake_build()?.env(fixture.variable("ICON"), &icon),
+    ))?;
+
+    assert_eq!(
+        fs::read(fixture.output().join("TokamakSplash.png"))?,
+        b"png 2"
+    );
+    let actool = fixture.logged(" actool ")?;
+    assert_eq!(actool.len(), 2);
+    assert!(
+        actool[1].contains("--app-icon AppIcon")
+            && actool[1].contains("/TokamakSplash.xcassets ")
+            && actool[1].ends_with("/AppIcon.icon"),
+        "{}",
+        actool[1]
+    );
+    assert_eq!(
+        string(&fixture.plist()?, "CFBundleIconName"),
+        Some("AppIcon")
+    );
+    Ok(())
+}
+
 #[test]
 fn rejects_invalid_icons_plugin_classes_and_build_numbers() -> Result<()> {
     let fixture = Fixture::new("macos-arm64")?;

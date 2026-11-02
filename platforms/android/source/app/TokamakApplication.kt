@@ -216,7 +216,7 @@ class TokamakApplication : Application(), TokamakPlugins {
         return runtime
     }
 
-    private fun metadata() =
+    internal fun metadata() =
         packageManager.getApplicationInfo(packageName, PackageManager.GET_META_DATA).metaData
 
     /** Copy the packaged app out of the APK once per install, so the runtime can read it as files. */

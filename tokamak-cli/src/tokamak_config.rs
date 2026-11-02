@@ -1,12 +1,15 @@
 //! The app's tokamak configuration: the options of the tokamak Vite plugin.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
-use tokamak_cli::{Platform, is_valid_key};
+use tokamak_cli::{Platform, VariableKind, is_valid_key};
+
+use super::splash;
 
 /// The app's tokamak configuration.
 #[derive(Debug, Eq, PartialEq)]
@@ -40,6 +43,8 @@ pub(crate) struct PlatformConfig {
     pub(crate) identifier: Option<String>,
     /// Icon path, absolute.
     pub(crate) icon: Option<PathBuf>,
+    /// Splash values by key, as text; image paths are absolute.
+    pub(crate) splash: BTreeMap<&'static str, OsString>,
     /// Values for the platform's pack; numbers and booleans are written as strings.
     pub(crate) pack: BTreeMap<String, String>,
 }
@@ -52,10 +57,13 @@ impl TokamakConfig {
             .get(platform.namespace())
             .cloned()
             .unwrap_or_default();
+        let mut splash = self.top.splash.clone();
+        splash.extend(own.splash);
         PlatformConfig {
             name: own.name.or_else(|| self.top.name.clone()),
             identifier: own.identifier.or_else(|| self.top.identifier.clone()),
             icon: own.icon.or_else(|| self.top.icon.clone()),
+            splash,
             pack: own.pack,
         }
     }
@@ -74,16 +82,21 @@ pub(crate) fn slug(name: &str) -> String {
 /// The configuration `config`, the plugin's options, in the Vite root `root`.
 ///
 /// Top-level values are defaults; a platform object overrides them for that
-/// platform. Relative icon paths are resolved against `root`. Other
-/// platform-object keys are values for that platform's pack. Other top-level
-/// objects are plugins' values, by plugin ID. `null` leaves a value unset.
+/// platform. Relative icon and splash image paths are resolved against `root`.
+/// Other platform-object keys are values for that platform's pack. Other
+/// top-level objects are plugins' values, by plugin ID. `null` leaves a value
+/// unset.
 pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig> {
     if !config.is_object() {
         return Err(invalid("options must be an object"));
     }
     let mut raw = RawConfig::deserialize(config).map_err(invalid)?;
+    let (splash, others): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut raw.top.pack)
+        .into_iter()
+        .partition(|(key, _)| splash::keys().any(|(splash_key, _)| splash_key == key));
+    raw.top.pack = splash;
     let mut plugins = BTreeMap::new();
-    for (key, value) in std::mem::take(&mut raw.top.pack) {
+    for (key, value) in others {
         let section = match value {
             Value::Null => continue,
             Value::Object(section) => section,
@@ -179,13 +192,26 @@ struct RawPlatformConfig {
     pack: BTreeMap<String, Value>,
 }
 
-/// The values of the object at `prefix`, with relative icon paths under `root`.
+/// The values of the object at `prefix`, with relative icon and splash image
+/// paths under `root`.
 fn platform_config(root: &Path, prefix: &str, raw: RawPlatformConfig) -> Result<PlatformConfig> {
     let field = |key: &str| format!("{prefix}{key}");
+    let mut splash = BTreeMap::new();
     let mut pack = BTreeMap::new();
     for (key, value) in raw.pack {
-        if let Some(value) = pack_value(&field(&key), &key, value)? {
-            pack.insert(key, value);
+        let Some(value) = pack_value(&field(&key), &key, value)? else {
+            continue;
+        };
+        match splash::keys().find(|(splash_key, _)| *splash_key == key) {
+            Some((key, VariableKind::Path)) => {
+                splash.insert(key, root.join(value).into_os_string());
+            }
+            Some((key, VariableKind::String)) => {
+                splash.insert(key, value.into());
+            }
+            None => {
+                pack.insert(key, value);
+            }
         }
     }
     Ok(PlatformConfig {
@@ -201,6 +227,7 @@ fn platform_config(root: &Path, prefix: &str, raw: RawPlatformConfig) -> Result<
             .icon
             .map(|icon| validate_value(&field("icon"), icon).map(|icon| root.join(icon)))
             .transpose()?,
+        splash,
         pack,
     })
 }
@@ -321,6 +348,7 @@ mod tests {
             name: name.map(str::to_owned),
             identifier: identifier.map(str::to_owned),
             icon,
+            splash: BTreeMap::new(),
             pack: BTreeMap::new(),
         }
     }
@@ -331,6 +359,48 @@ mod tests {
         for (platform, expected) in expected {
             assert_eq!(&config.for_platform(*platform), expected, "{platform:?}");
         }
+    }
+
+    #[test]
+    fn splash_values_merge_by_key_with_image_paths_under_the_root() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let config = parse_config(
+            temporary.path(),
+            &serde_json::json!({
+              "splash-image": "assets/splash.png",
+              "splash-width": 120,
+              "splash-background": "#0B1220",
+              "ios": { "splash-width": "140", "splash-image-dark": "dark.gif" },
+              "android": { "splash-background": null, "team-id": "TEAM" }
+            }),
+        )?;
+        let splash = |platform| config.for_platform(platform).splash;
+        let image = temporary.path().join("assets/splash.png").into_os_string();
+        assert_eq!(
+            splash(Platform::Ios),
+            BTreeMap::from([
+                ("splash-image", image.clone()),
+                (
+                    "splash-image-dark",
+                    temporary.path().join("dark.gif").into_os_string()
+                ),
+                ("splash-width", "140".into()),
+                ("splash-background", "#0B1220".into()),
+            ])
+        );
+        assert_eq!(
+            splash(Platform::Android),
+            BTreeMap::from([
+                ("splash-image", image),
+                ("splash-width", "120".into()),
+                ("splash-background", "#0B1220".into()),
+            ])
+        );
+        assert_eq!(
+            config.for_platform(Platform::Android).pack,
+            BTreeMap::from([("team-id".to_owned(), "TEAM".to_owned())])
+        );
+        Ok(())
     }
 
     #[test]

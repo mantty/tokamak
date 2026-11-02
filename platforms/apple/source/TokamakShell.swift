@@ -14,9 +14,12 @@ private let failurePage =
 
 private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
   private let runtime: RuntimeHandle
+  /// Called once, when the first navigation finishes or fails.
+  private var firstLoad: (() -> Void)?
 
-  init(runtime: RuntimeHandle) {
+  init(runtime: RuntimeHandle, firstLoad: @escaping () -> Void) {
     self.runtime = runtime
+    self.firstLoad = firstLoad
   }
 
   func webView(
@@ -122,12 +125,31 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
     }
   }
 
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
+    finishFirstLoad()
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    didFail navigation: WKNavigation?,
+    withError error: Error
+  ) {
+    print("tokamak WebView navigation failed: \(error)")
+    finishFirstLoad()
+  }
+
   func webView(
     _ webView: WKWebView,
     didFailProvisionalNavigation navigation: WKNavigation?,
     withError error: Error
   ) {
     print("tokamak WebView navigation failed: \(error)")
+    finishFirstLoad()
+  }
+
+  private func finishFirstLoad() {
+    firstLoad?()
+    firstLoad = nil
   }
 
   private func openExternal(_ url: URL) {
@@ -226,14 +248,22 @@ private final class TokamakController {
     self.app = app
   }
 
-  func start(frame: CGRect, completion: @escaping (WKWebView) -> Void) {
+  /// Creates the WebView once the runtime has started, and calls `firstLoad`
+  /// once its first page has loaded or failed, or at once with the failure
+  /// page.
+  func start(
+    frame: CGRect,
+    firstLoad: @escaping () -> Void,
+    completion: @escaping (WKWebView) -> Void
+  ) {
     app.whenStarted { result in
       switch result {
       case .success(let runtime):
         self.runtime = runtime
-        completion(self.webView(frame: frame, runtime: runtime))
+        completion(self.webView(frame: frame, runtime: runtime, firstLoad: firstLoad))
       case .failure:
         completion(self.failureWebView(frame: frame))
+        firstLoad()
       }
     }
   }
@@ -272,7 +302,11 @@ private final class TokamakController {
     }.start()
   }
 
-  private func webView(frame: CGRect, runtime: RuntimeHandle) -> WKWebView {
+  private func webView(
+    frame: CGRect,
+    runtime: RuntimeHandle,
+    firstLoad: @escaping () -> Void
+  ) -> WKWebView {
     let configuration = WKWebViewConfiguration()
     let dataStore = WKWebsiteDataStore.default()
     let port = runtime.port
@@ -286,7 +320,7 @@ private final class TokamakController {
     #endif
     configuration.mediaTypesRequiringUserActionForPlayback = []
 
-    let navigation = NavigationDelegate(runtime: runtime)
+    let navigation = NavigationDelegate(runtime: runtime, firstLoad: firstLoad)
     self.navigation = navigation
     let webView = WKWebView(frame: frame, configuration: configuration)
     #if os(iOS)
@@ -344,10 +378,19 @@ private final class TokamakController {
       observeVisibility()
 
       guard let content = window.contentView else { return }
-      controller.start(frame: content.bounds) { webView in
-        webView.autoresizingMask = [.width, .height]
-        content.addSubview(webView)
+      let dark = window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+      let splash = TokamakSplash(frame: content.bounds, dark: dark)
+      if let splash {
+        content.addSubview(splash.view)
       }
+      controller.start(
+        frame: content.bounds,
+        firstLoad: { splash?.remove() },
+        completion: { webView in
+          webView.autoresizingMask = [.width, .height]
+          content.addSubview(webView, positioned: .below, relativeTo: nil)
+        }
+      )
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -498,11 +541,23 @@ private final class TokamakController {
       window.makeKeyAndVisible()
       self.window = window
 
-      let controller = TokamakController(app: app)
-      controller.start(frame: viewController.view.bounds) { webView in
-        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        viewController.view.addSubview(webView)
+      let view: UIView = viewController.view
+      let splash = TokamakSplash(
+        frame: view.bounds,
+        dark: scene.traitCollection.userInterfaceStyle == .dark
+      )
+      if let splash {
+        view.addSubview(splash.view)
       }
+      let controller = TokamakController(app: app)
+      controller.start(
+        frame: view.bounds,
+        firstLoad: { splash?.remove() },
+        completion: { webView in
+          webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+          view.insertSubview(webView, at: 0)
+        }
+      )
       self.controller = controller
     }
 

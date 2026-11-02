@@ -7,7 +7,11 @@ use url::Url;
 use wry::WebView;
 
 pub(super) enum ShellEvent {
+    /// The runtime started, or failed to.
+    Started(anyhow::Result<Runtime>),
     Runtime(Event),
+    /// A page finished loading or failed to.
+    PageLoaded,
     /// The browser process that served the app's closed page has exited.
     BrowserExited,
     Call {

@@ -17,11 +17,15 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.security.spec.PKCS8EncodedKeySpec
 
-/** Answers the app origin's TLS challenges with the runtime's decision. */
+/**
+ * Answers the app origin's TLS challenges with the runtime's decision, and
+ * calls `pageFinished` as each page finishes loading or fails to.
+ */
 internal class TokamakWebViewClient(
     private val activity: Activity,
     private val host: String,
     private val runtime: TokamakRuntime,
+    private val pageFinished: () -> Unit,
 ) : WebViewClient() {
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         val uri = Uri.parse(url)
@@ -30,6 +34,8 @@ internal class TokamakWebViewClient(
             openExternal(uri)
         }
     }
+
+    override fun onPageFinished(view: WebView, url: String) = pageFinished()
 
     override fun shouldOverrideUrlLoading(
         view: WebView,
