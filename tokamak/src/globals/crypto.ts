@@ -686,8 +686,35 @@ function importJwk(jwk: JsonWebKey, asymmetric: Asymmetric, extractable: boolean
   if (asymmetric.kind === "x25519" && jwk.crv !== "X25519") throw dataError("JWK curve does not match the algorithm");
   const privateKey = jwk.d !== undefined;
   validateAsymmetricUsages(usages, asymmetric.name, privateKey ? "private" : "public");
+  if (jwk.alg !== undefined) validateAsymmetricJwkAlg(jwk.alg, asymmetric);
   const key = cryptoImportKey({ format: "jwk", kind: asymmetric.kind, curve: asymmetric.namedCurve, jwk: JSON.stringify(jwk) });
   return asymmetricKey(importedAlgorithm(asymmetric, key), extractable, usages, key, privateKey);
+}
+// The hash of each RSA JWK `alg`. workerd checks an RSA key's `alg` against
+// all of them, whichever RSA algorithm imports it.
+const rsaJwkHashes = new Map([
+  ["RS1", "SHA-1"], ["RS256", "SHA-256"], ["RS384", "SHA-384"], ["RS512", "SHA-512"],
+  ["PS1", "SHA-1"], ["PS256", "SHA-256"], ["PS384", "SHA-384"], ["PS512", "SHA-512"],
+  ["RSA-OAEP", "SHA-1"], ["RSA-OAEP-256", "SHA-256"], ["RSA-OAEP-384", "SHA-384"], ["RSA-OAEP-512", "SHA-512"],
+]);
+const ecdsaJwkCurves = new Map([["ES256", "P-256"], ["ES384", "P-384"], ["ES512", "P-521"]]);
+// Rejects a JWK `alg` that does not match `asymmetric`, as workerd does. Only
+// RSA key algorithms have a hash; ECDH and X25519 keys accept any `alg`.
+function validateAsymmetricJwkAlg(alg: string, asymmetric: Asymmetric) {
+  const mismatch = (requested: string) => dataError(`JSON Web Key Algorithm parameter "alg" ("${alg}") does not match requested ${requested}.`);
+  const unrecognized = () => notSupported(`Unrecognized or unimplemented algorithm "${alg}" listed in JSON Web Key Algorithm parameter.`);
+  if (asymmetric.kind === "ed25519") {
+    if (alg !== "EdDSA") throw mismatch("Ed25519 curve");
+  } else if (asymmetric.name === "ECDSA") {
+    const curve = ecdsaJwkCurves.get(alg);
+    if (curve === undefined) throw unrecognized();
+    if (curve !== asymmetric.namedCurve) throw mismatch("curve");
+  } else if (asymmetric.keyAlgorithm.hash !== undefined) {
+    const hash = rsaJwkHashes.get(alg);
+    if (hash === undefined) throw unrecognized();
+    // workerd names the alg where the requested hash belongs.
+    if (hash !== asymmetric.keyAlgorithm.hash.name) throw mismatch(`hash algorithm "${alg}"`);
+  }
 }
 function addJwkMetadata(value: Record<PropertyKey, unknown>, record: KeyRecord) {
   value.key_ops = record.usages.slice();
@@ -696,7 +723,7 @@ function addJwkMetadata(value: Record<PropertyKey, unknown>, record: KeyRecord) 
   if (name === "RSASSA-PKCS1-V1_5") value.alg = `RS${hashName(record.algorithm).slice(4)}`;
   else if (name === "RSA-PSS") value.alg = `PS${hashName(record.algorithm).slice(4)}`;
   else if (name === "RSA-OAEP") value.alg = hashName(record.algorithm) === "SHA-1" ? "RSA-OAEP" : `RSA-OAEP-${hashName(record.algorithm).slice(4)}`;
-  else if (name === "Ed25519" || name === "NODE-ED25519") value.alg = "EdDSA";
+  else if (name === "ED25519") value.alg = "EdDSA";
   return exportedJwk(value);
 }
 

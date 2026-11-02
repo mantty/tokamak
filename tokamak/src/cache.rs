@@ -11,17 +11,13 @@ use rquickjs::{Ctx, Exception, FromJs, IntoJs, TypedArray};
 use crate::lock;
 use crate::typed::StringPairs;
 
-/// A cached response's status line, headers and response properties.
+/// A cached response's status line and headers.
 #[derive(Clone, Debug, FromJs, IntoJs, JsType)]
 #[qjs(rename_all = "camelCase")]
 pub(crate) struct CacheMetadata {
     status: u16,
     status_text: String,
     headers: StringPairs,
-    url: String,
-    redirected: bool,
-    #[qjs(rename = "type")]
-    response_type: String,
 }
 
 #[derive(Clone, Debug)]

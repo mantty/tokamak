@@ -239,7 +239,9 @@ async function webCryptoContracts() {
     raw: hex(await subtle.exportKey("raw", edPublic)),
     spki: hex(await subtle.exportKey("spki", edPublic)),
     pkcs8: hex(await subtle.exportKey("pkcs8", edPrivate)),
-    jwk: { ...await subtle.exportKey("jwk", edPrivate), alg: undefined },
+    jwk: await subtle.exportKey("jwk", edPrivate),
+    publicJwk: await subtle.exportKey("jwk", edPublic),
+    nodeJwk: await subtle.exportKey("jwk", await subtle.importKey("jwk", fixtures.ed25519Jwk, { name: "NODE-ED25519", namedCurve: "NODE-ED25519" }, true, ["sign"])),
   };
   const xPrivate = await subtle.importKey("jwk", fixtures.x25519.a, "X25519", true, ["deriveBits"]);
   const xPublic = await subtle.importKey("jwk", publicJwk(fixtures.x25519.b), "X25519", true, []);
@@ -249,6 +251,28 @@ async function webCryptoContracts() {
     spki: hex(await subtle.exportKey("spki", xPublic)),
     pkcs8: hex(await subtle.exportKey("pkcs8", xPrivate)),
     jwk: await subtle.exportKey("jwk", xPrivate),
+  };
+
+  // workerd checks a JWK's alg when Ed25519, ECDSA or an RSA algorithm imports
+  // it, and not when ECDH or X25519 does.
+  const importedAlg = (jwk: JsonWebKey, algorithm: string | SubtleCryptoImportKeyAlgorithm, usages: string[]) =>
+    asyncOutcome(async () => (await subtle.exportKey("jwk", await subtle.importKey("jwk", jwk, algorithm, true, usages))).alg ?? null);
+  const algCases = (jwk: JsonWebKey, algorithm: string | SubtleCryptoImportKeyAlgorithm, usages: string[], algs: string[]) =>
+    Promise.all(algs.map(alg => importedAlg({ ...jwk, alg }, algorithm, usages)));
+  const p256 = fixtures["ecP-256"].a;
+  result.jwkImportAlgs = {
+    ed25519: await algCases(fixtures.ed25519Jwk, "Ed25519", ["sign"], ["EdDSA", "Ed25519", "RS256", ""]),
+    ed25519Public: await algCases(publicJwk(fixtures.ed25519Jwk), "Ed25519", ["verify"], ["EdDSA", "Ed25519"]),
+    nodeEd25519: await algCases(fixtures.ed25519Jwk, { name: "NODE-ED25519", namedCurve: "NODE-ED25519" }, ["sign"], ["EdDSA", "Ed25519"]),
+    x25519: await algCases(fixtures.x25519.a, "X25519", ["deriveBits"], ["ECDH-ES", "X25519", "EdDSA"]),
+    ecdsa: await algCases(p256, { name: "ECDSA", namedCurve: "P-256" }, ["sign"], ["ES256", "ES384", "ES512", "RS256"]),
+    ecdh: await algCases(p256, { name: "ECDH", namedCurve: "P-256" }, ["deriveBits"], ["ES384", "RS256"]),
+    rsa: await algCases(fixtures.rsaPrivateJwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, ["sign"], ["RS256", "RS512", "PS256", "RSA-OAEP-256", "RS1", "ES256"]),
+    rsaPss: await algCases(fixtures.rsaPrivateJwk, { name: "RSA-PSS", hash: "SHA-384" }, ["sign"], ["PS384", "RS384", "PS256"]),
+    rsaOaep: await algCases(fixtures.rsaPrivateJwk, { name: "RSA-OAEP", hash: "SHA-1" }, ["decrypt"], ["RSA-OAEP", "RS1", "RSA-OAEP-256"]),
+    nonString: await Promise.all([5, null].map(alg => importedAlg(
+      // @ts-expect-error The alg member is not a string.
+      { ...fixtures.ed25519Jwk, alg }, "Ed25519", ["sign"]))),
   };
 
   const generated = keyPair(await subtle.generateKey({ name: "RSA-PSS", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]));

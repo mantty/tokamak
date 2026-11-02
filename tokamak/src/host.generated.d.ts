@@ -208,9 +208,6 @@ declare module "tokamak:host" {
     status: number;
     statusText: string;
     headers: Array<[string, string]>;
-    url: string;
-    redirected: boolean;
-    type: string;
   }
 
   export interface CachedResponse {

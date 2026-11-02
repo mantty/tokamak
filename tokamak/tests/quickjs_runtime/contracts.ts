@@ -2640,6 +2640,13 @@ export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, con
       requestSurface: (() => { const request = new Request("https://example.test"); return { own: Object.keys(request), prototype: Object.getOwnPropertyNames(Request.prototype).sort(), signal: typeof request.signal, cf: request.cf }; })(),
       responseSurface: (() => { const response = new Response("body"); return { own: Object.keys(response), prototype: Object.getOwnPropertyNames(Response.prototype).sort(), url: response.url, type: response.type, redirected: response.redirected, webSocket: response.webSocket }; })(),
       blobSurface: (() => { const blob = new Blob(["body"]); return { own: Object.keys(blob), prototype: Object.getOwnPropertyNames(Blob.prototype).sort(), filePrototype: Object.getOwnPropertyNames(File.prototype).sort(), formPrototype: Object.getOwnPropertyNames(FormData.prototype).sort(), headersPrototype: Object.getOwnPropertyNames(Headers.prototype).sort() }; })(),
+      // A Response's init cannot set its url, redirected or type.
+      responseInit: (() => {
+        const init = { url: "https://example.test/a", redirected: true, type: "opaque", status: 201 };
+        return [new Response("x", init), new Response(null, init), Response.json({}, init), new Response("x", init).clone(),
+          Response.redirect("https://example.test/b"), Response.error(), Response.error().clone()]
+          .map(response => [response.url, response.redirected, response.type, response.status]);
+      })(),
       urlSurface: { url: Object.getOwnPropertyNames(URL.prototype).sort(), params: Object.getOwnPropertyNames(URLSearchParams.prototype).sort(), pattern: Object.getOwnPropertyNames(URLPattern.prototype).sort() },
     },
     formDataEdges: {
