@@ -124,6 +124,7 @@ jobs:
           npm ci --prefix tokamak-cli/npm --omit=optional --ignore-scripts
           npm run build --prefix tokamak-cli/npm
           pnpm --dir plugins install --frozen-lockfile
+          pnpm --dir plugins build
           pnpm --dir examples/astro install --frozen-lockfile
 
       - name: Select the newest Xcode
@@ -194,6 +195,12 @@ jobs:
         with:
           key: ${{ matrix.target }}
           cache-bin: false
+
+      # The runtime's build strips the types from its TypeScript modules with Node.
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Build CLI
         run: cargo build --locked --package tokamak-cli --release --target "${{ matrix.target }}"
@@ -304,9 +311,6 @@ jobs:
           cache: npm
           cache-dependency-path: tokamak-cli/npm/package-lock.json
 
-      - name: Check CLI launcher
-        run: node --test tokamak-cli/npm/*.test.js
-
       - name: Download CLI artifacts
         uses: actions/download-artifact@v8.0.1
         with:
@@ -329,6 +333,11 @@ jobs:
 
       - name: Install CLI package dependencies
         run: npm ci --prefix tokamak-cli/npm
+
+      - name: Check CLI launcher
+        run: |
+          npm run build --prefix tokamak-cli/npm
+          node --test tokamak-cli/npm/launcher.test.mts tokamak-cli/npm/platform.test.mts
 
       - name: Set beta version
         id: package-version

@@ -7,7 +7,7 @@
       "description": "Directory of notification sound files the app ships"
     }
   },
-  "build": "build/index.mjs",
+  "build": "dist/build/index.js",
   "platforms": {
     "macos": {
       "class": "TokamakNotifications.TokamakNotificationsPlugin"

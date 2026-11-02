@@ -1,18 +1,19 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use encoding_rs::{DecoderResult, Encoding};
-use rquickjs::function::MutFn;
+use encoding_rs::{Decoder, DecoderResult, Encoding};
+use rquickjs::class::Trace;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
-    ArrayBuffer, Constructor, Ctx, Exception, Function, JsLifetime, Object, TypedArray, Value,
+    ArrayBuffer, Class, Constructor, Ctx, Exception, IntoJs, JsLifetime, Object, TypedArray, Value,
 };
 use std::io::Write;
+use tokamak_macros::host_function;
 
 use crate::runtime_modules;
 
 pub(crate) struct HostModule;
 
-super::host_functions! {
+tokamak_macros::host_functions! {
     pub(super),
     "asyncContextGet" => super::async_context::get,
     "asyncContextSet" => super::async_context::set,
@@ -20,24 +21,40 @@ super::host_functions! {
     "randomBytes" => random_bytes,
     "detachArrayBuffer" => detach_array_buffer,
     "objectClass" => super::objects::class_name,
+    "cloneArrayBuffer" => super::buffers::clone_array_buffer,
+    "scheduleTimer" => super::timers::schedule_timer,
+    "arrayBufferView" => super::buffers::array_buffer_view,
     "createCompression" => super::compression::create,
     "createNodeCompression" => super::compression::node::create,
     "htmlRewrite" => super::html_rewriter::rewrite_html,
     "htmlValidateSelector" => super::html_rewriter::validate_selector,
+    "httpFetch" => crate::network::http::http_fetch,
     "httpStatusText" => crate::network::http::status_text,
     "socketConnect" => crate::network::sockets::start,
-    "ipVersion" => |input: String| crate::network::sockets::ip_version(&input),
+    "ipVersion" => ip_version,
     "cacheMatch" => crate::cache::cache_match,
     "cachePut" => crate::cache::cache_put,
     "cacheDelete" => crate::cache::cache_delete,
-    "writeStdout" => |text: String| write_flushed(&mut std::io::stdout().lock(), &text),
-    "writeStderr" => |text: String| write_flushed(&mut std::io::stderr().lock(), &text),
+    "writeStdout" => write_stdout,
+    "writeStderr" => write_stderr,
     "registerDomException" => register_dom_exception,
-    "builtinNamespace" => |ctx: Ctx<'js>, name: String| runtime_modules::builtin_namespace(ctx, &name),
-    "isNodeBuiltin" => |name: String| runtime_modules::is_node_builtin(&name),
+    "builtinNamespace" => builtin_namespace,
+    "isNodeBuiltin" => is_node_builtin,
     "nodeBuiltinNames" => runtime_modules::node_builtin_names,
-    "processCwd" => crate::fs::working_directory,
-    "processChdir" => crate::fs::change_directory,
+    "processCwd" => crate::fs::node::exports::working_directory,
+    "processChdir" => crate::fs::node::exports::change_directory,
+}
+
+/// The TypeScript signatures of this module's exports.
+#[cfg(test)]
+pub(crate) fn declarations(
+    types: &mut crate::typescript::Types,
+) -> Vec<(&'static str, crate::typescript::Signature)> {
+    let mut declarations = host_declarations(types);
+    declarations.extend(super::crypto::host_declarations(types));
+    declarations.extend(super::intl::host_declarations(types));
+    declarations.extend(super::url::host_declarations(types));
+    declarations
 }
 
 /// The `DOMException` class native errors are created with, registered by the
@@ -45,6 +62,7 @@ super::host_functions! {
 #[derive(JsLifetime)]
 struct DomException<'js>(Constructor<'js>);
 
+#[host_function]
 fn register_dom_exception<'js>(
     ctx: Ctx<'js>,
     constructor: Constructor<'js>,
@@ -65,19 +83,10 @@ pub(super) fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> r
     }
 }
 
-/// Exports that `evaluate` constructs itself.
-const CONSTRUCTED_EXPORTS: [&str; 4] = [
-    "cloneArrayBuffer",
-    "arrayBufferView",
-    "scheduleTimer",
-    "httpFetch",
-];
-
 impl ModuleDef for HostModule {
     fn declare(exports: &Declarations) -> rquickjs::Result<()> {
-        for name in CONSTRUCTED_EXPORTS
+        for name in HOST_EXPORTS
             .iter()
-            .chain(HOST_EXPORTS)
             .chain(super::crypto::HOST_EXPORTS)
             .chain(super::intl::HOST_EXPORTS)
             .chain(super::url::HOST_EXPORTS)
@@ -88,30 +97,53 @@ impl ModuleDef for HostModule {
     }
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-        super::buffers::export(ctx, exports)?;
-        exports.export("scheduleTimer", super::timers::scheduler(ctx.clone())?)?;
+        super::buffers::install(ctx);
         export_host_functions(ctx, exports)?;
         super::crypto::export_host_functions(ctx, exports)?;
         super::intl::export_host_functions(ctx, exports)?;
         super::url::export_host_functions(ctx, exports)?;
-        let client = crate::network::http::client()
-            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
-        exports.export(
-            "httpFetch",
-            Function::new(
-                ctx.clone(),
-                move |ctx: Ctx<'js>,
-                      url: String,
-                      method: String,
-                      headers: String,
-                      body: Value<'js>,
-                      redirect: String| {
-                    crate::network::http::start(ctx, &client, url, method, headers, body, redirect)
-                },
-            )?,
-        )?;
-        Ok(())
+        crate::network::http::attach(ctx)
     }
+}
+
+#[host_function]
+fn ip_version(input: String) -> u8 {
+    crate::network::sockets::ip_version(&input)
+}
+
+#[host_function]
+fn write_stdout(text: String) {
+    write_flushed(&mut std::io::stdout().lock(), &text);
+}
+
+#[host_function]
+fn write_stderr(text: String) {
+    write_flushed(&mut std::io::stderr().lock(), &text);
+}
+
+/// A module's namespace object.
+struct ModuleNamespace<'js>(Object<'js>);
+
+impl<'js> IntoJs<'js> for ModuleNamespace<'js> {
+    fn into_js(self, _: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        Ok(self.0.into_value())
+    }
+}
+
+impl crate::typescript::JsType for ModuleNamespace<'_> {
+    fn typescript(_: &mut crate::typescript::Types) -> String {
+        "Record<string, unknown>".to_owned()
+    }
+}
+
+#[host_function]
+fn builtin_namespace(ctx: Ctx<'_>, name: String) -> rquickjs::Result<Option<ModuleNamespace<'_>>> {
+    Ok(runtime_modules::builtin_namespace(ctx, &name)?.map(ModuleNamespace))
+}
+
+#[host_function]
+fn is_node_builtin(name: String) -> bool {
+    runtime_modules::is_node_builtin(&name)
 }
 
 fn write_flushed(output: &mut dyn Write, text: &str) {
@@ -119,67 +151,89 @@ fn write_flushed(output: &mut dyn Write, text: &str) {
     let _ = output.flush();
 }
 
-fn create_decoder<'js>(
-    ctx: Ctx<'js>,
+#[host_function]
+fn create_decoder(
+    ctx: Ctx<'_>,
     label: String,
     fatal: bool,
     ignore_bom: bool,
-) -> rquickjs::Result<Object<'js>> {
+) -> rquickjs::Result<Class<'_, TextDecoderState>> {
     let encoding = Encoding::for_label_no_replacement(label.as_bytes())
         .ok_or_else(|| Exception::throw_range(&ctx, "Unsupported encoding"))?;
-    let unicode = [
-        encoding_rs::UTF_8,
-        encoding_rs::UTF_16LE,
-        encoding_rs::UTF_16BE,
-    ]
-    .contains(&encoding);
-    let new_decoder = move || {
-        if ignore_bom {
-            encoding.new_decoder_without_bom_handling()
-        } else {
-            encoding.new_decoder_with_bom_removal()
-        }
+    let state = TextDecoderState {
+        encoding,
+        fatal,
+        ignore_bom,
+        decoder: new_decoder(encoding, ignore_bom),
     };
-    let mut decoder = new_decoder();
-    let object = Object::new(ctx.clone())?;
-    object.set("encoding", encoding.name().to_ascii_lowercase())?;
-    let decode = Function::new(
-        ctx,
-        MutFn::new(
-            move |ctx: Ctx<'js>,
-                  input: TypedArray<'js, u8>,
-                  stream: bool|
-                  -> rquickjs::Result<String> {
-                let bytes = input
-                    .as_bytes()
-                    .ok_or_else(|| Exception::throw_type(&ctx, "Detached buffer"))?;
-                let capacity = decoder
-                    .max_utf8_buffer_length(bytes.len())
-                    .ok_or_else(|| Exception::throw_range(&ctx, "Input is too large"))?;
-                let mut output = String::with_capacity(capacity);
-                let malformed = if fatal {
-                    let (status, _) =
-                        decoder.decode_to_string_without_replacement(bytes, &mut output, !stream);
-                    matches!(status, DecoderResult::Malformed(_, _))
-                } else {
-                    let _ = decoder.decode_to_string(bytes, &mut output, !stream);
-                    false
-                };
-                // Workerd preserves Unicode stream state after a fatal error.
-                if !stream || (malformed && !unicode) {
-                    decoder = new_decoder();
-                }
-                if malformed {
-                    return Err(Exception::throw_type(&ctx, "Invalid encoded data"));
-                }
-                Ok(output)
-            },
-        ),
-    )?;
-    object.set("decode", decode)?;
-    Ok(object)
+    Class::instance(ctx, state)
 }
 
+fn new_decoder(encoding: &'static Encoding, ignore_bom: bool) -> Decoder {
+    if ignore_bom {
+        encoding.new_decoder_without_bom_handling()
+    } else {
+        encoding.new_decoder_with_bom_removal()
+    }
+}
+
+/// A `TextDecoder`'s encoding and stream state.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct TextDecoderState {
+    #[qjs(skip_trace)]
+    encoding: &'static Encoding,
+    fatal: bool,
+    ignore_bom: bool,
+    #[qjs(skip_trace)]
+    decoder: Decoder,
+}
+
+#[tokamak_macros::js_methods]
+#[rquickjs::methods]
+impl TextDecoderState {
+    #[qjs(get)]
+    pub fn encoding(&self) -> String {
+        self.encoding.name().to_ascii_lowercase()
+    }
+
+    pub fn decode(&mut self, input: TypedArray<'_, u8>, stream: bool) -> rquickjs::Result<String> {
+        let ctx = input.ctx();
+        let bytes = input
+            .as_bytes()
+            .ok_or_else(|| Exception::throw_type(ctx, "Detached buffer"))?;
+        let capacity = self
+            .decoder
+            .max_utf8_buffer_length(bytes.len())
+            .ok_or_else(|| Exception::throw_range(ctx, "Input is too large"))?;
+        let mut output = String::with_capacity(capacity);
+        let malformed = if self.fatal {
+            let (status, _) =
+                self.decoder
+                    .decode_to_string_without_replacement(bytes, &mut output, !stream);
+            matches!(status, DecoderResult::Malformed(_, _))
+        } else {
+            let _ = self.decoder.decode_to_string(bytes, &mut output, !stream);
+            false
+        };
+        let unicode = [
+            encoding_rs::UTF_8,
+            encoding_rs::UTF_16LE,
+            encoding_rs::UTF_16BE,
+        ]
+        .contains(&self.encoding);
+        // Workerd preserves Unicode stream state after a fatal error.
+        if !stream || (malformed && !unicode) {
+            self.decoder = new_decoder(self.encoding, self.ignore_bom);
+        }
+        if malformed {
+            return Err(Exception::throw_type(ctx, "Invalid encoded data"));
+        }
+        Ok(output)
+    }
+}
+
+#[host_function]
 fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, u8>> {
     if length > 65_536 {
         return Err(Exception::throw_range(
@@ -193,6 +247,7 @@ fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, 
     TypedArray::new(ctx, bytes)
 }
 
+#[host_function]
 fn detach_array_buffer(mut buffer: ArrayBuffer<'_>) {
     buffer.detach();
 }

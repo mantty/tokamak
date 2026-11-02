@@ -22,7 +22,8 @@ use rquickjs::{Coerced, FromJs, IntoJs};
 use url::Url;
 
 mod callback_api;
-mod exports;
+pub(crate) mod exports;
+mod file_handle;
 mod filesystem_operations;
 mod glob;
 mod javascript_objects;
@@ -33,6 +34,8 @@ mod writes;
 
 #[allow(clippy::wildcard_imports)]
 use callback_api::*;
+#[allow(clippy::wildcard_imports)]
+use file_handle::*;
 #[allow(clippy::wildcard_imports)]
 use filesystem_operations::*;
 #[allow(clippy::wildcard_imports)]
@@ -45,7 +48,16 @@ use reads::*;
 use writes::*;
 
 pub use exports::{
-    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, change_directory,
-    install, read_bundle_file, working_directory,
+    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install,
+    read_bundle_file, working_directory,
 };
 use exports::{VfsHandle, VfsUserData};
+
+/// Adds the host types that `fs/node`'s TypeScript modules use to `types`.
+#[cfg(test)]
+pub(crate) fn declare_types(types: &mut crate::typescript::Types) {
+    use crate::typescript::JsType;
+    <rquickjs::Class<'_, FileHandleState>>::typescript(types);
+    DirEntryRecord::typescript(types);
+    StatRecord::typescript(types);
+}

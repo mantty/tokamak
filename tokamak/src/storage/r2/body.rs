@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use sha2::digest::DynDigest;
+use tokamak_macros::JsType;
 
 use super::failure::Failure;
 use super::range::Range;
@@ -16,7 +17,7 @@ use super::{hex, random_name};
 const CHUNK: u64 = 1024 * 1024;
 
 /// A checksum algorithm R2 verifies.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, JsType)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Algorithm {
     Md5,
@@ -61,7 +62,7 @@ impl Algorithm {
 }
 
 /// A checksum a write provides, in lower-case hex.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsType)]
 pub(crate) struct Checksum {
     pub(crate) algorithm: Algorithm,
     pub(crate) value: String,
@@ -193,6 +194,11 @@ impl BodyReader {
             file,
             remaining: range.length,
         })
+    }
+
+    /// The number of bytes of the range left to read.
+    pub(crate) fn remaining(&self) -> u64 {
+        self.remaining
     }
 
     /// The next bytes of the range, or none after its end.

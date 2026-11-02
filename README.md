@@ -853,7 +853,8 @@ tok build macos --project examples/astro
 
 - Rust 1.96 through `rustup`; the repository selects it with
   `rust-toolchain.toml`.
-- Node.js 22 and pnpm 9.9.
+- Node.js 22.18 or newer and pnpm 9.9. Building the runtime crate runs Node to
+  strip the types from its TypeScript modules.
 - CMake, Clang and libclang, and the native C/C++ toolchain for your host.
 
 Platform-pack work additionally requires:
@@ -870,6 +871,7 @@ installs `@tokamakdev/tok` from `tokamak-cli/npm`, so build that package first:
 ```sh
 npm ci --prefix tokamak-cli/npm
 npm run build --prefix tokamak-cli/npm
+pnpm --dir tokamak install --frozen-lockfile
 pnpm --dir plugins install --frozen-lockfile
 pnpm --dir examples/astro install --frozen-lockfile
 ```
@@ -954,14 +956,20 @@ To package the plugins locally:
 pnpm --dir plugins --filter '@tokamakdev/*' exec pnpm pack --pack-destination "$PWD/artifacts"
 ```
 
+Packing compiles the JavaScript a package ships into its `dist/`: the build
+scripts of the location and notifications plugins, and the
+`@tokamakdev/plugin` modules Node loads, `native-protocol` and
+`capabilities`. pnpm also replaces `@tokamakdev/plugin`'s `exports` with its
+`publishConfig.exports`, which name those compiled modules; npm does not, so
+publish the tarballs pnpm packs.
+
 The shared plugin transport package must be published before a plugin that
-depends on it. To publish the first plugin packages locally:
+depends on it. To publish the first plugin packages locally, after packaging
+them:
 
 ```sh
-cd plugins/core
-npm publish --access public
-cd ../location
-npm publish --access public
+npm publish ./artifacts/tokamakdev-plugin-<version>.tgz --access public
+npm publish ./artifacts/tokamakdev-plugin-location-<version>.tgz --access public
 ```
 
 A new plugin, CLI or platform-pack package fails to publish from its first
@@ -982,6 +990,14 @@ new plugin's tarball, for example
 `./artifacts/tokamakdev-plugin-notifications-<version>.tgz`.
 
 ### Build the example against local sources
+
+tok runs the location and notifications plugins' build scripts from their
+`dist/`, which the plugins' build compiles:
+
+```sh
+pnpm --dir plugins install --frozen-lockfile
+pnpm --dir plugins build
+```
 
 After building a platform pack:
 
@@ -1013,12 +1029,13 @@ Run the common checks before submitting a change:
 npm ci --prefix tokamak-cli/npm
 npm run build --prefix tokamak-cli/npm
 npm test --prefix tokamak-cli/npm
-pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
+pnpm --dir tokamak install --frozen-lockfile
 pnpm --dir examples/astro install --frozen-lockfile
 pnpm --dir examples/astro run build
 cargo fmt --all --check
+node scripts/collect-report.mts typecheck
 cargo test -p tokamak --features native
-node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
+node --test tokamak/tests/quickjs_runtime/runtime.test.mts
 cargo test -p tokamak-cli --lib --bin tok --test cli --test platform_pack
 cargo test -p xtask
 bash platforms/android/tests/pack.sh
@@ -1028,6 +1045,32 @@ pnpm --dir plugins test:ts
 
 Platform-specific lint and build-test commands are kept in
 [the Checks workflow](.github/workflows/test.yaml).
+
+The `typecheck` report runs `cargo check` and `tsc` for every TypeScript
+project. The runtime's builtin modules are TypeScript; the runtime's build
+strips their types with Node before compiling them to bytecode.
+`tokamak/src/host.generated.d.ts` declares the functions, objects and globals
+the Rust code gives them, and is generated from that code. After changing a
+host function or a type it passes to JavaScript, regenerate it:
+
+```sh
+TOKAMAK_GENERATE=1 cargo test -p tokamak --features native generated_declarations
+```
+
+The same test without `TOKAMAK_GENERATE` fails when the committed file is
+stale.
+
+The JSON that tok and the runtime exchange with Node has types generated from
+their serde types: `tokamak-cli/npm/src/contracts.generated.mts` holds the Vite
+plugin's reports, the plugin manifest and the words a plugin id must not start
+with, and `plugins/core/src/contracts.generated.ts`, which
+`@tokamakdev/plugin/contracts` exports, holds the native message header and a
+plugin build script's input.
+After changing one of those types, regenerate them:
+
+```sh
+TOKAMAK_GENERATE=1 cargo test -p tokamak-cli generated_contracts
+```
 
 A first-party plugin's TypeScript API, `src/apple.generated.ts` and
 `src/android.generated.ts`, and native dispatch are generated from its native

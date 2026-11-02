@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    // Node's types come first: the first declaration of a global variable
+    // sets its type, and workers-types declares `process` as any.
+    "types": ["node", "@cloudflare/workers-types"],
+    "paths": { "tokamak:*": ["./src/*"] },
+    "rootDirs": ["src", "../plugins/core/src"]
+  },
+  "include": ["src", "tests/**/*.ts"],
+  // The fixtures are their own project, since the test packages them beside
+  // other modules.
+  "exclude": ["tests/fixtures"]
+}

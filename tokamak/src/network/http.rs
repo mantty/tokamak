@@ -3,6 +3,7 @@ use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
+use tokamak_macros::host_function;
 
 use futures_util::{FutureExt, TryStreamExt, future::LocalBoxFuture};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
@@ -15,10 +16,10 @@ use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use hyper_util::client::legacy::{self, connect::HttpConnector};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use rquickjs::{
-    Constructor, Ctx, Function, Object, Promise, TypedArray, Value,
-    function::{Async, This},
+    Class, Constructor, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Promise,
+    TypedArray, Value, class::Trace, function::This,
 };
-use serde::Serialize;
+use tokamak_macros::JsType;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -29,6 +30,7 @@ use url::Url;
 use super::decoder::DecodedBody;
 use crate::globals::ContentDecoder;
 use crate::transport::append_header;
+use crate::typed::{JsPromise, JsReadableStream, StringPairs};
 
 type Body = BoxBody<Bytes, io::Error>;
 pub(crate) type Client = legacy::Client<Connector, Body>;
@@ -41,6 +43,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE: Duration = Duration::from_secs(15);
 const ONE_TIME_BODY_REDIRECT: &str = "A request with a one-time-use body (it was initialized from a stream, not a buffer) encountered a redirect requiring the body to be retransmitted. To avoid this error in the future, construct this request from a buffer-like body initializer.";
 
+#[host_function]
 pub(crate) fn status_text(status: u16) -> &'static str {
     if status == 203 {
         return "Non-Authoritative Information";
@@ -117,9 +120,6 @@ enum RequestBody {
     Stream(Option<Body>),
 }
 
-#[derive(Serialize)]
-struct ResponseHeaders<'a>(#[serde(serialize_with = "super::headers::serialize")] &'a HeaderMap);
-
 impl RequestBody {
     fn take(&mut self) -> io::Result<Body> {
         match self {
@@ -131,16 +131,81 @@ impl RequestBody {
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-pub(crate) fn start<'js>(
-    ctx: Ctx<'js>,
-    client: &Client,
+/// The HTTP client the Worker's fetches share.
+#[derive(JsLifetime)]
+struct HttpClient(Client);
+
+/// Gives `ctx` the HTTP client its fetches share.
+pub(crate) fn attach(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
+    let client = client().map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+    ctx.store_userdata(HttpClient(client))?;
+    Ok(())
+}
+
+/// A request the Worker's `fetch` sends.
+#[derive(FromJs, JsType)]
+pub(crate) struct FetchRequest<'js> {
     url: String,
     method: String,
-    headers: String,
-    body: Value<'js>,
+    headers: StringPairs,
+    body: Option<FetchBody<'js>>,
     redirect: String,
-) -> rquickjs::Result<Object<'js>> {
+}
+
+/// A request body: its bytes, or a stream of them.
+pub(crate) enum FetchBody<'js> {
+    Bytes(TypedArray<'js, u8>),
+    Stream(JsReadableStream<'js>),
+}
+
+impl<'js> FromJs<'js> for FetchBody<'js> {
+    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Self> {
+        match TypedArray::<u8>::from_value(value.clone()) {
+            Ok(bytes) => Ok(Self::Bytes(bytes)),
+            Err(_) => JsReadableStream::from_js(ctx, value).map(Self::Stream),
+        }
+    }
+}
+
+impl crate::typescript::JsType for FetchBody<'_> {
+    fn typescript(types: &mut crate::typescript::Types) -> String {
+        format!("Uint8Array | {}", JsReadableStream::typescript(types))
+    }
+}
+
+/// A fetch in progress: its controls, the end of its request body's upload,
+/// and its response.
+#[derive(IntoJs, JsType)]
+pub(crate) struct FetchTask<'js> {
+    fetch: Class<'js, HttpFetch>,
+    upload: JsPromise<'js, ()>,
+    response: JsPromise<'js, FetchedResponse>,
+}
+
+/// A fetched response's status line, headers and URL, whether it followed a
+/// redirect or has no body, and its body's length when known.
+#[derive(IntoJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct FetchedResponse {
+    status: u16,
+    status_text: String,
+    headers: StringPairs,
+    url: String,
+    redirected: bool,
+    bodyless: bool,
+    length: Option<u64>,
+}
+
+/// Starts sending `request`.
+#[host_function]
+pub(crate) fn http_fetch<'js>(
+    ctx: Ctx<'js>,
+    request: FetchRequest<'js>,
+) -> rquickjs::Result<FetchTask<'js>> {
+    let client = ctx
+        .userdata::<HttpClient>()
+        .map(|client| client.0.clone())
+        .ok_or_else(|| Exception::throw_internal(&ctx, "The HTTP client is not available"))?;
     // Cancelled when the fetch is aborted.
     let aborted = CancellationToken::new();
     // Cancelled when the fetch is aborted or its response body is cancelled.
@@ -148,32 +213,32 @@ pub(crate) fn start<'js>(
     // Cancelled to stop sending the request body: when the fetch fails or redirects, or its
     // response ends.
     let upload_stopped = cancelled.child_token();
-    let (body, upload) = request_body(&ctx, body, upload_stopped.clone(), aborted.clone())?;
-    let request = Request {
-        url: Url::parse(&url).map_err(|error| failure(&ctx, error))?,
-        method: Method::from_bytes(method.as_bytes()).map_err(|error| failure(&ctx, error))?,
-        headers: request_headers(&ctx, &headers)?,
+    let (body, upload) = request_body(&ctx, request.body, upload_stopped.clone(), aborted.clone())?;
+    let outgoing = Request {
+        url: Url::parse(&request.url).map_err(|error| failure(&ctx, error))?,
+        method: Method::from_bytes(request.method.as_bytes())
+            .map_err(|error| failure(&ctx, error))?,
+        headers: request_headers(&ctx, request.headers)?,
         body,
-        redirect,
+        redirect: request.redirect,
     };
-    let task = Object::new(ctx.clone())?;
     let reader: ResponseBody = Rc::new(Mutex::new(None));
-    task.set("abort", stop_function(&ctx, aborted, &reader)?)?;
-    task.set("cancel", stop_function(&ctx, cancelled.clone(), &reader)?)?;
-    let client = client.clone();
+    let fetch = HttpFetch {
+        aborted,
+        cancelled: cancelled.clone(),
+        upload_stopped: upload_stopped.clone(),
+        reader: Rc::clone(&reader),
+    };
     let upload_ctx = ctx.clone();
-    task.set(
-        "upload",
-        Promise::wrap_future(&ctx, async move {
-            upload.await.map_err(|error| failure(&upload_ctx, error))
-        })?,
-    )?;
+    let upload = JsPromise::wrap_future(&ctx, async move {
+        upload.await.map_err(|error| failure(&upload_ctx, error))
+    })?;
     let future_ctx = ctx.clone();
-    let response = Promise::wrap_future(&ctx, async move {
+    let response = JsPromise::wrap_future(&ctx, async move {
         let response = tokio::select! {
             biased;
             () = cancelled.cancelled() => return Err(failure(&future_ctx, "Fetch was aborted")),
-            response = send(&client, request, &upload_stopped) => match response {
+            response = send(&client, outgoing, &upload_stopped) => match response {
                 Ok(response) => response,
                 Err(error) => {
                     upload_stopped.cancel();
@@ -184,32 +249,95 @@ pub(crate) fn start<'js>(
         if response.bodyless {
             upload_stopped.cancel();
         }
-        response_object(future_ctx, response, reader, cancelled, upload_stopped)
+        fetched_response(&future_ctx, response, &reader)
     })?;
-    task.set("response", response)?;
-    Ok(task)
-}
-
-/// A function that cancels `token` and drops the response body.
-fn stop_function<'js>(
-    ctx: &Ctx<'js>,
-    token: CancellationToken,
-    reader: &ResponseBody,
-) -> rquickjs::Result<Function<'js>> {
-    let reader = Rc::clone(reader);
-    Function::new(ctx.clone(), move || {
-        token.cancel();
-        if let Ok(mut body) = reader.try_lock() {
-            body.take();
-        }
+    Ok(FetchTask {
+        fetch: Class::instance(ctx, fetch)?,
+        upload,
+        response,
     })
 }
 
-fn request_headers(ctx: &Ctx<'_>, json: &str) -> rquickjs::Result<HeaderMap> {
-    let pairs: Vec<(String, String)> =
-        serde_json::from_str(json).map_err(|error| failure(ctx, error))?;
+/// A fetch's controls and response body.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct HttpFetch {
+    #[qjs(skip_trace)]
+    aborted: CancellationToken,
+    #[qjs(skip_trace)]
+    cancelled: CancellationToken,
+    #[qjs(skip_trace)]
+    upload_stopped: CancellationToken,
+    #[qjs(skip_trace)]
+    reader: ResponseBody,
+}
+
+#[tokamak_macros::js_methods]
+#[rquickjs::methods]
+impl HttpFetch {
+    /// Aborts the fetch and drops its response body.
+    pub fn abort(&self) {
+        self.aborted.cancel();
+        self.drop_body();
+    }
+
+    /// Cancels the response body and drops it.
+    pub fn cancel(&self) {
+        self.cancelled.cancel();
+        self.drop_body();
+    }
+
+    /// The response body's next chunk, or undefined at its end.
+    pub fn read<'js>(
+        &self,
+        ctx: Ctx<'js>,
+    ) -> rquickjs::Result<JsPromise<'js, Option<TypedArray<'js, u8>>>> {
+        let reader = Rc::clone(&self.reader);
+        let cancelled = self.cancelled.clone();
+        let upload_stopped = self.upload_stopped.clone();
+        let promise_ctx = ctx.clone();
+        JsPromise::wrap_future(&promise_ctx, async move {
+            let mut body = reader.lock().await;
+            let Some(stream) = body.as_mut() else {
+                return Ok(None);
+            };
+            let mut bytes = vec![0; 16384];
+            let count = tokio::select! {
+                biased;
+                () = cancelled.cancelled() => Err(io::Error::other("Fetch was aborted")),
+                count = stream.read(&mut bytes) => count,
+            };
+            match count {
+                Ok(0) => {
+                    body.take();
+                    upload_stopped.cancel();
+                    Ok(None)
+                }
+                Ok(count) => {
+                    bytes.truncate(count);
+                    TypedArray::new(ctx, bytes).map(Some)
+                }
+                Err(error) => {
+                    body.take();
+                    upload_stopped.cancel();
+                    Err(failure(&ctx, error))
+                }
+            }
+        })
+    }
+}
+
+impl HttpFetch {
+    fn drop_body(&self) {
+        if let Ok(mut body) = self.reader.try_lock() {
+            body.take();
+        }
+    }
+}
+
+fn request_headers(ctx: &Ctx<'_>, pairs: StringPairs) -> rquickjs::Result<HeaderMap> {
     let mut headers = HeaderMap::new();
-    for (name, value) in pairs {
+    for (name, value) in pairs.0 {
         append_header(&mut headers, &name, &value).map_err(|error| failure(ctx, error))?;
     }
     Ok(headers)
@@ -217,26 +345,21 @@ fn request_headers(ctx: &Ctx<'_>, json: &str) -> rquickjs::Result<HeaderMap> {
 
 fn request_body<'js>(
     ctx: &Ctx<'js>,
-    value: Value<'js>,
+    body: Option<FetchBody<'js>>,
     stopped: CancellationToken,
     aborted: CancellationToken,
 ) -> rquickjs::Result<(RequestBody, UploadCompletion)> {
     let ready = || futures_util::future::ready(Ok(())).boxed_local();
-    if value.is_null() || value.is_undefined() {
-        return Ok((RequestBody::Bytes(Vec::new()), ready()));
-    }
-    if let Ok(bytes) = TypedArray::<u8>::from_value(value.clone()) {
-        return Ok((
-            RequestBody::Bytes(
-                bytes
-                    .as_bytes()
-                    .ok_or_else(|| failure(ctx, "Detached request body"))?
-                    .to_vec(),
-            ),
-            ready(),
-        ));
-    }
-    let stream = Object::from_value(value)?;
+    let stream = match body {
+        None => return Ok((RequestBody::Bytes(Vec::new()), ready())),
+        Some(FetchBody::Bytes(bytes)) => {
+            let bytes = bytes
+                .as_bytes()
+                .ok_or_else(|| failure(ctx, "Detached request body"))?;
+            return Ok((RequestBody::Bytes(bytes.to_vec()), ready()));
+        }
+        Some(FetchBody::Stream(stream)) => stream.into_inner(),
+    };
     let get_reader: Function = stream.get("getReader")?;
     let reader: Object = get_reader.call((This(stream),))?;
     let (sender, receiver) = flume::bounded::<io::Result<Vec<u8>>>(1);
@@ -362,25 +485,15 @@ fn redirect_as_get(request: &mut Request, status: u16) {
     }
 }
 
-fn response_object<'js>(
-    ctx: Ctx<'js>,
-    response: FetchResponse,
-    reader: ResponseBody,
-    cancelled: CancellationToken,
-    upload_stopped: CancellationToken,
-) -> rquickjs::Result<Object<'js>> {
-    let result = Object::new(ctx.clone())?;
-    result.set("redirected", response.redirected)?;
-    result.set("bodyless", response.bodyless)?;
-    result.set("url", response.url.as_str())?;
-    let response = response.response;
-    result.set("status", response.status().as_u16())?;
-    result.set("statusText", reason_phrase(&response).as_ref())?;
-    result.set(
-        "headers",
-        serde_json::to_string(&ResponseHeaders(response.headers()))
-            .map_err(|error| failure(&ctx, error))?,
-    )?;
+fn fetched_response(
+    ctx: &Ctx<'_>,
+    fetched: FetchResponse,
+    reader: &ResponseBody,
+) -> rquickjs::Result<FetchedResponse> {
+    let response = fetched.response;
+    let status = response.status().as_u16();
+    let status_text = reason_phrase(&response).into_owned();
+    let headers = super::headers::pairs(response.headers());
     let encoding = response.headers().get("content-encoding").cloned();
     let length = response.body().size_hint().exact();
     let body = StreamReader::new(
@@ -394,51 +507,17 @@ fn response_object<'js>(
         encoding.as_ref().map(HeaderValue::as_bytes),
         length,
     )
-    .map_err(|error| failure(&ctx, error))?;
-    if let Some(length) = length {
-        result.set("length", length)?;
-    }
-    *reader.try_lock().map_err(|error| failure(&ctx, error))? = Some(body);
-    result.set(
-        "read",
-        Function::new(
-            ctx,
-            Async(move |ctx: Ctx<'js>| {
-                let reader = Rc::clone(&reader);
-                let cancelled = cancelled.clone();
-                let upload_stopped = upload_stopped.clone();
-                async move {
-                    let mut body = reader.lock().await;
-                    let Some(stream) = body.as_mut() else {
-                        return Ok(None);
-                    };
-                    let mut bytes = vec![0; 16384];
-                    let count = tokio::select! {
-                        biased;
-                        () = cancelled.cancelled() => Err(io::Error::other("Fetch was aborted")),
-                        count = stream.read(&mut bytes) => count,
-                    };
-                    match count {
-                        Ok(0) => {
-                            body.take();
-                            upload_stopped.cancel();
-                            Ok(None)
-                        }
-                        Ok(count) => {
-                            bytes.truncate(count);
-                            TypedArray::new(ctx, bytes).map(Some)
-                        }
-                        Err(error) => {
-                            body.take();
-                            upload_stopped.cancel();
-                            Err(failure(&ctx, error))
-                        }
-                    }
-                }
-            }),
-        )?,
-    )?;
-    Ok(result)
+    .map_err(|error| failure(ctx, error))?;
+    *reader.try_lock().map_err(|error| failure(ctx, error))? = Some(body);
+    Ok(FetchedResponse {
+        status,
+        status_text,
+        headers,
+        url: fetched.url.into(),
+        redirected: fetched.redirected,
+        bodyless: fetched.bodyless,
+        length,
+    })
 }
 
 /// The body decoded from `encoding`, and its `length` when decoding leaves

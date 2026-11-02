@@ -15,11 +15,12 @@ use clap::{Arg, ArgAction, ArgMatches};
 use serde::Deserialize;
 use serde_json::{Number, Value};
 use tokamak_cli::Platform;
+use tokamak_macros::JsType;
 
 use super::tokamak_config::{VALUE_FORM, value_problem};
 
 /// A plugin's build setting, as its manifest declares it.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, JsType)]
 #[serde(try_from = "RawSetting")]
 pub(crate) struct Setting {
     pub(crate) kind: Kind,
@@ -51,8 +52,8 @@ pub(crate) enum Item {
 }
 
 /// A setting as the manifest writes it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Deserialize, JsType)]
+#[serde(deny_unknown_fields, rename = "PluginSetting")]
 struct RawSetting {
     kind: String,
     /// A list's or map's item kind.

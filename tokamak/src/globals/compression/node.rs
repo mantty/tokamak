@@ -1,9 +1,11 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use tokamak_macros::{JsType, host_function};
 
-use rquickjs::{Ctx, Exception, Function, Object, TypedArray};
+use rquickjs::class::Trace;
+use rquickjs::{Class, Ctx, Exception, IntoJs, JsLifetime, TypedArray};
 use serde::Deserialize;
+
+use crate::typed::Serde;
 
 use super::{brotli::Brotli, zlib::Zlib, zstd::Zstd};
 
@@ -34,9 +36,10 @@ pub(crate) struct Step {
     pub ended: bool,
 }
 
-#[derive(Deserialize)]
+/// The settings of a node:zlib codec.
+#[derive(Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Options {
+pub(crate) struct CodecOptions {
     pub window_bits: i32,
     pub level: i32,
     pub mem_level: i32,
@@ -52,7 +55,7 @@ enum Codec {
 }
 
 impl Codec {
-    fn new(mode: u8, options: &Options, dictionary: Vec<u8>) -> Result<Self, CodecError> {
+    fn new(mode: u8, options: &CodecOptions, dictionary: Vec<u8>) -> Result<Self, CodecError> {
         match mode {
             1..=7 => Zlib::new(
                 mode,
@@ -83,87 +86,121 @@ impl Codec {
     }
 }
 
+/// The codec of a node:zlib stream of `mode`, from 1 to 11 as the zlib
+/// constants number them.
 // Arguments are owned conversions from JavaScript.
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 pub(in crate::globals) fn create<'js>(
     ctx: Ctx<'js>,
     mode: u8,
-    options: String,
+    options: Serde<CodecOptions>,
     dictionary: TypedArray<'js, u8>,
-) -> rquickjs::Result<Object<'js>> {
-    let options: Options = serde_json::from_str(&options)
-        .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
+) -> rquickjs::Result<Class<'js, NodeCodec>> {
+    let Serde(options) = options;
     let dictionary = dictionary
         .as_bytes()
         .ok_or_else(|| Exception::throw_type(&ctx, "Detached compression dictionary"))?
         .to_vec();
-    let codec = Rc::new(RefCell::new(Some(
-        Codec::new(mode, &options, dictionary.clone()).map_err(|error| error.throw(&ctx))?,
-    )));
-    let result = Object::new(ctx.clone())?;
-    let writer = Rc::clone(&codec);
-    result.set(
-        "step",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, input: TypedArray<'js, u8>, flush: i32, capacity: usize| {
-                let input = input
-                    .as_bytes()
-                    .ok_or_else(|| Exception::throw_type(&ctx, "Detached compression input"))?;
-                let mut output = vec![0; capacity.clamp(64, 65536)];
-                let mut state = writer.borrow_mut();
-                let step = state
-                    .as_mut()
-                    .ok_or_else(|| Exception::throw_type(&ctx, "Compression stream is closed"))?
-                    .step(input, &mut output, flush)
-                    .map_err(|error| error.throw(&ctx))?;
-                output.truncate(step.written);
-                let result = Object::new(ctx.clone())?;
-                result.set("consumed", step.consumed)?;
-                result.set("ended", step.ended)?;
-                result.set("output", TypedArray::new(ctx, output)?)?;
-                Ok::<_, rquickjs::Error>(result)
-            },
-        )?,
-    )?;
-    let reset = Rc::clone(&codec);
-    result.set(
-        "reset",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            let mut state = reset.borrow_mut();
-            if let Some(Codec::Zlib(codec)) = state.as_mut() {
-                codec.reset().map_err(|error| error.throw(&ctx))?;
-            } else {
-                *state = Some(
-                    Codec::new(mode, &options, dictionary.clone())
-                        .map_err(|error| error.throw(&ctx))?,
-                );
-            }
-            Ok::<_, rquickjs::Error>(())
-        })?,
-    )?;
-    let params = Rc::clone(&codec);
-    result.set(
-        "params",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, level: i32, strategy: i32| {
-                let output = if let Some(Codec::Zlib(codec)) = params.borrow_mut().as_mut() {
-                    codec
-                        .params(level, strategy)
-                        .map_err(|error| error.throw(&ctx))?
-                } else {
-                    Vec::new()
-                };
-                TypedArray::new(ctx, output)
-            },
-        )?,
-    )?;
-    result.set(
-        "close",
-        Function::new(ctx, move || {
-            codec.borrow_mut().take();
-        })?,
-    )?;
-    Ok(result)
+    let codec =
+        Codec::new(mode, &options, dictionary.clone()).map_err(|error| error.throw(&ctx))?;
+    Class::instance(
+        ctx,
+        NodeCodec {
+            codec: Some(codec),
+            mode,
+            options,
+            dictionary,
+        },
+    )
+}
+
+/// A node:zlib stream's codec, with the settings that recreate it.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct NodeCodec {
+    /// None once closed.
+    #[qjs(skip_trace)]
+    codec: Option<Codec>,
+    #[qjs(skip_trace)]
+    mode: u8,
+    #[qjs(skip_trace)]
+    options: CodecOptions,
+    #[qjs(skip_trace)]
+    dictionary: Vec<u8>,
+}
+
+/// The input a codec step consumed, whether the stream ended, and the output.
+#[derive(IntoJs, JsType)]
+pub(crate) struct CodecStep<'js> {
+    consumed: usize,
+    ended: bool,
+    output: TypedArray<'js, u8>,
+}
+
+#[tokamak_macros::js_methods]
+#[rquickjs::methods]
+impl NodeCodec {
+    /// Passes `input` through the codec with the zlib flush value `flush`,
+    /// writing at most `capacity` bytes, clamped to 64 through 65536.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+    pub fn step<'js>(
+        &mut self,
+        ctx: Ctx<'js>,
+        input: TypedArray<'js, u8>,
+        flush: i32,
+        capacity: usize,
+    ) -> rquickjs::Result<CodecStep<'js>> {
+        let input = input
+            .as_bytes()
+            .ok_or_else(|| Exception::throw_type(&ctx, "Detached compression input"))?;
+        let mut output = vec![0; capacity.clamp(64, 65536)];
+        let step = self
+            .codec
+            .as_mut()
+            .ok_or_else(|| Exception::throw_type(&ctx, "Compression stream is closed"))?
+            .step(input, &mut output, flush)
+            .map_err(|error| error.throw(&ctx))?;
+        output.truncate(step.written);
+        Ok(CodecStep {
+            consumed: step.consumed,
+            ended: step.ended,
+            output: TypedArray::new(ctx, output)?,
+        })
+    }
+
+    /// Returns the codec to its initial state; a zlib codec resets in place,
+    /// and others, or a closed codec, are recreated.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+    pub fn reset(&mut self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        if let Some(Codec::Zlib(codec)) = self.codec.as_mut() {
+            return codec.reset().map_err(|error| error.throw(&ctx));
+        }
+        let codec = Codec::new(self.mode, &self.options, self.dictionary.clone())
+            .map_err(|error| error.throw(&ctx))?;
+        self.codec = Some(codec);
+        Ok(())
+    }
+
+    /// Changes a zlib codec's level and strategy, returning the output that
+    /// flushes; other codecs return no output.
+    pub fn params<'js>(
+        &mut self,
+        ctx: Ctx<'js>,
+        level: i32,
+        strategy: i32,
+    ) -> rquickjs::Result<TypedArray<'js, u8>> {
+        let output = match self.codec.as_mut() {
+            Some(Codec::Zlib(codec)) => codec
+                .params(level, strategy)
+                .map_err(|error| error.throw(&ctx))?,
+            _ => Vec::new(),
+        };
+        TypedArray::new(ctx, output)
+    }
+
+    /// Releases the codec.
+    pub fn close(&mut self) {
+        self.codec = None;
+    }
 }

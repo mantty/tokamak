@@ -22,10 +22,10 @@ that attempt fails. Two things that were tried outside the engine and **kept out
 of the patch:
 
 - **`Array`/`TypedArray.prototype.toLocaleString` locale forwarding** — provided
-  as a JS shim in `tokamak/src/builtins/globals.mjs`. Not patched.
+  as a JS shim in `tokamak/src/builtins/globals.ts`. Not patched.
 - **ArrayBuffer clone and view reconstruction for `structuredClone`** — the
   *non-shared* ArrayBuffer clone and the whole clone algorithm live in
-  `tokamak/src/globals/structured-clone.mjs`. Only the two accessors below, which
+  `tokamak/src/globals/structured-clone.ts`. Only the two accessors below, which
   expose engine-internal buffer state, remain in the engine.
 
 ## The changes

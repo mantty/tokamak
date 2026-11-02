@@ -3,26 +3,44 @@
 use std::io;
 
 use serde::{Deserialize, Serialize};
+use tokamak_macros::JsType;
 
-#[derive(Default, Deserialize, Serialize)]
-pub(crate) struct Header {
+/// A message's routing header.
+#[derive(Default, Deserialize, Serialize, JsType)]
+#[serde(rename = "MessageHeader")]
+pub struct Header {
+    /// What the message is, such as `call`, `event` or `result`.
     pub r#type: String,
+    /// The call or stream the message belongs to.
     pub id: u64,
+    /// The plugin a call or subscription is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<String>,
+    /// The plugin method a call or subscription runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
+    /// The event an `event` message carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// What a subscription does with values that arrive faster than they are
+    /// read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<String>,
+    /// Whether a result or chunk carries a failure.
     #[serde(default)]
     pub failed: bool,
+    /// Whether a result or chunk is the last of its call or stream.
     #[serde(default)]
     pub done: bool,
 }
 
-pub(crate) fn encode(header: &Header, payload: &[u8]) -> io::Result<Vec<u8>> {
+/// The message of `header` and `payload`: its length, the header's length,
+/// the header's JSON and the payload.
+///
+/// # Errors
+///
+/// Fails when the message is longer than 4 GiB.
+pub fn encode(header: &Header, payload: &[u8]) -> io::Result<Vec<u8>> {
     let metadata = serde_json::to_vec(header)?;
     let length = 4usize
         .checked_add(metadata.len())
@@ -38,7 +56,13 @@ pub(crate) fn encode(header: &Header, payload: &[u8]) -> io::Result<Vec<u8>> {
     Ok(message)
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> io::Result<(Header, &[u8])> {
+/// The header and payload of the message `bytes`.
+///
+/// # Errors
+///
+/// Fails when the lengths `bytes` gives are wrong or its header is not a
+/// header's JSON.
+pub fn decode(bytes: &[u8]) -> io::Result<(Header, &[u8])> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "Invalid native message length");
     let length = u32::from_le_bytes(*bytes.first_chunk::<4>().ok_or_else(invalid)?) as usize;
     let metadata = u32::from_le_bytes(*bytes[4..].first_chunk::<4>().ok_or_else(invalid)?) as usize;

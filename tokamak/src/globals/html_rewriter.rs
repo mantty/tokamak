@@ -12,13 +12,17 @@ use std::thread::{self, JoinHandle};
 
 use flume::{Receiver, Sender};
 use lol_html::AsciiCompatibleEncoding;
-use rquickjs::function::Async;
-use rquickjs::{Ctx, Exception, Function, Object, TypedArray, Value};
-use serde_json::json;
+use rquickjs::class::Trace;
+use rquickjs::{Class, Ctx, Exception, IntoJs, JsLifetime, Object, TypedArray, Value};
+use tokamak_macros::host_function;
 
-use parser::{Event, Handler, Port, Release, Releases, Reply};
+use crate::typed::{JsPromise, Serde};
+use parser::{
+    Event, Handler, HandlerSpec, HtmlOperation, HtmlRelease, Port, Releases, Reply, TokenProperties,
+};
 
 #[allow(clippy::needless_pass_by_value)]
+#[host_function]
 pub(super) fn validate_selector(ctx: Ctx<'_>, selector: String) -> rquickjs::Result<()> {
     selector
         .parse::<lol_html::Selector>()
@@ -75,7 +79,7 @@ impl State {
     }
 
     /// The registrations the parser released since the last call.
-    fn take_releases(&self) -> Vec<Release> {
+    fn take_releases(&self) -> Vec<HtmlRelease> {
         std::mem::take(
             &mut *self
                 .releases
@@ -132,85 +136,178 @@ impl State {
     }
 }
 
+/// Starts rewriting HTML with the callbacks `handlers` name, decoding it as
+/// `content_type` says.
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn rewrite_html<'js>(
-    ctx: Ctx<'js>,
-    handlers: String,
+#[host_function]
+pub(super) fn rewrite_html(
+    ctx: Ctx<'_>,
+    handlers: Serde<Vec<HandlerSpec>>,
     content_type: String,
-) -> rquickjs::Result<Object<'js>> {
-    let handlers = parser::handlers(&handlers)
+) -> rquickjs::Result<Class<'_, HtmlParser>> {
+    let handlers = parser::handlers(handlers.0)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     let encoding = parse_encoding(&ctx, &content_type)?;
     let state = Rc::new(RefCell::new(State::new(handlers, encoding)));
-    let result = Object::new(ctx.clone())?;
-    let reader = Rc::clone(&state);
-    result.set(
-        "next",
-        Function::new(
-            ctx.clone(),
-            Async(move |ctx: Ctx<'js>| next_event(ctx, Rc::clone(&reader))),
-        )?,
-    )?;
-    let writer = Rc::clone(&state);
-    result.set(
-        "reply",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>, value: Value<'js>| {
-            let reply = decode_reply(&ctx, &value)?;
-            let state = writer.borrow();
-            if state.ended {
-                return Ok(());
-            }
-            state
-                .replies()
-                .ok_or_else(|| Exception::throw_internal(&ctx, "HTML parser is not running"))?
-                .try_send(reply)
-                .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))
-        })?,
-    )?;
-    let mutator = Rc::clone(&state);
-    result.set(
-        "mutate",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>, operation: String| {
-            mutate(&ctx, &mutator.borrow(), &operation)
-        })?,
-    )?;
-    let registry = Rc::clone(&state);
-    result.set(
-        "releases",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            let released = registry.borrow().take_releases();
-            ctx.json_parse(
-                serde_json::to_string(&released)
-                    .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?,
-            )
-        })?,
-    )?;
-    result.set(
-        "cancel",
-        Function::new(ctx, move |ctx: Ctx<'js>| {
-            state
-                .borrow_mut()
-                .stop()
-                .map_err(|error| Exception::throw_internal(&ctx, &error))
-        })?,
-    )?;
-    Ok(result)
+    Class::instance(ctx, HtmlParser { state })
 }
 
-fn mutate<'js>(ctx: &Ctx<'js>, state: &State, operation: &str) -> rquickjs::Result<Value<'js>> {
-    let operation = serde_json::from_str(operation)
-        .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
-    let (result, response) = flume::bounded(1);
-    state
-        .replies()
-        .ok_or_else(|| Exception::throw_type(ctx, "HTML parser is not running"))?
-        .try_send(Reply::Operation(operation, result))
-        .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
-    let value = response
-        .recv()
-        .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?
-        .map_err(|error| Exception::throw_type(ctx, &error))?;
-    ctx.json_parse(value.to_string())
+/// A rewrite in progress, which the runtime drives: it answers each input
+/// event with `input`, and each token event with `done` once the token's
+/// handler settles.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct HtmlParser {
+    #[qjs(skip_trace)]
+    state: Rc<RefCell<State>>,
+}
+
+#[tokamak_macros::js_methods]
+#[rquickjs::methods]
+impl HtmlParser {
+    /// Resolves to the parser's next event, or undefined once it finishes.
+    pub fn next<'js>(
+        &self,
+        ctx: Ctx<'js>,
+    ) -> rquickjs::Result<JsPromise<'js, Option<ParserEvent<'js>>>> {
+        let state = Rc::clone(&self.state);
+        JsPromise::wrap_future(&ctx.clone(), next_event(ctx, state))
+    }
+
+    /// Answers an input event with the source's next bytes, or undefined at
+    /// its end.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+    pub fn input<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        bytes: Option<TypedArray<'js, u8>>,
+    ) -> rquickjs::Result<()> {
+        let bytes = bytes
+            .map(|bytes| {
+                bytes
+                    .as_bytes()
+                    .map(<[u8]>::to_vec)
+                    .ok_or_else(|| Exception::throw_type(&ctx, "Detached HTML input"))
+            })
+            .transpose()?;
+        self.reply(&ctx, Reply::Input(bytes))
+    }
+
+    /// Answers a token event once the token's handler has settled.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+    pub fn done(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        self.reply(&ctx, Reply::Done)
+    }
+
+    /// Applies `operation` to the current token, returning its properties
+    /// after the change.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+    pub fn mutate(
+        &self,
+        ctx: Ctx<'_>,
+        operation: Serde<HtmlOperation>,
+    ) -> rquickjs::Result<Serde<TokenProperties>> {
+        let (result, response) = flume::bounded(1);
+        self.state
+            .borrow()
+            .replies()
+            .ok_or_else(|| Exception::throw_type(&ctx, "HTML parser is not running"))?
+            .try_send(Reply::Operation(operation.0, result))
+            .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
+        let properties = response
+            .recv()
+            .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
+            .map_err(|error| Exception::throw_type(&ctx, &error))?;
+        Ok(Serde(properties))
+    }
+
+    /// The registrations the parser released since the last call.
+    pub fn releases(&self) -> Serde<Vec<HtmlRelease>> {
+        Serde(self.state.borrow().take_releases())
+    }
+
+    /// Stops the parser.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+    pub fn cancel(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        self.state
+            .borrow_mut()
+            .stop()
+            .map_err(|error| Exception::throw_internal(&ctx, &error))
+    }
+}
+
+impl HtmlParser {
+    /// Sends `reply` to the parser unless it has ended.
+    fn reply(&self, ctx: &Ctx<'_>, reply: Reply) -> rquickjs::Result<()> {
+        let state = self.state.borrow();
+        if state.ended {
+            return Ok(());
+        }
+        state
+            .replies()
+            .ok_or_else(|| Exception::throw_internal(ctx, "HTML parser is not running"))?
+            .try_send(reply)
+            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))
+    }
+}
+
+/// What the parser asks of the runtime: the next bytes of an input source,
+/// a run of a token's handler, or the delivery of rewritten bytes.
+pub(crate) enum ParserEvent<'js> {
+    Input {
+        source: usize,
+    },
+    Token {
+        handler: usize,
+        properties: Serde<TokenProperties>,
+    },
+    Output(TypedArray<'js, u8>),
+}
+
+impl<'js> IntoJs<'js> for ParserEvent<'js> {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        let event = Object::new(ctx.clone())?;
+        match self {
+            Self::Input { source } => {
+                event.set("kind", "input")?;
+                event.set("source", source)?;
+            }
+            Self::Token {
+                handler,
+                properties,
+            } => {
+                event.set("kind", "token")?;
+                event.set("handler", handler)?;
+                event.set("properties", properties)?;
+            }
+            Self::Output(bytes) => {
+                event.set("kind", "output")?;
+                event.set("bytes", bytes)?;
+            }
+        }
+        Ok(event.into_value())
+    }
+}
+
+impl crate::typescript::JsType for ParserEvent<'_> {
+    fn typescript(types: &mut crate::typescript::Types) -> String {
+        types.named("ParserEvent", std::any::type_name::<Self>(), |types| {
+            let kind = |name: &str| ("kind", false, format!("{name:?}"));
+            let events = [
+                crate::typescript::object(&[kind("input"), ("source", false, "number".to_owned())]),
+                crate::typescript::object(&[
+                    kind("token"),
+                    ("handler", false, "number".to_owned()),
+                    ("properties", false, TokenProperties::typescript(types)),
+                ]),
+                crate::typescript::object(&[
+                    kind("output"),
+                    ("bytes", false, "Uint8Array".to_owned()),
+                ]),
+            ];
+            crate::typescript::alias("ParserEvent", &events.join(" | "))
+        })
+    }
 }
 
 fn parse_encoding(ctx: &Ctx<'_>, content_type: &str) -> rquickjs::Result<AsciiCompatibleEncoding> {
@@ -224,72 +321,46 @@ fn parse_encoding(ctx: &Ctx<'_>, content_type: &str) -> rquickjs::Result<AsciiCo
         })
 }
 
-fn decode_reply(ctx: &Ctx<'_>, value: &Value<'_>) -> rquickjs::Result<Reply> {
-    Ok(if value.is_undefined() {
-        Reply::Done
-    } else if value.is_null() {
-        Reply::Input(None)
-    } else if let Some(bytes) = value
-        .clone()
-        .into_object()
-        .and_then(|object| TypedArray::<u8>::from_object(object).ok())
-    {
-        Reply::Input(Some(
-            bytes
-                .as_bytes()
-                .ok_or_else(|| Exception::throw_type(ctx, "Detached HTML input"))?
-                .to_vec(),
-        ))
-    } else {
-        return Err(Exception::throw_type(ctx, "Invalid HTML parser reply"));
-    })
-}
-
-async fn next_event(ctx: Ctx<'_>, state: Rc<RefCell<State>>) -> rquickjs::Result<Value<'_>> {
+async fn next_event(
+    ctx: Ctx<'_>,
+    state: Rc<RefCell<State>>,
+) -> rquickjs::Result<Option<ParserEvent<'_>>> {
     let receiver = state
         .borrow_mut()
         .events()
         .map_err(|error| Exception::throw_internal(&ctx, &error))?;
     let Some(receiver) = receiver else {
-        return Ok(Value::new_null(ctx));
+        return Ok(None);
     };
     let event = receiver
         .recv_async()
         .await
         .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
-    match event {
-        Event::Input(source) => {
-            ctx.json_parse(json!({"kind": "input", "source": source}).to_string())
-        }
+    Ok(Some(match event {
+        Event::Input(source) => ParserEvent::Input { source },
         Event::Token {
             handler,
             properties,
-        } => ctx.json_parse(
-            json!({
-                "kind": "token", "handler": handler, "properties": properties,
-            })
-            .to_string(),
-        ),
-        Event::Output(bytes) => {
-            let event = Object::new(ctx.clone())?;
-            event.set("kind", "output")?;
-            event.set("bytes", TypedArray::new(ctx, bytes)?)?;
-            Ok(event.into_value())
-        }
+        } => ParserEvent::Token {
+            handler,
+            properties: Serde(properties),
+        },
+        Event::Output(bytes) => ParserEvent::Output(TypedArray::new(ctx, bytes)?),
         Event::Finished(result) => {
             state
                 .borrow_mut()
                 .stop()
                 .map_err(|error| Exception::throw_internal(&ctx, &error))?;
             result.map_err(|error| Exception::throw_type(&ctx, &error))?;
-            Ok(Value::new_null(ctx))
+            return Ok(None);
         }
-    }
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::time::Duration;
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -314,7 +385,7 @@ mod tests {
     fn discarded_registrations_are_released_before_the_next_token() -> TestResult {
         for tag in ["p", "br"] {
             let mut state = State::new(
-                parser::handlers(r#"[{"selector":"*","element":0}]"#)?,
+                parser::handlers(serde_json::from_str(r#"[{"selector":"*","element":0}]"#)?)?,
                 AsciiCompatibleEncoding::utf_8(),
             );
             let events = state.events()?.ok_or("event channel closed")?;
@@ -371,7 +442,9 @@ mod tests {
             _ => ("[]", Some(vec![b'x'; 65536])),
         };
         let mut state = State::new(
-            parser::handlers(handlers).map_err(|error| error.to_string())?,
+            serde_json::from_str(handlers)
+                .map_err(|error| error.to_string())
+                .and_then(|specs| parser::handlers(specs).map_err(|error| error.to_string()))?,
             AsciiCompatibleEncoding::utf_8(),
         );
         let events = state

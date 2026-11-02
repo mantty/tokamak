@@ -1,7 +1,7 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
 import { createNativeContext, type Availability, type NativeConnection, type NativePlatform, type Overflow, type TokamakContext } from "./context.js";
 import { encodeJson, decodeJson } from "./codec.js";
-import { nativeError, platformGlobal, type NativeFailure } from "./native-protocol.mjs";
+import { nativeError, platformGlobal, type NativeFailure } from "./native-protocol.js";
 
 type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
 

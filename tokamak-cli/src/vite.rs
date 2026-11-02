@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use tokamak_macros::JsType;
 
 use super::paths;
 use super::tokamak_config::{self, TokamakConfig};
@@ -24,7 +25,7 @@ pub(crate) struct VitePlugin {
 }
 
 /// The plugin's `config.json`: the Vite root and the plugin's options.
-#[derive(Deserialize, PartialEq)]
+#[derive(Deserialize, PartialEq, JsType)]
 pub(crate) struct ConfigReport {
     root: PathBuf,
     config: serde_json::Value,
@@ -39,15 +40,15 @@ impl ConfigReport {
 
 /// The plugin's `server.json`: the development server, its Worker and the
 /// plugin's dev socket, or why the plugin cannot report the server.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsType)]
 #[serde(untagged)]
-enum ServerFile {
+pub(crate) enum ServerFile {
     Failed { error: String },
     Reported(ServerReport),
 }
 
 /// The development server, its Worker, and the plugin's dev socket.
-#[derive(Deserialize, PartialEq)]
+#[derive(Deserialize, PartialEq, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerReport {
     pub(crate) url: String,

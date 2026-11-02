@@ -2,6 +2,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use tokamak_macros::host_function;
 
 /// The native `node:fs` module name.
 pub const MODULE_NAME: &str = "node:fs";
@@ -27,12 +28,14 @@ pub fn install(ctx: &Ctx<'_>, vfs: &VfsHandle) -> rquickjs::Result<()> {
 }
 
 /// `process.cwd()`: the request VFS's working directory.
+#[host_function]
 pub fn working_directory(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     let vfs = vfs_handle(&ctx)?;
     Ok(lock(&vfs).working_directory().to_owned())
 }
 
 /// `process.chdir(directory)`.
+#[host_function]
 pub fn change_directory<'js>(ctx: Ctx<'js>, directory: Value<'js>) -> rquickjs::Result<()> {
     let Some(directory) = directory.as_string() else {
         return Err(throw_type_error(
@@ -233,15 +236,12 @@ fn export_module<'js>(
     };
     export_constants(&module, promises_only)?;
     if promises_only {
-        let file_handle = file_handle_constructor(ctx)?;
-        module.value("FileHandle", file_handle.into_value())?;
+        let file_handle: Value = fs_module(ctx, "file-handle.ts")?.get("FileHandle")?;
+        module.value("FileHandle", file_handle)?;
         export_promises(&module)?;
     } else {
-        let dirent = dirent_constructor(ctx)?;
-        let dir = dir_constructor(ctx)?;
-        let stats = stats_constructor(ctx)?;
-        for (name, value) in [("Dirent", dirent), ("Dir", dir), ("Stats", stats)] {
-            module.value(name, value.into_value())?;
+        for name in ["Dirent", "Dir", "Stats"] {
+            module.value(name, fs_object(ctx, name)?.into_value())?;
         }
 
         export_sync(&module)?;
@@ -328,7 +328,7 @@ fn export_callback<'js>(module: &ModuleExports<'_, 'js>) -> rquickjs::Result<()>
 }
 
 fn export_streams(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
-    let streams = streams_module(module.ctx)?;
+    let streams = fs_module(module.ctx, "streams.ts")?;
     for (name, export) in [
         ("ReadStream", "ReadStream"),
         ("FileReadStream", "ReadStream"),

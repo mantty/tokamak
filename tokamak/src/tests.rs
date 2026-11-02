@@ -555,7 +555,7 @@ export default { fetch: () => new Response(platform) };";
         return Err("Worker returned a non-HTTP response".into());
     };
     assert!(
-        matches!(&response.body, HttpBody::Buffered(body) if body == crate::globals::plugins::PLATFORM.as_bytes())
+        matches!(&response.body, HttpBody::Buffered(body) if body == crate::globals::plugins::PLATFORM.0.as_bytes())
     );
     Ok(())
 }

@@ -3,9 +3,10 @@
 
 use rusqlite::{Connection, Statement};
 use serde::{Deserialize, Serialize};
+use tokamak_macros::JsType;
 
 use super::super::keys::{cursor, cursor_key, prefix_end};
-use super::{Failure, Object, R2Bucket, object_columns};
+use super::{Failure, R2Bucket, R2Object, object_columns};
 use crate::lock;
 
 /// Objects from a key onwards, in key order.
@@ -21,7 +22,7 @@ const DEFAULT_LIMIT: usize = 1000;
 const METADATA_LIMIT: usize = 100;
 
 /// What a listing asks for.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListRequest {
     limit: Option<usize>,
@@ -35,7 +36,7 @@ pub(crate) struct ListRequest {
 }
 
 /// Metadata a listing includes.
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq, Eq, JsType)]
 #[serde(rename_all = "camelCase")]
 enum Include {
     HttpMetadata,
@@ -43,10 +44,10 @@ enum Include {
 }
 
 /// A page of a listing.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Listing {
-    pub(crate) objects: Vec<Object>,
+    pub(crate) objects: Vec<R2Object>,
     pub(crate) truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cursor: Option<String>,
@@ -55,7 +56,7 @@ pub(crate) struct Listing {
 
 /// An object, or a delimited prefix.
 enum Entry {
-    Object(Object),
+    Object(R2Object),
     Prefix(String),
 }
 
@@ -136,7 +137,7 @@ impl ListRequest {
             let Some(prefix) = self.delimited_prefix(&key) else {
                 let http = self.includes(&Include::HttpMetadata);
                 let custom = self.includes(&Include::CustomMetadata);
-                entries.push(Entry::Object(Object::from_row(row, http, custom)?));
+                entries.push(Entry::Object(R2Object::from_row(row, http, custom)?));
                 continue;
             };
             let next = prefix_end(&prefix).map(|key| Start {

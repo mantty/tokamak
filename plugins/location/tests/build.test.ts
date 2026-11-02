@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { declarations, type Declarations, type Settings } from "../build/declarations.mjs";
+import { declarations, type Declarations, type Settings } from "../build/declarations.ts";
 
 const defaults: Settings = { "background-always": false, "background-updates": false, precision: "precise" };
 
@@ -199,7 +199,7 @@ void test("rejects always-description without background-always", () => {
 
 void test("writes the declarations into the output directory tok gives", () => {
   const output = mkdtempSync(join(tmpdir(), "location-build-"));
-  const script = join(dirname(fileURLToPath(import.meta.url)), "../build/index.mjs");
+  const script = join(dirname(fileURLToPath(import.meta.url)), "../build/index.ts");
   const run = (platform: string, settings: Partial<Settings>) =>
     spawnSync(process.execPath, [script], {
       input: JSON.stringify({ platform, settings: { ...defaults, ...settings }, output }),

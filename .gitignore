@@ -15,6 +15,7 @@ tokamak-env.d.ts
 tokamak-cli/npm/platforms/*/bin/
 tokamak-cli/npm/platform-packs/*/*/
 tokamak-cli/npm/dist/
+/plugins/*/dist/
 
 # Swift and Gradle builds of native packages
 .build/
@@ -24,5 +25,5 @@ tokamak-cli/npm/dist/
 /plugins/*/android/.kotlin/
 /plugins/*/android/local.properties
 
-# Written by scripts/collect-report.mjs.
+# Written by scripts/collect-report.mts.
 /reports/

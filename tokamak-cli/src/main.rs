@@ -5,6 +5,8 @@
 
 mod cache;
 mod certs;
+#[cfg(test)]
+mod contracts;
 mod dev;
 mod devices;
 mod lock;

@@ -1,0 +1,10 @@
+{
+  "extends": "../tokamak/tsconfig.json",
+  "compilerOptions": {
+    // TypeScript and Node's types come from tokamak/package.json.
+    "typeRoots": ["../tokamak/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["*.mts"],
+  "exclude": []
+}

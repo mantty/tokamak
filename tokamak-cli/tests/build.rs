@@ -24,11 +24,11 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 fn create_project(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
-        r#"{"name":"demo-app","scripts":{"build":"node build.cjs"}}"#,
+        r#"{"name":"demo-app","scripts":{"build":"node build.mts"}}"#,
     )?;
     fs::write(
-        root.join("build.cjs"),
-        include_str!("fixtures/vite-build.cjs"),
+        root.join("build.mts"),
+        include_str!("fixtures/vite-build.mts"),
     )?;
     fs::create_dir_all(root.join("dist/app"))?;
     fs::create_dir_all(root.join("dist/client/styles"))?;
@@ -1607,7 +1607,7 @@ fn runs_the_configured_build_command_in_the_project_directory() -> TestResult {
         .arg("--platform-pack")
         .arg(&pack)
         .args(["--version", "1.0.0"])
-        .env("TOKAMAK_BUILD", "node build.cjs && node client.cjs")
+        .env("TOKAMAK_BUILD", "node build.mts && node client.cjs")
         .assert()
         .success();
 
@@ -1624,7 +1624,7 @@ fn stops_when_the_configured_build_command_fails() -> TestResult {
 
     project_build_command("windows", &project, &pack)?
         .args(["--build", "exit 3"])
-        .env("TOKAMAK_BUILD", "node build.cjs")
+        .env("TOKAMAK_BUILD", "node build.mts")
         .assert()
         .failure()
         .stderr(contains("project build failed"));
@@ -1666,7 +1666,7 @@ esac
         .arg(platform_pack)
         .args(["--host-address", "127.0.0.1"])
         .env("PATH", path)
-        .args(["--", "node", "-e", DEV_SERVER]);
+        .args(["--", "node", "--input-type=module", "-e", DEV_SERVER]);
     Ok(command)
 }
 
@@ -1674,13 +1674,16 @@ esac
 /// itself and its Worker as the tokamak Vite plugin does.
 #[cfg(target_os = "macos")]
 const DEV_SERVER: &str = r#"
-require("./build.cjs");
-const server = require("node:http").createServer((_, response) => response.end());
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+await import("./build.mts");
+const server = http.createServer((_, response) => response.end());
 server.listen(0, "127.0.0.1", () => {
   const url = `http://127.0.0.1:${server.address().port}/`;
-  const report = require("node:path").join(process.env.TOKAMAK_VITE_OUTPUT, "server.json");
-  require("node:fs").writeFileSync(`${report}.tmp`, JSON.stringify({ url, workerName: "demo-app", socketPort: 1 }));
-  require("node:fs").renameSync(`${report}.tmp`, report);
+  const report = path.join(process.env.TOKAMAK_VITE_OUTPUT, "server.json");
+  fs.writeFileSync(`${report}.tmp`, JSON.stringify({ url, workerName: "demo-app", socketPort: 1 }));
+  fs.renameSync(`${report}.tmp`, report);
 });
 "#;
 

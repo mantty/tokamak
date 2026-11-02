@@ -7,6 +7,7 @@ import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type Environment, type Plugin, type ViteDevServer } from "vite";
 
 import { capabilitiesFor, type NativePlatform } from "@tokamakdev/plugin/capabilities";
+import type { ConfigReport, ServerFile } from "./contracts.generated.mjs";
 import { openDevSocket, type DevSocket } from "./dev-socket.mjs";
 import type { Config } from "./index.mjs";
 import { findModule } from "./worker-contract.mjs";
@@ -50,7 +51,7 @@ export function createNativeWorker(
       graph = createWorkerGraph(root, findModule(root, module), path.join(output, "worker"));
       graph.plugin.config.call(this, vite, environment);
       await prepare?.(root, graph);
-      writeJson(output, "config.json", { root, config });
+      writeJson(output, "config.json", { root, config } satisfies ConfigReport);
       // tok's build directory holds the apps it builds, which Windows does not let a watcher
       // open while they run. An array keeps the project's own ignored paths.
       if (buildDir && vite.server?.watch !== null) return { server: { watch: { ignored: [within(buildDir)] } } };
@@ -113,19 +114,21 @@ async function serveNativeWorker(
   const httpServer = server.httpServer;
   if (!httpServer) {
     if (!fs.existsSync(path.join(output, "server.json"))) {
-      writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR });
+      writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR } satisfies ServerFile);
     }
     return;
   }
   const socket = await openDevSocket(names.native, token);
   httpServer.once("listening", () => {
     const urls = server.resolvedUrls;
-    writeJson(output, "server.json", {
-      url: urls?.local[0] ?? urls?.network[0],
+    const url = urls?.local[0] ?? urls?.network[0];
+    const report = url === undefined ? { error: "Vite reported no URL for the development server" } : {
+      url,
       workerName: names.app,
       certificates: endEntityCertificates(server.config.server.https),
       socketPort: socket.port,
-    });
+    };
+    writeJson(output, "server.json", report satisfies ServerFile);
   });
   return socket;
 }

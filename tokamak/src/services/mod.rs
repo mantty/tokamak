@@ -1,15 +1,20 @@
 mod lifetime;
 mod streams;
 pub(crate) use lifetime::{Lifetime, Scope};
-pub(crate) use streams::{Codec, Streams};
+pub(crate) use streams::{MessageCodec, StreamCodec, Streams};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rquickjs::{Array, ArrayBuffer, Ctx, Exception, Function, Object, Promise};
+use rquickjs::class::Trace;
+use rquickjs::{ArrayBuffer, Class, Ctx, Exception, FromJs, IntoJs, JsLifetime};
+use tokamak_macros::JsType;
 
+use crate::cancellation::Cancellation;
+use crate::dispatcher::Bootstrap;
 use crate::env_vars::ServiceBinding;
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
+use crate::typed::{JsPromise, JsReadableStream};
 
 pub(crate) struct Call {
     pub(crate) entrypoint: String,
@@ -129,46 +134,59 @@ impl Message {
         }
     }
 
-    fn from_js<'js>(object: &Object<'js>, codec: &Codec<'js>) -> rquickjs::Result<Self> {
-        let buffers: Array = object.get("buffers")?;
-        let buffers = buffers
-            .iter::<ArrayBuffer>()
+    fn from_js<'js>(message: JsMessage<'js>, codec: &MessageCodec<'js>) -> rquickjs::Result<Self> {
+        let buffers = message
+            .buffers
+            .iter()
             .map(|buffer| {
-                let buffer = buffer?;
                 buffer
                     .as_bytes()
                     .map(<[u8]>::to_vec)
-                    .ok_or_else(|| Exception::throw_type(object.ctx(), "Detached service buffer"))
+                    .ok_or_else(|| Exception::throw_type(codec.ctx(), "Detached service buffer"))
             })
             .collect::<rquickjs::Result<_>>()?;
-        let streams: Array = object.get("streams")?;
-        let streams = streams
-            .iter::<Object>()
-            .map(|stream| codec.take(stream?))
+        let streams = message
+            .streams
+            .into_iter()
+            .map(|stream| codec.take(stream))
             .collect::<rquickjs::Result<_>>()?;
         Ok(Self {
-            data: object.get("data")?,
+            data: message.data,
             buffers,
             streams,
         })
     }
 
-    pub(crate) fn into_js<'js>(self, codec: &Codec<'js>) -> rquickjs::Result<Object<'js>> {
+    pub(crate) fn into_js<'js>(
+        self,
+        codec: &MessageCodec<'js>,
+    ) -> rquickjs::Result<JsMessage<'js>> {
         let ctx = codec.ctx();
-        let object = Object::new(ctx.clone())?;
-        let buffers = Array::new(ctx.clone())?;
-        for (index, buffer) in self.buffers.into_iter().enumerate() {
-            buffers.set(index, ArrayBuffer::new(ctx.clone(), buffer)?)?;
-        }
-        object.set("data", self.data)?;
-        object.set("buffers", buffers)?;
-        let streams = Array::new(ctx.clone())?;
-        for (index, stream) in self.streams.into_iter().enumerate() {
-            streams.set(index, codec.receive(stream)?)?;
-        }
-        object.set("streams", streams)?;
-        Ok(object)
+        let buffers = self
+            .buffers
+            .into_iter()
+            .map(|buffer| ArrayBuffer::new(ctx.clone(), buffer))
+            .collect::<rquickjs::Result<_>>()?;
+        let streams = self
+            .streams
+            .into_iter()
+            .map(|stream| codec.receive(stream))
+            .collect::<rquickjs::Result<_>>()?;
+        Ok(JsMessage {
+            data: self.data,
+            buffers,
+            streams,
+        })
     }
+}
+
+/// A service message as JavaScript holds it: its encoded value, and the
+/// buffers and streams the value refers to.
+#[derive(FromJs, IntoJs, JsType)]
+pub(crate) struct JsMessage<'js> {
+    data: String,
+    buffers: Vec<ArrayBuffer<'js>>,
+    streams: Vec<JsReadableStream<'js>>,
 }
 
 pub(crate) struct Reply {
@@ -177,68 +195,109 @@ pub(crate) struct Reply {
 }
 
 impl Reply {
-    pub(crate) fn from_js<'js>(object: &Object<'js>, codec: &Codec<'js>) -> rquickjs::Result<Self> {
+    pub(crate) fn from_js<'js>(
+        reply: JsReply<'js>,
+        codec: &MessageCodec<'js>,
+    ) -> rquickjs::Result<Self> {
         Ok(Self {
-            failed: object.get("failed")?,
-            value: Message::from_js(&object.get("value")?, codec)?,
+            failed: reply.failed,
+            value: Message::from_js(reply.value, codec)?,
         })
     }
 
-    fn into_js<'js>(self, codec: &Codec<'js>) -> rquickjs::Result<Object<'js>> {
-        let object = Object::new(codec.ctx().clone())?;
-        object.set("failed", self.failed)?;
-        object.set("value", self.value.into_js(codec)?)?;
-        Ok(object)
+    fn into_js<'js>(self, codec: &MessageCodec<'js>) -> rquickjs::Result<JsReply<'js>> {
+        Ok(JsReply {
+            failed: self.failed,
+            value: self.value.into_js(codec)?,
+        })
     }
+}
+
+/// A reply as JavaScript holds it: the value or the error that failed the
+/// call.
+#[derive(FromJs, IntoJs, JsType)]
+pub(crate) struct JsReply<'js> {
+    failed: bool,
+    value: JsMessage<'js>,
+}
+
+/// The Worker's service bindings, which `call` invokes.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(crate) struct ServiceHost {
+    #[qjs(skip_trace)]
+    bindings: Bindings,
+    #[qjs(skip_trace)]
+    lifetime: Lifetime,
+    #[qjs(skip_trace)]
+    streams: Arc<Streams>,
+}
+
+#[tokamak_macros::js_methods]
+#[rquickjs::methods]
+impl ServiceHost {
+    /// Calls `method` on the service bound as `name` with the arguments
+    /// `message`, whose streams `codec` moves.
+    #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
+    pub fn call<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        name: String,
+        method: String,
+        message: JsMessage<'js>,
+        codec: StreamCodec<'js>,
+    ) -> rquickjs::Result<ServiceCall<'js>> {
+        let target = self
+            .bindings
+            .targets
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| Exception::throw_type(&ctx, "Unknown service binding"))?;
+        let codec = MessageCodec::new(&ctx, codec, &self.streams);
+        let message = Message::from_js(message, &codec)?;
+        let registry = Arc::clone(&self.bindings.registry);
+        let lifetime = Lifetime {
+            caller: self.lifetime.caller.child_token(),
+            ..self.lifetime.clone()
+        };
+        let cancellation = Cancellation::instance(&ctx, lifetime.caller.clone())?;
+        let calling = ctx.clone();
+        let reply = JsPromise::wrap_future(&ctx, async move {
+            let result = registry
+                .invoke(target, method, message, lifetime)
+                .await
+                .map_err(|error| crate::errors::throw_message(&calling, &error.to_string()))?;
+            result.into_js(&codec)
+        })?;
+        Ok(ServiceCall {
+            reply,
+            cancellation,
+        })
+    }
+}
+
+/// A service call's reply, and the handle that cancels the call.
+#[derive(IntoJs, JsType)]
+pub(crate) struct ServiceCall<'js> {
+    reply: JsPromise<'js, JsReply<'js>>,
+    cancellation: Class<'js, Cancellation>,
 }
 
 pub(crate) fn install<'js>(
     ctx: &Ctx<'js>,
-    bootstrap: &Object<'js>,
+    bootstrap: &Bootstrap<'js>,
     bindings: &Bindings,
     scope: &Scope,
 ) -> rquickjs::Result<()> {
     let names: Vec<_> = bindings.targets.keys().cloned().collect();
-    let bindings = bindings.clone();
-    let lifetime = scope.lifetime.clone();
-    let streams = Arc::clone(&scope.streams);
-    let call = Function::new(
-        ctx.clone(),
-        move |ctx: Ctx<'js>,
-              name: String,
-              method: String,
-              arguments: Object<'js>,
-              bootstrap: Object<'js>| {
-            let target = bindings
-                .targets
-                .get(&name)
-                .cloned()
-                .ok_or_else(|| Exception::throw_type(&ctx, "Unknown service binding"))?;
-            let codec = Codec::new(bootstrap, &streams);
-            let message = Message::from_js(&arguments, &codec)?;
-            let registry = Arc::clone(&bindings.registry);
-            let lifetime = Lifetime {
-                caller: lifetime.caller.child_token(),
-                ..lifetime.clone()
-            };
-            let cancellation = lifetime.caller.clone();
-            let calling = ctx.clone();
-            let result = Promise::wrap_future(&ctx, async move {
-                let result = registry
-                    .invoke(target, method, message, lifetime)
-                    .await
-                    .map_err(|error| crate::errors::throw_message(&calling, &error.to_string()))?;
-                result.into_js(&codec)
-            })?;
-            let operation = Object::new(ctx.clone())?;
-            operation.set("result", result)?;
-            operation.set("cancel", Function::new(ctx, move || cancellation.cancel())?)?;
-            Ok::<_, rquickjs::Error>(operation)
-        },
-    )?;
+    let host = ServiceHost {
+        bindings: bindings.clone(),
+        lifetime: scope.lifetime.clone(),
+        streams: Arc::clone(&scope.streams),
+    };
     bootstrap
-        .get::<_, Function>("installServices")?
-        .call((names, call))
+        .install_services
+        .call((names, Class::instance(ctx.clone(), host)?))
 }
 
 #[cfg(test)]

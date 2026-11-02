@@ -1,5 +1,6 @@
 use rquickjs::class::Trace;
 use rquickjs::{ArrayBuffer, Class, Ctx, Exception, JsLifetime, TypedArray};
+use tokamak_macros::host_function;
 
 use super::aes::{self, Mode, Stream};
 use super::bytes;
@@ -15,6 +16,7 @@ pub(crate) struct CipherState {
     tag_set: bool,
 }
 
+#[host_function]
 pub(super) fn create<'js>(
     ctx: Ctx<'js>,
     mode: String,
@@ -45,6 +47,7 @@ pub(super) fn create<'js>(
     )
 }
 
+#[tokamak_macros::js_methods]
 #[rquickjs::methods]
 impl CipherState {
     pub fn update<'js>(

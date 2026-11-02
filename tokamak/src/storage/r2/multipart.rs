@@ -8,10 +8,11 @@ use std::path::Path;
 use md5::{Digest, Md5};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
+use tokamak_macros::JsType;
 
 use super::body::Pending;
 use super::{
-    Body, BodyWriter, Failure, Json, Object, ObjectMetadata, R2Bucket, Written, find, hex,
+    Body, BodyWriter, Failure, Json, ObjectMetadata, R2Bucket, R2Object, Written, find, hex,
     random_name, record, remove_files, validate_key, validate_metadata,
 };
 use crate::lock;
@@ -29,7 +30,7 @@ const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const JOIN_BUFFER: usize = 1024 * 1024;
 
 /// A part a completion names.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UploadedPart {
     part_number: i64,
@@ -131,7 +132,7 @@ impl R2Bucket {
         id: &str,
         selected: &[UploadedPart],
         now: i64,
-    ) -> Result<Object, Failure> {
+    ) -> Result<R2Object, Failure> {
         validate_key(key)?;
         let planned = completion(&lock(&self.connection), key, id, selected)?;
         let version = random_name()?;
@@ -177,7 +178,7 @@ impl R2Bucket {
 impl Completion {
     /// The object the parts make. Its etag is the MD5 of the parts' MD5s,
     /// and the number of parts.
-    fn object(self, key: &str, version: String, now: i64) -> Object {
+    fn object(self, key: &str, version: String, now: i64) -> R2Object {
         let digests: Vec<u8> = self
             .parts
             .iter()
@@ -189,7 +190,7 @@ impl Completion {
             etag: format!("{}-{}", hex(&Md5::digest(&digests)), self.parts.len()),
             checksums: "{}".to_owned(),
         };
-        Object::written(key, body, self.metadata, now)
+        R2Object::written(key, body, self.metadata, now)
     }
 }
 

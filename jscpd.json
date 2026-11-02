@@ -10,6 +10,7 @@
   "absolute": false,
   "ignore": [
     "**/node_modules/**",
+    "**/dist/**",
     "**/target/**",
     "**/reports/**",
     "**/libsqlite3-sys/**",
@@ -26,9 +27,9 @@
     "**/*.spec.*",
     "**/test-setup.*",
     "**/__tests__/**",
-    "**/streams/node.mjs",
-    "**/streams/web-standard.mjs",
-    "**/storage/d1-api.mjs",
+    "**/streams/node.js",
+    "**/streams/web-standard.js",
+    "**/storage/d1-api.js",
     "**/package.json"
   ]
 }

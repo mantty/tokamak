@@ -14,13 +14,17 @@
     "./events": "./src/events.ts",
     "./service-worker": "./service-worker/index.ts"
   },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "prepack": "pnpm build"
+  },
   "peerDependencies": {
     "@tokamakdev/plugin": "^0.1.0"
   },
   "files": [
     "android",
     "apple",
-    "build",
+    "dist",
     "service-worker",
     "src",
     "web",

@@ -30,17 +30,10 @@ pub(super) fn glob_sync<'js>(
     Ok(array.into_value())
 }
 
-/// workerd's `fs.promises.glob`, an async generator over `globSync`'s matches.
-const GLOB_PROMISE: &str = r"(globSync) => async function* glob(pattern, options = {}) {
-  const results = await Promise.resolve(globSync(pattern, options));
-  for (const result of results) {
-    yield result;
-  }
-}";
-
-/// `fs.promises.glob(pattern, options)`.
+/// workerd's `fs.promises.glob(pattern, options)`, an async generator over
+/// `globSync`'s matches.
 pub(super) fn glob_promise<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    let glob: Function = ctx.eval(GLOB_PROMISE)?;
+    let glob: Function = fs_module(ctx, "glob.ts")?.get("globPromise")?;
     glob.call((Function::new(ctx.clone(), glob_sync as ValueOperation)?,))
 }
 
@@ -61,13 +54,9 @@ fn glob_values<'js>(
     options.results(ctx, walk.matches)
 }
 
-/// workerd's reading of the `pattern` argument: a string, or the values an
-/// iterable spreads to.
-const GLOB_PATTERNS: &str = "(pattern) => typeof pattern === 'string' ? [pattern] : [...pattern]";
-
 /// The patterns `pattern` gives, each of which must be a string.
 fn glob_patterns<'js>(ctx: &Ctx<'js>, pattern: Value<'js>) -> rquickjs::Result<Vec<String>> {
-    let spread: Function = ctx.eval(GLOB_PATTERNS)?;
+    let spread: Function = fs_module(ctx, "glob.ts")?.get("globPatterns")?;
     let patterns: Array = spread.call((pattern,))?;
     patterns
         .iter::<Value>()

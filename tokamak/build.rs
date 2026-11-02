@@ -2,18 +2,25 @@ use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use walkdir::WalkDir;
 
 #[path = "src/compiler.rs"]
 mod compiler;
 
-/// The runtime modules shared with `@tokamakdev/plugin`, under `../plugins/core/src`.
+/// The script that removes the types from TypeScript modules.
+const STRIP_TYPES: &str = "../scripts/strip-types.mts";
+
+/// The directory of the runtime modules shared with `@tokamakdev/plugin`.
+const PLUGIN_SOURCE: &str = "../plugins/core/src";
+
+/// The runtime modules shared with `@tokamakdev/plugin`, under `PLUGIN_SOURCE`.
 const PLUGIN_MODULES: [&str; 4] = [
-    "rpc/values.mjs",
-    "rpc/streams.mjs",
-    "rpc/http.mjs",
-    "native-protocol.mjs",
+    "rpc/values.ts",
+    "rpc/streams.ts",
+    "rpc/http.ts",
+    "native-protocol.ts",
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,32 +37,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Compile every JavaScript module under `src`: those under `storage/` into
-/// the storage part, the others into the runtime.
+/// Compile every module under `src`: those under `storage/` into the storage
+/// part, the others into the runtime.
 fn compile_builtins() -> Result<(), Box<dyn std::error::Error>> {
     // A module added anywhere under `src` is compiled too.
     println!("cargo:rerun-if-changed=src");
     let output = PathBuf::from(env::var("OUT_DIR")?);
-    let (storage, builtins): (Vec<_>, Vec<_>) = builtin_sources()?
+    let javascript = output.join("javascript");
+    let modules = builtin_sources()?;
+    let plugin_modules = PLUGIN_MODULES.map(String::from);
+    write_javascript(Path::new("src"), &javascript, &modules)?;
+    write_javascript(Path::new(PLUGIN_SOURCE), &javascript, &plugin_modules)?;
+    let (storage, mut builtins): (Vec<_>, Vec<_>) = modules
         .into_iter()
         .partition(|module| module.starts_with("storage/"));
-    let mut builtins = builtins;
-    builtins.extend(PLUGIN_MODULES.map(String::from));
-    write_builtin_table(&output, "builtins.rs", "BUILTINS", &builtins)?;
-    write_builtin_table(&output, "storage_builtins.rs", "STORAGE_BUILTINS", &storage)
+    builtins.extend(plugin_modules);
+    write_builtin_table(&output, &javascript, "builtins.rs", "BUILTINS", &builtins)?;
+    write_builtin_table(
+        &output,
+        &javascript,
+        "storage_builtins.rs",
+        "STORAGE_BUILTINS",
+        &storage,
+    )
 }
 
-/// The path under `src` of each JavaScript module there.
+/// The path under `src` of each module there: TypeScript, and the vendored
+/// JavaScript generated from npm packages.
 fn builtin_sources() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut modules = Vec::new();
     for entry in WalkDir::new("src").sort_by_file_name() {
         let path = entry?.into_path();
-        if path.extension().is_some_and(|extension| extension == "mjs") {
-            let module = path.strip_prefix("src")?.to_string_lossy();
-            modules.push(module.replace('\\', "/"));
+        let module = path
+            .strip_prefix("src")?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if matches!(extension(&module), Some("ts" | "js")) && !module.ends_with(".d.ts") {
+            modules.push(module);
         }
     }
     Ok(modules)
+}
+
+fn extension(module: &str) -> Option<&str> {
+    Path::new(module).extension()?.to_str()
+}
+
+/// Write each of `modules` under `from` to the same path under `to` as
+/// JavaScript: TypeScript with its types removed, other modules unchanged.
+fn write_javascript(
+    from: &Path,
+    to: &Path,
+    modules: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut typescript = Vec::new();
+    for module in modules {
+        let source = from.join(module);
+        println!("cargo:rerun-if-changed={}", source.display());
+        if extension(module) == Some("ts") {
+            typescript.push(module);
+        } else {
+            let destination = to.join(module);
+            fs::create_dir_all(destination.parent().ok_or("module has no directory")?)?;
+            fs::copy(&source, &destination)?;
+        }
+    }
+    if typescript.is_empty() {
+        return Ok(());
+    }
+    println!("cargo:rerun-if-changed={STRIP_TYPES}");
+    let requirement = "building the runtime needs Node 22.18 or newer on PATH";
+    let status = Command::new("node")
+        .arg("--no-warnings=ExperimentalWarning")
+        .arg(STRIP_TYPES)
+        .arg(from)
+        .arg(to)
+        .args(typescript)
+        .status()
+        .map_err(|error| format!("{requirement}: {error}"))?;
+    if !status.success() {
+        return Err(format!("{STRIP_TYPES} failed ({requirement})").into());
+    }
+    Ok(())
 }
 
 /// Export the entry points of the storage and development parts from test
@@ -71,26 +134,22 @@ fn export_parts_from_tests(target_os: &str) {
     }
 }
 
-/// Compile `sources` to bytecode in `output`, and write `table`, a Rust
-/// constant `constant` of each module's name and bytecode.
+/// Compile the JavaScript of `sources`, under `javascript`, to bytecode in
+/// `output`, and write `table`, a Rust constant `constant` of each module's
+/// name and bytecode.
 fn write_builtin_table(
     output: &Path,
+    javascript: &Path,
     table: &str,
     constant: &str,
     sources: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut modules = format!("const {constant}: &[(&str, &[u8])] = &[\n");
     for module in sources {
-        let source = if PLUGIN_MODULES.contains(&module.as_str()) {
-            Path::new("../plugins/core/src").join(module)
-        } else {
-            Path::new("src").join(module)
-        };
-        println!("cargo:rerun-if-changed={}", source.display());
         let name = format!("tokamak:{module}");
-        let bytecode =
-            compiler::compile_module(&name, &fs::read(&source)?, compiler::SourceText::Stripped)
-                .map_err(|error| format!("failed to compile {name}: {error}"))?;
+        let source = fs::read(javascript.join(module))?;
+        let bytecode = compiler::compile_module(&name, &source, compiler::SourceText::Stripped)
+            .map_err(|error| format!("failed to compile {name}: {error}"))?;
         let destination = output.join(format!("{module}.qjs"));
         fs::create_dir_all(destination.parent().ok_or("builtin has no directory")?)?;
         fs::write(&destination, bytecode)?;

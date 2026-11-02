@@ -13,24 +13,25 @@ use lol_html::{
     Settings, TextHandler,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use tokamak_macros::JsType;
 
 type Failure = Box<dyn std::error::Error + Send + Sync>;
 type Result<T = ()> = std::result::Result<T, Failure>;
 
-#[derive(Serialize)]
-#[serde(tag = "kind", content = "id", rename_all = "lowercase")]
-pub(super) enum Release {
-    Source(usize),
-    Handler(usize),
+/// A registration the parser released: of an input source, or of a handler.
+#[derive(Serialize, JsType)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub(crate) enum HtmlRelease {
+    Source { id: usize },
+    Handler { id: usize },
 }
 
-pub(super) type Releases = Arc<Mutex<Vec<Release>>>;
+pub(super) type Releases = Arc<Mutex<Vec<HtmlRelease>>>;
 
 // Streaming content and end-tag handlers can be discarded by lol_html without
 // invocation. Their owned JS registrations must be released at that point too.
 struct Registration {
-    release: Option<Release>,
+    release: Option<HtmlRelease>,
     queue: Releases,
 }
 
@@ -51,15 +52,65 @@ fn invalid(message: &str) -> Failure {
 
 pub(super) enum Event {
     Input(usize),
-    Token { handler: usize, properties: Value },
+    Token {
+        handler: usize,
+        properties: TokenProperties,
+    },
     Output(Vec<u8>),
     Finished(std::result::Result<(), String>),
 }
 
 pub(super) enum Reply {
     Input(Option<Vec<u8>>),
-    Operation(Operation, Sender<std::result::Result<Value, String>>),
+    Operation(
+        HtmlOperation,
+        Sender<std::result::Result<TokenProperties, String>>,
+    ),
     Done,
+}
+
+/// A token's properties, as its handler and its mutations see them.
+#[derive(Serialize, JsType)]
+#[serde(tag = "token", rename_all = "camelCase")]
+pub(crate) enum TokenProperties {
+    #[serde(rename_all = "camelCase")]
+    Element {
+        tag_name: String,
+        #[serde(rename = "namespaceURI")]
+        namespace_uri: String,
+        removed: bool,
+        attributes: Vec<ElementAttribute>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Text {
+        text: String,
+        last_in_text_node: bool,
+        removed: bool,
+    },
+    Comment {
+        text: String,
+        removed: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Doctype {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        public_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        system_id: Option<String>,
+    },
+    EndTag {
+        name: String,
+    },
+    End,
+}
+
+/// An attribute of an element.
+#[derive(Serialize, JsType)]
+pub(crate) struct ElementAttribute {
+    name: String,
+    value: String,
 }
 
 #[derive(Clone)]
@@ -85,7 +136,7 @@ impl Port {
         }
     }
 
-    fn registration(&self, release: Release) -> Registration {
+    fn registration(&self, release: HtmlRelease) -> Registration {
         Registration {
             release: Some(release),
             queue: Arc::clone(&self.releases),
@@ -137,8 +188,8 @@ impl Port {
     fn call(
         &self,
         handler: usize,
-        properties: Value,
-        mut mutate: impl FnMut(Operation) -> Result<Value>,
+        properties: TokenProperties,
+        mut mutate: impl FnMut(HtmlOperation) -> Result<TokenProperties>,
     ) -> Result {
         self.send(Event::Token {
             handler,
@@ -158,8 +209,10 @@ impl Port {
     }
 }
 
-#[derive(Deserialize)]
-struct Spec {
+/// A registration of handlers: on the elements `selector` matches, or on the
+/// document without one. Each handler is the ID of its callback.
+#[derive(Deserialize, JsType)]
+pub(crate) struct HandlerSpec {
     selector: Option<String>,
     element: Option<usize>,
     text: Option<usize>,
@@ -170,11 +223,11 @@ struct Spec {
 
 pub(super) struct Handler {
     selector: Option<Selector>,
-    spec: Spec,
+    spec: HandlerSpec,
 }
 
-pub(super) fn handlers(input: &str) -> Result<Vec<Handler>> {
-    serde_json::from_str::<Vec<Spec>>(input)?
+pub(super) fn handlers(specs: Vec<HandlerSpec>) -> Result<Vec<Handler>> {
+    specs
         .into_iter()
         .map(|spec| {
             let selector = spec.selector.as_deref().map(str::parse).transpose()?;
@@ -183,9 +236,9 @@ pub(super) fn handlers(input: &str) -> Result<Vec<Handler>> {
         .collect()
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
-enum OperationName {
+pub(crate) enum HtmlOperationName {
     Before,
     After,
     Replace,
@@ -201,45 +254,55 @@ enum OperationName {
     OnEndTag,
 }
 
+/// Content an operation adds: a string, or the ID of an input source.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum Content {
+pub(crate) enum HtmlContent {
     String(String),
     Stream { source: usize },
 }
 
-#[derive(Default, Clone, Copy, Deserialize)]
+impl crate::typescript::JsType for HtmlContent {
+    fn typescript(types: &mut crate::typescript::Types) -> String {
+        types.named("HtmlContent", std::any::type_name::<Self>(), |_| {
+            crate::typescript::alias("HtmlContent", "string | { source: number }")
+        })
+    }
+}
+
+#[derive(Default, Clone, Copy, Deserialize, JsType)]
 #[serde(rename_all = "lowercase")]
-enum Kind {
+pub(crate) enum ContentKind {
     Html,
     #[default]
     Text,
 }
 
-impl From<Kind> for ContentType {
-    fn from(kind: Kind) -> Self {
+impl From<ContentKind> for ContentType {
+    fn from(kind: ContentKind) -> Self {
         match kind {
-            Kind::Html => Self::Html,
-            Kind::Text => Self::Text,
+            ContentKind::Html => Self::Html,
+            ContentKind::Text => Self::Text,
         }
     }
 }
 
-#[derive(Deserialize)]
+/// A change to the current token.
+#[derive(Deserialize, JsType)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Operation {
-    name: OperationName,
-    value: Option<Content>,
+pub(crate) struct HtmlOperation {
+    name: HtmlOperationName,
+    value: Option<HtmlContent>,
     attribute: Option<String>,
     handler: Option<usize>,
     #[serde(default)]
-    content_type: Kind,
+    content_type: ContentKind,
 }
 
-impl Operation {
+impl HtmlOperation {
     fn string(&self) -> Result<&str> {
         match &self.value {
-            Some(Content::String(value)) => Ok(value),
+            Some(HtmlContent::String(value)) => Ok(value),
             _ => Err(invalid("This HTML operation requires a string")),
         }
     }
@@ -255,14 +318,16 @@ impl Operation {
         let kind = self.content_type.into();
         let port = port.clone();
         let registration = match &content {
-            Content::Stream { source } => Some(port.registration(Release::Source(*source))),
-            Content::String(_) => None,
+            HtmlContent::Stream { source } => {
+                Some(port.registration(HtmlRelease::Source { id: *source }))
+            }
+            HtmlContent::String(_) => None,
         };
         Ok(Box::new(move |sink: &mut StreamingHandlerSink<'_>| {
             let _registration = registration;
             match content {
-                Content::String(value) => sink.write_str(&value, kind),
-                Content::Stream { source } => port.write_input(source, sink, kind)?,
+                HtmlContent::String(value) => sink.write_str(&value, kind),
+                HtmlContent::Stream { source } => port.write_input(source, sink, kind)?,
             }
             Ok(())
         }))
@@ -300,7 +365,7 @@ pub(super) fn run(
     Ok(())
 }
 
-fn element_handlers<'h>(spec: &Spec, port: &'h Port) -> ElementContentHandlers<'h> {
+fn element_handlers<'h>(spec: &HandlerSpec, port: &'h Port) -> ElementContentHandlers<'h> {
     ElementContentHandlers {
         element: element_handler(spec, port),
         comments: comment_handler(spec, port),
@@ -308,7 +373,7 @@ fn element_handlers<'h>(spec: &Spec, port: &'h Port) -> ElementContentHandlers<'
     }
 }
 
-fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers<'h> {
+fn document_handlers<'h>(spec: &HandlerSpec, port: &'h Port) -> DocumentContentHandlers<'h> {
     DocumentContentHandlers {
         doctype: doctype_handler(spec, port),
         comments: comment_handler(spec, port),
@@ -317,7 +382,7 @@ fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers
     }
 }
 
-fn element_handler<'h>(spec: &Spec, port: &'h Port) -> Option<ElementHandler<'h>> {
+fn element_handler<'h>(spec: &HandlerSpec, port: &'h Port) -> Option<ElementHandler<'h>> {
     let handler = spec.element?;
     Some(Box::new(move |element: &mut Element<'_, '_>| {
         port.call(handler, element_properties(element), |operation| {
@@ -327,24 +392,31 @@ fn element_handler<'h>(spec: &Spec, port: &'h Port) -> Option<ElementHandler<'h>
     }))
 }
 
-fn doctype_handler<'h>(spec: &Spec, port: &'h Port) -> Option<DoctypeHandler<'h>> {
+fn doctype_handler<'h>(spec: &HandlerSpec, port: &'h Port) -> Option<DoctypeHandler<'h>> {
     let handler = spec.doctype?;
     Some(Box::new(move |doctype: &mut Doctype<'_>| {
-        port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
-    }))
-}
-
-fn end_handler<'h>(spec: &Spec, port: &'h Port) -> Option<EndHandler<'h>> {
-    let handler = spec.end?;
-    Some(Box::new(move |end: &mut DocumentEnd<'_>| {
-        port.call(handler, json!({}), |operation| {
-            apply_end(end, &operation)?;
-            Ok(json!({}))
+        let properties = TokenProperties::Doctype {
+            name: doctype.name(),
+            public_id: doctype.public_id(),
+            system_id: doctype.system_id(),
+        };
+        port.call(handler, properties, |_| {
+            Err(invalid("Doctype is read-only"))
         })
     }))
 }
 
-fn text_handler<'h>(spec: &Spec, port: &'h Port) -> Option<TextHandler<'h>> {
+fn end_handler<'h>(spec: &HandlerSpec, port: &'h Port) -> Option<EndHandler<'h>> {
+    let handler = spec.end?;
+    Some(Box::new(move |end: &mut DocumentEnd<'_>| {
+        port.call(handler, TokenProperties::End, |operation| {
+            apply_end(end, &operation)?;
+            Ok(TokenProperties::End)
+        })
+    }))
+}
+
+fn text_handler<'h>(spec: &HandlerSpec, port: &'h Port) -> Option<TextHandler<'h>> {
     let handler = spec.text?;
     Some(Box::new(move |text: &mut TextChunk<'_>| {
         port.call(handler, text_properties(text), |operation| {
@@ -354,7 +426,7 @@ fn text_handler<'h>(spec: &Spec, port: &'h Port) -> Option<TextHandler<'h>> {
     }))
 }
 
-fn comment_handler<'h>(spec: &Spec, port: &'h Port) -> Option<CommentHandler<'h>> {
+fn comment_handler<'h>(spec: &HandlerSpec, port: &'h Port) -> Option<CommentHandler<'h>> {
     let handler = spec.comments?;
     Some(Box::new(move |comment: &mut Comment<'_>| {
         port.call(handler, comment_properties(comment), |operation| {
@@ -364,100 +436,120 @@ fn comment_handler<'h>(spec: &Spec, port: &'h Port) -> Option<CommentHandler<'h>
     }))
 }
 
-fn text_properties(text: &TextChunk<'_>) -> Value {
-    json!({"text": text.as_str(), "lastInTextNode": text.last_in_text_node(), "removed": text.removed()})
+fn text_properties(text: &TextChunk<'_>) -> TokenProperties {
+    TokenProperties::Text {
+        text: text.as_str().to_owned(),
+        last_in_text_node: text.last_in_text_node(),
+        removed: text.removed(),
+    }
 }
 
-fn comment_properties(comment: &Comment<'_>) -> Value {
-    json!({"text": comment.text(), "removed": comment.removed()})
+fn comment_properties(comment: &Comment<'_>) -> TokenProperties {
+    TokenProperties::Comment {
+        text: comment.text(),
+        removed: comment.removed(),
+    }
 }
 
-fn element_properties(element: &Element<'_, '_>) -> Value {
-    json!({
-        "tagName": element.tag_name(), "namespaceURI": element.namespace_uri(),
-        "removed": element.removed(),
-        "attributes": element.attributes().iter().map(|attribute| json!({
-            "name": attribute.name(), "value": attribute.value(),
-        })).collect::<Vec<_>>(),
-    })
+fn element_properties(element: &Element<'_, '_>) -> TokenProperties {
+    let attributes = element
+        .attributes()
+        .iter()
+        .map(|attribute| ElementAttribute {
+            name: attribute.name(),
+            value: attribute.value(),
+        });
+    TokenProperties::Element {
+        tag_name: element.tag_name(),
+        namespace_uri: element.namespace_uri().to_owned(),
+        removed: element.removed(),
+        attributes: attributes.collect(),
+    }
 }
 
-fn apply_element(element: &mut Element<'_, '_>, operation: Operation, port: &Port) -> Result {
+fn apply_element(element: &mut Element<'_, '_>, operation: HtmlOperation, port: &Port) -> Result {
     match operation.name {
-        OperationName::SetAttribute => {
+        HtmlOperationName::SetAttribute => {
             element.set_attribute(operation.attribute_name()?, operation.string()?)?;
         }
-        OperationName::RemoveAttribute => element.remove_attribute(operation.attribute_name()?),
-        OperationName::SetTagName => element.set_tag_name(operation.string()?)?,
-        OperationName::SetInnerContent => {
+        HtmlOperationName::RemoveAttribute => element.remove_attribute(operation.attribute_name()?),
+        HtmlOperationName::SetTagName => element.set_tag_name(operation.string()?)?,
+        HtmlOperationName::SetInnerContent => {
             element.streaming_set_inner_content(operation.stream(port)?);
         }
-        OperationName::Before => element.streaming_before(operation.stream(port)?),
-        OperationName::After => element.streaming_after(operation.stream(port)?),
-        OperationName::Prepend => element.streaming_prepend(operation.stream(port)?),
-        OperationName::Append => element.streaming_append(operation.stream(port)?),
-        OperationName::Replace => element.streaming_replace(operation.stream(port)?),
-        OperationName::Remove => element.remove(),
-        OperationName::RemoveAndKeepContent => element.remove_and_keep_content(),
-        OperationName::OnEndTag => {
+        HtmlOperationName::Before => element.streaming_before(operation.stream(port)?),
+        HtmlOperationName::After => element.streaming_after(operation.stream(port)?),
+        HtmlOperationName::Prepend => element.streaming_prepend(operation.stream(port)?),
+        HtmlOperationName::Append => element.streaming_append(operation.stream(port)?),
+        HtmlOperationName::Replace => element.streaming_replace(operation.stream(port)?),
+        HtmlOperationName::Remove => element.remove(),
+        HtmlOperationName::RemoveAndKeepContent => element.remove_and_keep_content(),
+        HtmlOperationName::OnEndTag => {
             let handler = operation
                 .handler
                 .ok_or_else(|| invalid("Missing end-tag handler"))?;
             let port = port.clone();
-            let registration = port.registration(Release::Handler(handler));
+            let registration = port.registration(HtmlRelease::Handler { id: handler });
             if let Some(handlers) = element.end_tag_handlers() {
                 handlers.clear();
             }
             element.on_end_tag(Box::new(move |end_tag| {
                 let _registration = registration;
-                port.call(handler, json!({"name": end_tag.name()}), |operation| {
+                let name = end_tag.name();
+                port.call(handler, TokenProperties::EndTag { name }, |operation| {
                     apply_end_tag(end_tag, operation, &port)?;
-                    Ok(json!({"name": end_tag.name()}))
+                    Ok(TokenProperties::EndTag {
+                        name: end_tag.name(),
+                    })
                 })
             }))?;
         }
-        OperationName::SetText => return Err(invalid("Element does not support setText")),
+        HtmlOperationName::SetText => return Err(invalid("Element does not support setText")),
     }
     Ok(())
 }
 
-fn apply_text(text: &mut TextChunk<'_>, operation: Operation, port: &Port) -> Result {
+fn apply_text(text: &mut TextChunk<'_>, operation: HtmlOperation, port: &Port) -> Result {
     match operation.name {
-        OperationName::Before => text.streaming_before(operation.stream(port)?),
-        OperationName::After => text.streaming_after(operation.stream(port)?),
-        OperationName::Replace => text.streaming_replace(operation.stream(port)?),
-        OperationName::Remove => text.remove(),
+        HtmlOperationName::Before => text.streaming_before(operation.stream(port)?),
+        HtmlOperationName::After => text.streaming_after(operation.stream(port)?),
+        HtmlOperationName::Replace => text.streaming_replace(operation.stream(port)?),
+        HtmlOperationName::Remove => text.remove(),
         _ => return Err(invalid("Invalid text operation")),
     }
     Ok(())
 }
 
-fn apply_comment(comment: &mut Comment<'_>, operation: &Operation) -> Result {
+fn apply_comment(comment: &mut Comment<'_>, operation: &HtmlOperation) -> Result {
     match operation.name {
-        OperationName::SetText => comment.set_text(operation.string()?)?,
-        OperationName::Before => comment.before(operation.string()?, operation.content_type.into()),
-        OperationName::After => comment.after(operation.string()?, operation.content_type.into()),
-        OperationName::Replace => {
+        HtmlOperationName::SetText => comment.set_text(operation.string()?)?,
+        HtmlOperationName::Before => {
+            comment.before(operation.string()?, operation.content_type.into());
+        }
+        HtmlOperationName::After => {
+            comment.after(operation.string()?, operation.content_type.into());
+        }
+        HtmlOperationName::Replace => {
             comment.replace(operation.string()?, operation.content_type.into());
         }
-        OperationName::Remove => comment.remove(),
+        HtmlOperationName::Remove => comment.remove(),
         _ => return Err(invalid("Invalid comment operation")),
     }
     Ok(())
 }
 
-fn apply_end_tag(end: &mut EndTag<'_>, operation: Operation, port: &Port) -> Result {
+fn apply_end_tag(end: &mut EndTag<'_>, operation: HtmlOperation, port: &Port) -> Result {
     match operation.name {
-        OperationName::Before => end.streaming_before(operation.stream(port)?),
-        OperationName::After => end.streaming_after(operation.stream(port)?),
-        OperationName::Remove => end.remove(),
+        HtmlOperationName::Before => end.streaming_before(operation.stream(port)?),
+        HtmlOperationName::After => end.streaming_after(operation.stream(port)?),
+        HtmlOperationName::Remove => end.remove(),
         _ => return Err(invalid("Invalid end-tag operation")),
     }
     Ok(())
 }
 
-fn apply_end(end: &mut DocumentEnd<'_>, operation: &Operation) -> Result {
-    if !matches!(operation.name, OperationName::Append) {
+fn apply_end(end: &mut DocumentEnd<'_>, operation: &HtmlOperation) -> Result {
+    if !matches!(operation.name, HtmlOperationName::Append) {
         return Err(invalid("Invalid document-end operation"));
     }
     end.append(operation.string()?, operation.content_type.into());

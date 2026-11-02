@@ -3,17 +3,10 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
-use rquickjs::module::Exports;
-use rquickjs::{Ctx, Function, Object, Value, qjs};
+use rquickjs::{Ctx, IntoJs, Value, qjs};
+use tokamak_macros::host_function;
 
 use super::checked;
-
-pub(super) fn export<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-    install(ctx);
-    exports.export("cloneArrayBuffer", Function::new(ctx.clone(), clone)?)?;
-    exports.export("arrayBufferView", Function::new(ctx.clone(), view)?)?;
-    Ok(())
-}
 
 unsafe extern "C" {
     fn JS_CloneSharedArrayBuffer(ctx: *mut qjs::JSContext, source: qjs::JSValue) -> qjs::JSValue;
@@ -26,11 +19,27 @@ unsafe extern "C" {
     ) -> qjs::JSValue;
 }
 
+/// An `ArrayBuffer` or a `SharedArrayBuffer`.
+pub(crate) struct AnyArrayBuffer<'js>(pub(crate) Value<'js>);
+
+impl<'js> IntoJs<'js> for AnyArrayBuffer<'js> {
+    fn into_js(self, _: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        Ok(self.0)
+    }
+}
+
+impl crate::typescript::JsType for AnyArrayBuffer<'_> {
+    fn typescript(_: &mut crate::typescript::Types) -> String {
+        "ArrayBufferLike".to_owned()
+    }
+}
+
 /// A typed array's or `DataView`'s buffer, byte offset and byte length as the
 /// engine holds them, which properties a Worker defines cannot shadow, and
 /// whether its length tracks a resizable buffer.
+#[derive(IntoJs, tokamak_macros::JsType)]
 pub(crate) struct ViewParts<'js> {
-    pub(crate) buffer: Value<'js>,
+    pub(crate) buffer: AnyArrayBuffer<'js>,
     pub(crate) offset: usize,
     pub(crate) length: usize,
     tracking: bool,
@@ -56,7 +65,7 @@ pub(crate) fn view_parts<'js>(
         )
     })?;
     Ok(ViewParts {
-        buffer,
+        buffer: AnyArrayBuffer(buffer),
         offset,
         length,
         tracking,
@@ -64,14 +73,12 @@ pub(crate) fn view_parts<'js>(
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn view<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Object<'js>> {
-    let parts = view_parts(&ctx, &value)?;
-    let info = Object::new(ctx)?;
-    info.set("buffer", parts.buffer)?;
-    info.set("offset", parts.offset)?;
-    info.set("length", parts.length)?;
-    info.set("tracking", parts.tracking)?;
-    Ok(info)
+#[host_function]
+pub(super) fn array_buffer_view<'js>(
+    ctx: Ctx<'js>,
+    value: Value<'js>,
+) -> rquickjs::Result<ViewParts<'js>> {
+    view_parts(&ctx, &value)
 }
 
 #[repr(C, align(8))]
@@ -146,11 +153,12 @@ pub(super) fn install(ctx: &Ctx<'_>) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn clone<'js>(
+#[host_function]
+pub(super) fn clone_array_buffer<'js>(
     ctx: Ctx<'js>,
     value: Value<'js>,
     shared: bool,
-) -> rquickjs::Result<Value<'js>> {
+) -> rquickjs::Result<AnyArrayBuffer<'js>> {
     if shared {
         // SAFETY: Source and destination belong to the same runtime. The engine
         // validates the class and retains the shared backing store descriptor.
@@ -159,7 +167,8 @@ pub(super) fn clone<'js>(
                 ctx.clone(),
                 JS_CloneSharedArrayBuffer(ctx.as_raw().as_ptr(), value.as_raw()),
             )
-        });
+        })
+        .map(AnyArrayBuffer);
     }
     // SAFETY: No script executes in the codec. Only a live buffer is serialized,
     // and bytecode reading is disabled. The serialized bytes are always freed.
@@ -177,7 +186,7 @@ pub(super) fn clone<'js>(
         qjs::js_free(raw_ctx, bytes.cast());
         Value::from_raw(ctx, copied)
     };
-    checked(copied)
+    checked(copied).map(AnyArrayBuffer)
 }
 
 #[cfg(test)]
@@ -235,8 +244,10 @@ mod tests {
                     &raw const functions,
                 );
             }
-            ctx.globals()
-                .set("cloneBuffer", Function::new(ctx.clone(), clone)?)?;
+            ctx.globals().set(
+                "cloneBuffer",
+                Function::new(ctx.clone(), clone_array_buffer)?,
+            )?;
             ctx.eval::<(), _>(
                 r"
                 globalThis.source = new SharedArrayBuffer(4, { maxByteLength: 16 });

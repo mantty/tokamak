@@ -1,11 +1,12 @@
 //! The bytes of an object a read asks for.
 
 use serde::{Deserialize, Serialize};
+use tokamak_macros::JsType;
 
 use super::failure::Failure;
 
 /// Bytes of an object from `offset`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsType)]
 pub(crate) struct Range {
     pub(crate) offset: u64,
     pub(crate) length: u64,
@@ -22,7 +23,7 @@ impl Range {
 }
 
 /// An offset and length, or a suffix length, that a read asks for.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsType)]
 pub(crate) struct Bounds {
     offset: Option<u64>,
     length: Option<u64>,

@@ -1,4 +1,4 @@
-import { decodeMessage, encodeMessage, messages, nativeError, type MessageHeader, type NativeFailure, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
+import { decodeMessage, encodeMessage, messages, nativeError, type NativeFailure, type NativeMessage, type RoutingHeader } from "@tokamakdev/plugin/native-protocol";
 import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
 
 const encoder = new TextEncoder();
@@ -80,7 +80,7 @@ export function connectDevice({ port, token, platform }: DeviceRelay, ctx: { wai
 function framed(first: Uint8Array, body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
   const reader = body.getReader();
   let started = false;
-  const chunk = (header: Omit<MessageHeader, "type">, payload: Uint8Array) => encodeMessage({ type: "chunk", ...header }, payload);
+  const chunk = (header: Omit<RoutingHeader, "type">, payload: Uint8Array) => encodeMessage({ type: "chunk", ...header }, payload);
   return new ReadableStream({
     async pull(controller) {
       if (!started) {

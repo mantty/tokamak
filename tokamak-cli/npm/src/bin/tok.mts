@@ -1,0 +1,34 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import path from "node:path";
+
+import { binaryPath, platformPackRoots } from "../platform.mjs";
+
+const { resolve } = createRequire(import.meta.url);
+
+let binary: string;
+try {
+  binary = binaryPath(process.platform, process.arch, resolve);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+// The terminal delivers Ctrl-C to both processes; tok shuts down gracefully on its own,
+// so the launcher only waits for it.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => {});
+
+const env = { ...process.env };
+if (!env.TOKAMAK_PLATFORM_PACK_PATH) {
+  const roots = platformPackRoots(resolve);
+  if (roots.length > 0) env.TOKAMAK_PLATFORM_PACK_PATH = roots.join(path.delimiter);
+}
+
+const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit", env });
+if (result.error) {
+  console.error(`could not run ${binary}: ${result.error.message}`);
+  process.exit(1);
+}
+if (result.signal) process.kill(process.pid, result.signal);
+process.exit(result.status ?? 1);

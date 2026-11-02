@@ -36,30 +36,60 @@ fn entry_worker(entry: &Path, output: &Path) -> TestResult<WorkerBundle> {
     module_worker(root, name.ok_or("entry has no name")?, output)
 }
 
-/// The Worker of the module files in `root`, packaged under `output`: `.mjs`
-/// and `.js` files are ES modules, `.txt` files Text and `.bin` files Data.
-/// Other files and `node_modules` are left out.
+/// The Worker of the module files in `root`, packaged under `output`: `.ts`
+/// files are ES modules with their types removed, `.mjs` and `.js` files ES
+/// modules, `.txt` files Text and `.bin` files Data. Other files and
+/// `node_modules` are left out.
 fn module_worker(root: &Path, entry: &str, output: &Path) -> TestResult<WorkerBundle> {
     let files = walkdir::WalkDir::new(root)
         .into_iter()
         .filter_entry(|file| file.file_name() != "node_modules");
     let mut manifest = WorkerManifest::es_modules(entry, &[]);
+    let sources = tempfile::tempdir()?;
+    let mut typescript = Vec::new();
     for file in files {
         let file = file?;
-        let module_type = match file.path().extension().and_then(|ext| ext.to_str()) {
-            Some("mjs" | "js") => ModuleType::EsModule,
+        let extension = file.path().extension().and_then(|ext| ext.to_str());
+        let module_type = match extension {
+            Some("ts" | "mjs" | "js") => ModuleType::EsModule,
             Some("txt") => ModuleType::Text,
             Some("bin") => ModuleType::Data,
             _ => continue,
         };
-        let name = file.path().strip_prefix(root)?.to_string_lossy();
-        manifest
-            .modules
-            .insert(name.replace('\\', "/"), module_type);
+        let name = file
+            .path()
+            .strip_prefix(root)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if extension == Some("ts") {
+            typescript.push(name.clone());
+        } else {
+            let copy = sources.path().join(&name);
+            std::fs::create_dir_all(copy.parent().ok_or("module has no directory")?)?;
+            std::fs::copy(file.path(), copy)?;
+        }
+        manifest.modules.insert(name, module_type);
     }
+    strip_types(root, sources.path(), &typescript)?;
     let layout = PackageLayout::new(output);
-    write_worker(&layout, root, &manifest)?;
+    write_worker(&layout, sources.path(), &manifest)?;
     Ok(WorkerBundle::new(manifest, layout))
+}
+
+/// Writes each TypeScript module of `names` under `from` to the same name
+/// under `to`, with its types removed.
+fn strip_types(from: &Path, to: &Path, names: &[String]) -> TestResult {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/strip-types.mts");
+    let status = Command::new("node")
+        .arg(script)
+        .arg(from)
+        .arg(to)
+        .args(names)
+        .status()?;
+    if !status.success() {
+        return Err("removing the test modules' types failed".into());
+    }
+    Ok(())
 }
 
 fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
@@ -308,7 +338,7 @@ fn streaming_fetch_matches_cloudflare() -> TestResult {
     use std::io::BufRead;
     use std::process::Stdio;
     let mut reference = Command::new("node")
-        .arg(fixture_root().join("http-reference.mjs"))
+        .arg(fixture_root().join("http-reference.mts"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
@@ -320,7 +350,7 @@ fn streaming_fetch_matches_cloudflare() -> TestResult {
         let port = expected["port"].as_str().ok_or("reference port missing")?;
         let directory = tempfile::tempdir()?;
         let worker = entry_worker(
-            &fixture_root().join("http.mjs"),
+            &fixture_root().join("http.ts"),
             &directory.path().join("modules"),
         )?;
         let actual: serde_json::Value = serde_json::from_slice(&request(&worker, port)?)?;
@@ -474,20 +504,20 @@ export default class App extends WorkerEntrypoint {
 
 #[test]
 fn worker_matches_cloudflare_node_compat() -> TestResult {
-    let expected = node_reference("workerd-reference.mjs")?;
+    let expected = node_reference("workerd-reference.mts")?;
     let directory = tempfile::tempdir()?;
-    let worker = entry_worker(&fixture_root().join("startup.mjs"), directory.path())?;
+    let worker = entry_worker(&fixture_root().join("startup.ts"), directory.path())?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
     assert_contract_domains(&expected, &actual)
 }
 
 #[test]
 fn text_and_data_modules_match_cloudflare() -> TestResult {
-    let expected = node_reference("modules-reference.mjs")?;
+    let expected = node_reference("modules-reference.mts")?;
     let directory = tempfile::tempdir()?;
     let worker = module_worker(
         &fixture_root().join("modules"),
-        "modules.mjs",
+        "modules.ts",
         directory.path(),
     )?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
@@ -568,10 +598,10 @@ fn report_contract_difference(
 
 #[test]
 fn storage_bindings_match_cloudflare() -> TestResult {
-    let expected = node_reference("storage-reference.mjs")?;
+    let expected = node_reference("storage-reference.mts")?;
     let directory = tempfile::tempdir()?;
     let worker = entry_worker(
-        &fixture_root().join("storage.mjs"),
+        &fixture_root().join("storage.ts"),
         &directory.path().join("worker"),
     )?;
     let bindings = [
@@ -685,13 +715,13 @@ export default {{ async fetch() {{
 
 #[test]
 fn request_boundary_matches_cloudflare() -> TestResult {
-    let expected = node_reference("boundary-reference.mjs")?;
+    let expected = node_reference("boundary-reference.mts")?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let upstream = thread::spawn(move || serve_gzip_upstream(&listener));
     let directory = tempfile::tempdir()?;
     let worker = entry_worker(
-        &fixture_root().join("boundary.mjs"),
+        &fixture_root().join("boundary.ts"),
         &directory.path().join("modules"),
     )?;
     let echo = boundary_request(&worker, port, "POST", "/echo", Some(vec![b'x'; 70000]))?;
@@ -736,7 +766,7 @@ fn response_encoding_matches_cloudflare() -> TestResult {
     use tokio::io::AsyncReadExt;
 
     let reference = Command::new("node")
-        .arg(fixture_root().join("encoding-reference.mjs"))
+        .arg(fixture_root().join("encoding-reference.mts"))
         .output()?;
     assert!(
         reference.status.success(),
@@ -746,7 +776,7 @@ fn response_encoding_matches_cloudflare() -> TestResult {
     let expected: Vec<serde_json::Value> = serde_json::from_slice(&reference.stdout)?;
     let directory = tempfile::tempdir()?;
     let worker = entry_worker(
-        &fixture_root().join("encoding.mjs"),
+        &fixture_root().join("encoding.ts"),
         &directory.path().join("modules"),
     )?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -907,7 +937,7 @@ fn http_request(method: &str, target: &str, body: Option<Vec<u8>>) -> HttpReques
     }
 }
 
-/// One asset configuration's answers in `assets-reference.mjs`.
+/// One asset configuration's answers in `assets-reference.mts`.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AssetsContract {
@@ -922,10 +952,10 @@ struct AssetsContract {
 #[test]
 fn assets_match_cloudflare() -> TestResult {
     let contracts: Vec<AssetsContract> =
-        serde_json::from_value(node_reference("assets-reference.mjs")?)?;
+        serde_json::from_value(node_reference("assets-reference.mts")?)?;
     let fixture = fixture_root().join("assets");
     let directory = tempfile::tempdir()?;
-    let worker = entry_worker(&fixture.join("worker.mjs"), directory.path())?;
+    let worker = entry_worker(&fixture.join("worker.ts"), directory.path())?;
     let public = fixture.join("public");
     let mut files = BTreeMap::new();
     for file in walkdir::WalkDir::new(&public) {
@@ -1284,7 +1314,7 @@ fn application_imports_cannot_access_runtime_internals() -> TestResult {
     let directory = tempfile::tempdir()?;
     for name in [
         "tokamak:host",
-        "./tokamak:globals/process.mjs",
+        "./tokamak:globals/process.ts",
         "node:unsupported",
     ] {
         let source = format!(

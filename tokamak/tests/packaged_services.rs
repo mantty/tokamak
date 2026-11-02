@@ -78,6 +78,39 @@ export class TokamakEvents extends WorkerEntrypoint {
     Ok(())
 }
 
+/// The modules of `@tokamakdev/plugin`'s RPC endpoint, by file name, with
+/// their types removed in `directory`.
+fn rpc_modules(directory: &Path) -> TestResult<Vec<(&'static str, String)>> {
+    let names = [
+        "endpoint.ts",
+        "channel.ts",
+        "frames.ts",
+        "streams.ts",
+        "values.ts",
+    ];
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    strip_types(&repository.join("plugins/core/src/rpc"), directory, &names)?;
+    names
+        .into_iter()
+        .map(|name| Ok((name, fs::read_to_string(directory.join(name))?)))
+        .collect()
+}
+
+/// Writes each TypeScript module of `names` under `from` to the same name
+/// under `to`, with its types removed.
+fn strip_types(from: &Path, to: &Path, names: &[&str]) -> TestResult {
+    let status = Command::new("node")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/strip-types.mts"))
+        .arg(from)
+        .arg(to)
+        .args(names)
+        .status()?;
+    if !status.success() {
+        return Err("removing the modules' types failed".into());
+    }
+    Ok(())
+}
+
 fn package(app: &PackageLayout, source: &str, environment: &Value) -> TestResult {
     package_modules(app, &BTreeMap::from([("worker.mjs", source)]), environment)
 }
@@ -116,36 +149,17 @@ fn frontend_rpc_uses_the_packaged_native_worker_and_owns_its_streams() -> TestRe
         "export default { fetch: () => new Response('main') };",
         &json!({}),
     )?;
-    package_modules(
-        &app.tokamak_worker(),
-        &BTreeMap::from([
-            ("worker.mjs", include_str!("fixtures/rpc-worker.mjs")),
-            (
-                "endpoint.mjs",
-                include_str!("../../plugins/core/src/rpc/endpoint.mjs"),
-            ),
-            (
-                "channel.mjs",
-                include_str!("../../plugins/core/src/rpc/channel.mjs"),
-            ),
-            (
-                "frames.mjs",
-                include_str!("../../plugins/core/src/rpc/frames.mjs"),
-            ),
-            (
-                "streams.mjs",
-                include_str!("../../plugins/core/src/rpc/streams.mjs"),
-            ),
-            (
-                "values.mjs",
-                include_str!("../../plugins/core/src/rpc/values.mjs"),
-            ),
-        ]),
-        &json!({}),
-    )?;
+    let stripped = tempfile::tempdir()?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    strip_types(&fixtures, stripped.path(), &["rpc-worker.ts"])?;
+    let worker = fs::read_to_string(stripped.path().join("rpc-worker.ts"))?;
+    let rpc = rpc_modules(stripped.path())?;
+    let mut modules = BTreeMap::from([("worker.mjs", worker.as_str())]);
+    modules.extend(rpc.iter().map(|(name, source)| (*name, source.as_str())));
+    package_modules(&app.tokamak_worker(), &modules, &json!({}))?;
     let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
     let output = Command::new("node")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rpc-client.mjs"))
+        .arg(fixtures.join("rpc-client.mts"))
         .arg(runtime.port().to_string())
         .arg(directory.path().join("state"))
         .output()?;

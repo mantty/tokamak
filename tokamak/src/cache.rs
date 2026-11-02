@@ -4,21 +4,37 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokamak_macros::{JsType, host_function};
 
-use rquickjs::{Ctx, Exception, Object, TypedArray};
+use rquickjs::{Ctx, Exception, FromJs, IntoJs, TypedArray};
 
 use crate::lock;
+use crate::typed::StringPairs;
+
+/// A cached response's status line, headers and response properties.
+#[derive(Clone, Debug, FromJs, IntoJs, JsType)]
+#[qjs(rename_all = "camelCase")]
+pub(crate) struct CacheMetadata {
+    status: u16,
+    status_text: String,
+    headers: StringPairs,
+    url: String,
+    redirected: bool,
+    #[qjs(rename = "type")]
+    response_type: String,
+}
 
 #[derive(Clone, Debug)]
 struct CacheEntry {
-    status: u16,
-    status_text: String,
-    /// The JSON array of header pairs the Worker's `Cache.put` sent.
-    headers: String,
+    metadata: CacheMetadata,
     body: Vec<u8>,
-    url: String,
-    redirected: bool,
-    response_type: String,
+}
+
+/// A cached response: its metadata and body.
+#[derive(IntoJs, JsType)]
+pub(crate) struct CachedResponse<'js> {
+    metadata: CacheMetadata,
+    body: TypedArray<'js, u8>,
 }
 
 /// The entries of each named cache, by request URL.
@@ -47,54 +63,44 @@ fn caches(ctx: &Ctx<'_>) -> rquickjs::Result<Arc<Caches>> {
         .ok_or_else(|| Exception::throw_internal(ctx, "caches are not available"))
 }
 
+#[host_function]
 pub(crate) fn cache_match(
     ctx: Ctx<'_>,
     name: String,
     key: String,
-) -> rquickjs::Result<Option<Object<'_>>> {
+) -> rquickjs::Result<Option<CachedResponse<'_>>> {
     let entry = lock(&caches(&ctx)?.0)
         .get(&name)
         .and_then(|entries| entries.get(&key).cloned());
-    let Some(entry) = entry else {
+    let Some(CacheEntry { metadata, body }) = entry else {
         return Ok(None);
     };
-    let result = Object::new(ctx.clone())?;
-    result.set("status", entry.status)?;
-    result.set("statusText", entry.status_text)?;
-    result.set("headers", entry.headers)?;
-    result.set("body", TypedArray::new(ctx.clone(), entry.body)?)?;
-    result.set("url", entry.url)?;
-    result.set("redirected", entry.redirected)?;
-    result.set("type", entry.response_type)?;
-    Ok(Some(result))
+    Ok(Some(CachedResponse {
+        metadata,
+        body: TypedArray::new(ctx.clone(), body)?,
+    }))
 }
 
+#[host_function]
 pub(crate) fn cache_put<'js>(
     ctx: Ctx<'js>,
     name: String,
     key: String,
-    metadata: Object<'js>,
+    metadata: CacheMetadata,
     body: TypedArray<'js, u8>,
 ) -> rquickjs::Result<()> {
-    let entry = CacheEntry {
-        status: metadata.get("status")?,
-        status_text: metadata.get("statusText")?,
-        headers: metadata.get("headers")?,
-        body: body
-            .as_bytes()
-            .ok_or_else(|| Exception::throw_type(&ctx, "Detached buffer"))?
-            .to_vec(),
-        url: metadata.get("url")?,
-        redirected: metadata.get("redirected")?,
-        response_type: metadata.get("type")?,
-    };
+    let body = body
+        .as_bytes()
+        .ok_or_else(|| Exception::throw_type(&ctx, "Detached buffer"))?
+        .to_vec();
     lock(&caches(&ctx)?.0)
         .entry(name)
         .or_default()
-        .insert(key, entry);
+        .insert(key, CacheEntry { metadata, body });
     Ok(())
 }
 
+#[host_function]
 pub(crate) fn cache_delete(ctx: Ctx<'_>, name: String, key: String) -> rquickjs::Result<bool> {
     let caches = caches(&ctx)?;
     let mut caches = lock(&caches.0);

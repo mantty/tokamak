@@ -1,6 +1,8 @@
 use rquickjs::{Ctx, Module, Object};
 
-pub(crate) const BOOTSTRAP: &str = "tokamak:builtins/runtime.mjs";
+use crate::dispatcher::Bootstrap;
+
+pub(crate) const BOOTSTRAP: &str = "tokamak:builtins/runtime.ts";
 
 include!(concat!(env!("OUT_DIR"), "/builtins.rs"));
 
@@ -15,8 +17,9 @@ pub(crate) fn find_bytecode(table: &[(&str, &'static [u8])], name: &str) -> Opti
         .find_map(|(path, bytecode)| (*path == name).then_some(*bytecode))
 }
 
-/// Evaluate the runtime bootstrap, returning its exports: the dispatcher's routes
-/// into the runtime.
-pub(crate) fn initialize<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>> {
-    Module::import(ctx, BOOTSTRAP)?.finish()
+/// Evaluate the runtime bootstrap, returning its functions: the dispatcher's
+/// routes into the runtime.
+pub(crate) fn initialize<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Bootstrap<'js>> {
+    let exports: Object = Module::import(ctx, BOOTSTRAP)?.finish()?;
+    exports.get("bootstrap")
 }

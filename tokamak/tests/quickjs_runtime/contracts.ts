@@ -1,0 +1,3384 @@
+import EventEmitter from "node:events";
+import streams from "node:stream";
+// The global ReadableStream, which @types/node declares apart from workers-types.
+import { ReadableStream as NodeReadableStream } from "node:stream/web";
+import type { Socket as NetSocket } from "node:net";
+import type { InspectOptions, InspectOptionsStylized } from "node:util";
+import processModule from "node:process";
+import { env, waitUntil } from "cloudflare:workers";
+import { streamContracts } from "./streams.ts";
+import { cryptoContracts, keyPair } from "./crypto.ts";
+import { htmlContracts } from "./html.ts";
+import { zlibContracts } from "./zlib.ts";
+import { cloneContracts } from "./clone.ts";
+import { performanceContracts } from "./performance.ts";
+import { intlContracts } from "./intl.ts";
+import { bytesContracts } from "./bytes.ts";
+import { filesystemContracts } from "./filesystem.ts";
+import { netContracts } from "./net.ts";
+import { eventsContracts } from "./events.ts";
+import { member, present } from "./outcome.ts";
+
+function errorResult(error: unknown) {
+  return { error: member(error, "name"), dom: error instanceof DOMException, code: member(error, "code") ?? null };
+}
+
+function result<T>(callback: () => T) {
+  try { return callback(); }
+  catch (error) { return errorResult(error); }
+}
+
+/** The shape of an RPC result class, which no Worker can construct. */
+function rpcResultContract(RpcResult: RpcResultClass) {
+  const { prototype } = RpcResult;
+  return {
+    name: RpcResult.name,
+    extendsNothing: Object.getPrototypeOf(RpcResult) === Function.prototype
+      && Object.getPrototypeOf(prototype) === Object.prototype,
+    own: Object.getOwnPropertyNames(prototype).sort(),
+    tag: Object.prototype.toString.call(prototype),
+    methods: (["then", "catch", "finally"] as const).map(name => ({
+      enumerable: present(Object.getOwnPropertyDescriptor(prototype, name)).enumerable,
+      length: prototype[name].length,
+      call: detailedResult(() => prototype[name].call(Promise.resolve())),
+    })),
+    dispose: Object.hasOwn(prototype, Symbol.dispose) && {
+      enumerable: present(Object.getOwnPropertyDescriptor(prototype, Symbol.dispose)).enumerable,
+      call: detailedResult(() => present(prototype[Symbol.dispose]).call({})),
+    },
+    construct: detailedResult(() => new RpcResult()),
+    call: detailedResult(() => RpcResult()),
+  };
+}
+
+async function asyncResult<T>(callback: () => T | Promise<T>) {
+  try { return await callback(); }
+  catch (error) { return errorResult(error); }
+}
+
+/** The entries of a multipart request, with each file as its name and type, or the error. */
+function multipartEntries(body: string, parameters = "boundary=b") {
+  const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; " + parameters } });
+  return asyncResult(async () => [...await request.formData()].map(([key, value]) =>
+    [key, typeof value === "string" ? value : { name: value.name, type: value.type }]));
+}
+
+/** A multipart body of one part with `disposition` and the value "value". */
+function onePart(boundary: string, disposition: string) {
+  return `--${boundary}\r\nContent-Disposition: ${disposition}\r\n\r\nvalue\r\n--${boundary}--\r\n`;
+}
+
+function detailedResult<T>(callback: () => T) {
+  try { return callback(); }
+  catch (error) { return { ...errorResult(error), message: member(error, "message") }; }
+}
+
+async function detailedAsyncResult<T>(callback: () => T | Promise<T>) {
+  try { return await callback(); }
+  catch (error) { return { ...errorResult(error), message: member(error, "message") }; }
+}
+
+// U+202F (narrow no-break space) usage varies across CLDR builds; both runtimes
+// normalize to a plain space so date/time probes compare content, not spacing.
+function normalizeIntlSpaces(value: string) {
+  return value.replace(/\u202F/g, " ");
+}
+
+function describeHtmlRewriterValue(value: object, fields: string[] = []) {
+  return {
+    type: typeof value,
+    tag: Object.prototype.toString.call(value),
+    own: Object.getOwnPropertyNames(value).sort(),
+    prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(value)).sort(),
+    fields: Object.fromEntries(fields.map(name => [name, result(() => member(value, name))])),
+  };
+}
+
+function describeHtmlRewriterAttributes(attributes: IterableIterator<string[]>) {
+  return {
+    type: typeof attributes,
+    tag: Object.prototype.toString.call(attributes),
+    own: Object.getOwnPropertyNames(attributes).sort(),
+    prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(attributes)).sort(),
+    length: result(() => member(attributes, "length")),
+    entries: result(() => [...attributes]),
+  };
+}
+
+// What a span's methods return and throw for each kind of argument.
+function spanCalls(span: Span) {
+  return {
+    spanContext: [span.spanContext(), span.spanContext() === span.spanContext()],
+    setAttribute: [["key", "value"], ["key", 1], ["key", true], ["key", {}], [1n], ["key"], [], ["key", 1n], ["key", Symbol("value")], [Symbol("key"), "value"]]
+      // @ts-expect-error The argument lists include invalid ones.
+      .map(args => detailedResult(() => span.setAttribute(...args) === span)),
+    setAttributes: [{ a: 1, b: undefined, c: {} }, () => {}, [], null, "abc", undefined, { a: 1n, b: Symbol("value") }, { a: Symbol("value") }]
+      // @ts-expect-error The attributes include invalid ones.
+      .map(attributes => detailedResult(() => span.setAttributes(attributes) === span)),
+    recordException: [["boom"], [new Error("boom")], [{}], [undefined], []]
+      // @ts-expect-error The argument lists include invalid ones.
+      .map(args => detailedResult(() => typeof span.recordException(...args))),
+    updateName: [["renamed"], [5], [undefined], [], [Symbol("name")]]
+      // @ts-expect-error The argument lists include invalid ones.
+      .map(args => detailedResult(() => span.updateName(...args) === span)),
+    setStatus: [[{ code: "ok" }], [{ code: "error", message: "failed" }], [{ code: "unset", message: null }], [{ code: "OK" }], [{}], [[]], [{ code: "bad", message: Symbol("message") }], ["ok"], [null], [undefined], []]
+      // @ts-expect-error The argument lists include invalid ones.
+      .map(args => detailedResult(() => span.setStatus(...args) === span)),
+  };
+}
+
+// The tracing API's spans before and after they end, its argument checks, and
+// which span is active inside callbacks, timers and promises.
+async function tracingContracts(tracing: Tracing) {
+  const span = tracing.startSpan("contract");
+  const live = spanCalls(span);
+  const end = [typeof span.end(), typeof span.end()];
+  const ended = spanCalls(span);
+  const root = present(tracing.getActiveSpan());
+  const order: string[] = [];
+  const resolved = Promise.resolve("value");
+  tracing.enterSpan("order", () => resolved).then(value => order.push(`entered ${value}`));
+  resolved.then(() => order.push("job 1")).then(() => order.push("job 2")).then(() => order.push("job 3"));
+  const rejection = new Error("rejected");
+  const thenable = { then(resolve: (value: string) => void) { resolve("thenable"); } };
+  const activeCall = function (this: unknown, active: Span, ...args: number[]) { return [tracing.getActiveSpan() === active, this === globalThis, args]; };
+  const callbackCalls = (method: "enterSpan" | "startActiveSpan") => [[], ["name"], [Symbol("name")], ["name", "callback"], [5, () => "value"], [undefined, () => "value"]]
+    // @ts-expect-error The argument lists include invalid ones.
+    .map(args => detailedResult(() => tracing[method](...args)));
+  return {
+    tags: [Object.prototype.toString.call(tracing), Object.prototype.toString.call(span)],
+    // @ts-expect-error Span is abstract, so constructing it throws.
+    constructors: [() => new tracing.Span(), () => new (Object.getPrototypeOf(tracing).constructor)()].map(detailedResult),
+    live,
+    end,
+    ended,
+    // @ts-expect-error The argument lists include invalid ones.
+    startSpan: [[], ["name"], [5], [undefined], [Symbol("name")]].map(args => detailedResult(() => tracing.startSpan(...args) instanceof tracing.Span)),
+    enterSpan: callbackCalls("enterSpan"),
+    startActiveSpan: callbackCalls("startActiveSpan"),
+    root: [root instanceof tracing.Span, root === tracing.getActiveSpan(), root.isTraced, root === span, typeof root.end(), root === tracing.getActiveSpan()],
+    active: {
+      entered: tracing.enterSpan("entered", activeCall, 1, 2),
+      started: tracing.startActiveSpan("started", activeCall, 3),
+      nested: tracing.enterSpan("outer", outer => tracing.enterSpan("inner", inner => [tracing.getActiveSpan() === inner, tracing.getActiveSpan() === outer])),
+      startSpan: tracing.enterSpan("outer", outer => [tracing.startSpan("inner") === tracing.getActiveSpan(), tracing.getActiveSpan() === outer]),
+      after: tracing.getActiveSpan() === root,
+      awaited: await tracing.enterSpan("awaited", async active => {
+        await new Promise(resolve => setTimeout(resolve, 1));
+        return tracing.getActiveSpan() === active;
+      }),
+      timer: await new Promise(resolve => tracing.enterSpan("timer", active => setTimeout(() => resolve(tracing.getActiveSpan() === active), 0))),
+      microtask: await new Promise(resolve => tracing.enterSpan("microtask", active => queueMicrotask(() => resolve(tracing.getActiveSpan() === active)))),
+    },
+    results: {
+      entered: [tracing.enterSpan("promise", () => resolved) === resolved, tracing.enterSpan("promise", () => resolved) instanceof Promise, await tracing.enterSpan("promise", async () => "async")],
+      started: tracing.startActiveSpan("promise", () => resolved) === resolved,
+      thenable: tracing.enterSpan("thenable", () => thenable) === thenable,
+      thrown: detailedResult(() => tracing.enterSpan("thrown", () => { throw new RangeError("thrown"); })),
+      rejected: await tracing.enterSpan("rejected", () => Promise.reject(rejection)).catch((reason: unknown) => reason === rejection),
+      order,
+    },
+  };
+}
+
+// The type of each Blob and File the runtime makes from a type it was given:
+// a body's, a form field's, and a clone's. A body's type is parsed as a MIME
+// type, which the later cases cover.
+async function blobTypeContracts() {
+  const result: Record<string, unknown> = {};
+  for (const [name, type] of [
+    ["mixedCase", "Text/Plain; Charset=UTF-8"],
+    ["nonAscii", "text/pl\u00e4in"],
+    ["none", undefined],
+    ["list", "text/html;charset=gbk, text/html, */*"],
+    ["parameters", 'text/plain; a="q\\"x"; A=2; =3; b; c=\u00e4; d=y z; e=""; f="g'],
+    ["spacing", "text/plain ;x =1; y= 2 ;z=3"],
+    ["boundary", "multipart/form-data;boundary=x"],
+    ["invalid", "text/"],
+  ] as const) {
+    const headers: Record<string, string> = type === undefined ? {} : { "content-type": type };
+    const response = await new Response("blob", { headers }).blob();
+    const request = await new Request("https://example.test/", { method: "POST", body: "blob", headers }).blob();
+    const form = new FormData();
+    form.append("file", response);
+    const part = type === undefined ? "" : `Content-Type: ${type}\r\n`;
+    const multipart = await new Response(`--b\r\nContent-Disposition: form-data; name="file"; filename="\u00e4.txt"\r\n${part}\r\nx\r\n--b--\r\n`, {
+      headers: { "content-type": "multipart/form-data; boundary=b" },
+    }).formData();
+    const file = multipart.get("file");
+    let cloned;
+    try { cloned = structuredClone(response).type; } catch (error) { cloned = member(error, "name"); }
+    result[name] = {
+      response: response.type,
+      request: request.type,
+      appended: member(form.get("file"), "type"),
+      multipart: { type: member(file, "type"), name: member(file, "name") },
+      cloned,
+    };
+  }
+  return result;
+}
+
+export async function run(handlerEnv: Cloudflare.Env, ctx: ExecutionContext, constructors: unknown[]) {
+  const output: Record<string, unknown> = {};
+  const consoleBeforeNodeConsole = Object.getOwnPropertyNames(console).sort();
+  output.streamDetails = await streamContracts();
+  output.cryptoDetails = await cryptoContracts();
+  output.htmlDetails = await htmlContracts();
+  output.zlibDetails = await zlibContracts();
+  output.cloneDetails = await cloneContracts();
+  output.performanceDetails = await performanceContracts();
+  output.intlDetails = intlContracts();
+  output.bytesDetails = await bytesContracts();
+  output.filesystemDetails = await filesystemContracts();
+  output.netDetails = await netContracts();
+  output.eventsDetails = await eventsContracts();
+  output.asyncContextDetails = await asyncResult(async () => {
+    const { AsyncLocalStorage } = await import("node:async_hooks");
+    const storage = new AsyncLocalStorage<unknown>({ name: "scope", defaultValue: "default" });
+    const defaults = [storage.name, storage.getStore(), storage.run(undefined, () => storage.getStore()), storage.run(null, () => storage.getStore()), storage.run("inside", () => storage.exit(() => storage.getStore()))];
+    const bound = storage.run("bound", () => AsyncLocalStorage.bind(async function (this: { value: number } | undefined, ...args: number[]) {
+      await Promise.resolve();
+      return { store: storage.getStore(), receiver: this?.value ?? null, args };
+    }));
+    const captured = storage.run("captured", () => AsyncLocalStorage.snapshot());
+    const snapshot = await storage.run("other", () => captured(async (...args) => {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return { store: storage.getStore(), args };
+    }, 3, 4));
+    return { defaults, bound: await bound.call({ value: 7 }, 1, 2), snapshot, restored: storage.getStore(),
+      // @ts-expect-error A number is not a function.
+      invalidBind: result(() => AsyncLocalStorage.bind(3)), invalidSnapshot: result(() => captured(3)) };
+  });
+  output.streamTransfers = await asyncResult(async () => {
+    const chunk = new Uint8Array([1, 2, 3]);
+    const stream = new ReadableStream({ type: "bytes", start(controller) { controller.enqueue(chunk); controller.close(); } });
+    const queuedBufferLength = chunk.buffer.byteLength;
+    const reader = stream.getReader({ mode: "byob" });
+    const destination = new Uint8Array(8);
+    const read = reader.read(destination);
+    const suppliedBufferLength = destination.buffer.byteLength;
+    const value = await read;
+    return { queuedBufferLength, suppliedBufferLength, bytes: [...present(value.value)] };
+  });
+  output.erroredPipeLocks = await asyncResult(async () => {
+    const source = new ReadableStream({ start(controller) { controller.error(new Error("source")); } });
+    const aborting = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const target = new WritableStream({ abort() { aborting.resolve(); return released.promise; } });
+    const completion = source.pipeTo(target).catch(error => member(error, "message"));
+    const before = [source.locked, target.locked];
+    await aborting.promise;
+    const during = [source.locked, target.locked];
+    released.resolve();
+    const error = await completion;
+    return { before, during, after: [source.locked, target.locked], error };
+  });
+  output.webStreamAdapters = {
+    fromReadable: await asyncResult(async () => {
+      const web = new NodeReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
+      const node = streams.Readable.fromWeb(web);
+      const result: number[] = [];
+      for await (const chunk of node) result.push(...chunk);
+      return result;
+    }),
+    toReadable: await asyncResult(async () => {
+      const web = streams.Readable.toWeb(streams.Readable.from([new Uint8Array([3, 4])]));
+      return [...await new Response(web).bytes()];
+    }),
+    fromWritable: await asyncResult(async () => {
+      const chunks: number[][] = [];
+      const web = new WritableStream({ write(chunk) { chunks.push([...chunk]); } });
+      const node = streams.Writable.fromWeb(web);
+      await new Promise<void>((resolve, reject) => { node.on("error", reject); node.end(new Uint8Array([5, 6]), resolve); });
+      return chunks;
+    }),
+    toWritable: await asyncResult(async () => {
+      const chunks: number[][] = [];
+      const node = new streams.Writable({ write(chunk, encoding, callback) { chunks.push([...chunk]); callback(); } });
+      const writer = streams.Writable.toWeb(node).getWriter();
+      await writer.write(new Uint8Array([7, 8]));
+      // Workerd 1.20260825.1 leaves this adapter's close promise pending
+      // (it passes a callback to promise-based finished). Observe the Node
+      // finish event here; Tokamak separately tests close-promise settlement.
+      const finished = new Promise((resolve, reject) => { node.on("finish", resolve); node.on("error", reject); });
+      writer.close().catch(() => {});
+      await finished;
+      return chunks;
+    }),
+  };
+  output.writableAbortSignal = await asyncResult(async () => {
+    let controller: WritableStreamDefaultController | undefined;
+    const released = Promise.withResolvers<void>();
+    const events: unknown[] = [];
+    const stream = new WritableStream({
+      start(value) { controller = value; },
+      write() { events.push("write"); return released.promise; },
+      abort(reason) { events.push(reason); },
+    });
+    const writer = stream.getWriter();
+    const write = writer.write("chunk");
+    await Promise.resolve();
+    const abort = writer.abort("aborted");
+    const { signal: abortSignal } = present(controller);
+    const signal = [abortSignal.aborted, abortSignal.reason];
+    const before = [...events];
+    released.resolve();
+    const writeResult = await write.then(() => "fulfilled", error => String(error));
+    await abort;
+    return { signal, before, after: events, writeResult };
+  });
+  output.eventEmitterInitialization = {
+    eventTargetMethods: ["addEventListener", "removeEventListener", "dispatchEvent"].map(name => name in EventEmitter.prototype),
+    // @ts-expect-error EventEmitter is called without new.
+    bare: result(() => EventEmitter()),
+    reinitialize: result(() => {
+      const emitter = new EventEmitter();
+      emitter.setMaxListeners(3);
+      emitter.on("value", () => {});
+      EventEmitter.call(emitter);
+      return [emitter.getMaxListeners(), emitter.listenerCount("value")];
+    }),
+  };
+  output.unreadHttpResponse = await asyncResult(async () => {
+    const http = await import("node:http");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("unread");
+    try {
+      const events: string[] = [];
+      await new Promise<void>((resolve, reject) => {
+        const request = http.request("http://example.test", response => {
+          events.push("response");
+          response.destroy();
+          resolve();
+        });
+        request.on("error", reject);
+        request.on("finish", () => events.push("finish"));
+        request.end(() => events.push("callback"));
+      });
+      return events;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+  const globalSurface = new Set<string>();
+  for (let object: object | null = globalThis; object; object = Object.getPrototypeOf(object)) {
+    for (const name of Object.getOwnPropertyNames(object)) {
+      if (!name.startsWith("__tokamak") && name !== "WebAssembly") globalSurface.add(name);
+    }
+  }
+  output.globalSurface = [...globalSurface].sort();
+  const globalClasses = [
+    "AbortController", "AbortSignal", "Blob", "Body", "ByteLengthQueuingStrategy", "Cache", "CacheStorage", "CloseEvent",
+    "CompressionStream", "CountQueuingStrategy", "Crypto", "CryptoKey", "CustomEvent", "DOMException", "DecompressionStream",
+    "ErrorEvent", "Event", "EventSource", "EventTarget", "ExtendableEvent", "FetchEvent", "File", "FixedLengthStream", "FormData",
+    "HTMLRewriter", "Headers", "IdentityTransformStream", "MessageChannel", "MessageEvent", "MessagePort", "Navigator", "Performance",
+    "PerformanceEntry", "PerformanceMark", "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList", "PerformanceResourceTiming",
+    "PromiseRejectionEvent", "ReadableByteStreamController", "ReadableStream", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest",
+    "ReadableStreamDefaultController", "ReadableStreamDefaultReader", "Request", "Response", "ScheduledEvent", "SubtleCrypto", "TailEvent",
+    "TextDecoder", "TextDecoderStream", "TextEncoder", "TextEncoderStream", "TraceEvent", "TransformStream", "TransformStreamDefaultController",
+    "URL", "URLPattern", "URLSearchParams", "WebSocket", "WebSocketPair", "WebSocketRequestResponsePair", "WorkerGlobalScope",
+    "WritableStream", "WritableStreamDefaultController", "WritableStreamDefaultWriter",
+  ];
+  output.globalClassSurfaces = Object.fromEntries(globalClasses.map(name => {
+    const value = member(globalThis, name);
+    return [name, {
+      type: typeof value,
+      proto: value && Object.getOwnPropertyNames(member(value, "prototype") ?? {}).sort(),
+      static: value && Object.getOwnPropertyNames(value).sort(),
+    }];
+  }));
+  const builtinNames = [...process.getBuiltinModule("node:module").builtinModules, "sqlite", "test"];
+  const builtinRequirements: Record<string, string[]> = {
+    "assert": ["ok", "strictEqual", "deepStrictEqual"],
+    "assert/strict": ["ok", "strictEqual", "deepStrictEqual"],
+    "async_hooks": ["AsyncLocalStorage", "AsyncResource"],
+    "buffer": ["Buffer", "Blob", "File"],
+    "crypto": ["createHash", "randomBytes", "randomUUID", "subtle"],
+    "diagnostics_channel": ["channel", "subscribe", "unsubscribe"],
+    "dns": ["lookup", "promises"],
+    "dns/promises": ["lookup"],
+    "events": ["EventEmitter", "once", "on"],
+    "fs": ["readFileSync", "writeFileSync", "promises"],
+    "fs/promises": ["readFile", "writeFile"],
+    "http": ["request", "get", "createServer"],
+    "https": ["request", "get"],
+    "module": ["builtinModules", "isBuiltin", "createRequire"],
+    "net": ["connect", "createConnection"],
+    "os": ["platform", "arch", "tmpdir"],
+    "path": ["join", "resolve", "basename", "posix", "win32"],
+    "path/posix": ["join", "resolve"],
+    "path/win32": ["join", "resolve"],
+    "perf_hooks": ["performance", "PerformanceObserver"],
+    "process": ["env", "nextTick", "getBuiltinModule"],
+    "querystring": ["parse", "stringify"],
+    "stream": ["Readable", "Writable", "pipeline"],
+    "stream/consumers": ["text", "json", "buffer"],
+    "stream/promises": ["pipeline", "finished"],
+    "stream/web": ["ReadableStream", "WritableStream", "TransformStream"],
+    "string_decoder": ["StringDecoder"],
+    "timers": ["setTimeout", "setImmediate"],
+    "timers/promises": ["setTimeout", "setImmediate"],
+    "tls": ["connect", "createSecureContext"],
+    "url": ["URL", "URLSearchParams", "parse"],
+    "util": ["format", "inspect", "promisify"],
+    "util/types": ["isArrayBuffer", "isTypedArray"],
+    "zlib": ["gzip", "gunzip", "createGzip"],
+    "_http_agent": ["Agent", "globalAgent"],
+    "_http_client": ["ClientRequest"],
+    "_http_common": ["CRLF", "methods"],
+    "_http_incoming": ["IncomingMessage"],
+    "_http_outgoing": ["OutgoingMessage", "validateHeaderName"],
+    "_http_server": ["STATUS_CODES", "Server", "ServerResponse"],
+    "_stream_duplex": ["from", "fromWeb", "toWeb"],
+    "_stream_passthrough": [],
+    "_stream_readable": ["ReadableState", "_fromList", "from", "fromWeb", "toWeb", "wrap"],
+    "_stream_transform": [],
+    "_stream_wrap": [],
+    "_stream_writable": ["WritableState", "fromWeb", "toWeb"],
+    "_tls_common": ["SecureContext", "createSecureContext"],
+    "_tls_wrap": ["TLSSocket", "connect"],
+    "tty": ["ReadStream", "WriteStream", "isatty"],
+  };
+  output.builtins = Object.fromEntries(builtinNames.map(name => {
+    const value = process.getBuiltinModule("node:" + name);
+    const required = builtinRequirements[name] ?? [];
+    return [name, {
+      available: value !== undefined,
+      kind: typeof value,
+      required: value !== undefined && required.every(key => key in value),
+    }];
+  }));
+  output.builtinSurfaces = Object.fromEntries(builtinNames.filter(name => name.startsWith("_") || name === "tty")
+    .map(name => [name, Object.keys(present(process.getBuiltinModule("node:" + name))).sort()]));
+  output.nodeBuiltinSurfaces = Object.fromEntries(builtinNames.map(name => [
+    name,
+    Object.keys(present(process.getBuiltinModule("node:" + name))).sort(),
+  ]));
+  const cloudflareModules: Record<string, string[]> = {};
+  output.cloudflareModules = cloudflareModules;
+  for (const [name, module] of Object.entries({
+    workers: await import("cloudflare:workers"),
+    sockets: await import("cloudflare:sockets"),
+    node: await import("cloudflare:node"),
+  })) cloudflareModules[name] = Object.keys(module).sort();
+  output.identity = {
+    events: process.getBuiltinModule("node:events") === EventEmitter,
+    streams: process.getBuiltinModule("node:stream") === streams,
+    process: processModule === process && process.getBuiltinModule("process") === process,
+    bareEvents: process.getBuiltinModule("events") === EventEmitter,
+    inherited: process.getBuiltinModule("toString") === undefined,
+    env: env.FLAG === handlerEnv.FLAG,
+    repeatedImport: (await import("node:events")).default === EventEmitter,
+    globals: constructors.every((value, index) => value === [TextDecoder, TextEncoder, Response, ReadableStream, process][index]),
+    timers: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"].every(name => member(process.getBuiltinModule("node:timers"), name) === member(globalThis, name)),
+  };
+  output.nodeEventsExports = Object.keys(await import("node:events")).sort();
+  const nodeModuleApi = process.getBuiltinModule("node:module");
+  const nodeRepl = process.getBuiltinModule("node:repl");
+  const nodeHttpServer = process.getBuiltinModule("node:http").createServer(() => {}).listen(8123);
+  output.builtinRegistry = {
+    consoleBeforeNodeConsole,
+    builtinModules: nodeModuleApi.builtinModules,
+    replBuiltinModules: [member(nodeRepl, "builtinModules"), member(nodeRepl, "_builtinLibs")],
+    // @ts-expect-error A number is not a module name.
+    isBuiltin: ["fs", "node:fs", "node:nope", "nope", "test", "node:test", "sqlite", "cloudflare:sockets", 1].map(name => nodeModuleApi.isBuiltin(name)),
+    bareImports: await Promise.all(["test", "sqlite", "fs"].map(name => import(name).then(() => true, () => false))),
+    // @ts-expect-error The names include ones that are not strings.
+    getBuiltinModule: ["cloudflare:sockets", "cloudflare:workers", "test", "sqlite", "node:nope", 1, null, undefined].map(name => typeof process.getBuiltinModule(name)),
+    namespaces: process.getBuiltinModule("cloudflare:sockets") === await import("cloudflare:sockets"),
+    // @ts-expect-error A symbol is not a module name.
+    symbol: detailedResult(() => process.getBuiltinModule(Symbol("name"))),
+    require: ["fs", "node:test", "test", "cloudflare:sockets"].map(name => detailedResult(() => typeof nodeModuleApi.createRequire("/")(name))),
+    requireProperties: Object.getOwnPropertyNames(nodeModuleApi.createRequire("/")).sort(),
+    httpGlobals: Object.getOwnPropertyNames(globalThis).filter(name => /http/i.test(name)),
+  };
+  nodeHttpServer.close();
+  // @ts-expect-error Body is abstract, so constructing it throws.
+  output.bodyConstructor = result(() => new Body());
+  const ownKeys = (value: object) => Reflect.ownKeys(value).map(String).sort();
+  output.ownProperties = {
+    events: [new Event("x"), new CustomEvent("x", { detail: 1 }), new ErrorEvent("error"), new MessageEvent("message", { data: 1 }), new CloseEvent("close"), new EventTarget()].map(ownKeys),
+    abort: [new AbortController(), AbortSignal.abort()].map(ownKeys),
+    fetch: [new Request("https://example.test", { method: "POST", body: "body" }), new Response("body"), new Blob(["body"]), new File(["body"], "name"), new Headers({ a: "b" }), new FormData()].map(ownKeys),
+    sockets: [new WebSocketPair(), new WebSocketPair()[0], new WebSocketRequestResponsePair("request", "response")].map(ownKeys),
+    messaging: [new MessageChannel(), new MessageChannel().port1].map(ownKeys),
+    others: [caches, crypto.subtle, EventSource.from(new ReadableStream()), new TextDecoderStream(), new TextEncoderStream()].map(ownKeys),
+  };
+  const decode: Record<string, string> = {};
+  output.decode = decode;
+  for (const bytes of [[0xff], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80], [0xf4, 0x90, 0x80, 0x80], [0xc0, 0xaf], [0xe2, 0x82]]) {
+    decode[bytes.join(",")] = new TextDecoder().decode(new Uint8Array(bytes));
+  }
+  const decoder = new TextDecoder();
+  output.streaming = [
+    decoder.decode(new Uint8Array([0xe2, 0x82]), { stream: true }),
+    decoder.decode(new Uint8Array([0xac]), { stream: true }),
+    decoder.decode(),
+    decoder.decode(new Uint8Array([0xef, 0xbb, 0xbf, 65])),
+  ];
+  output.bom = [false, true].map(ignoreBOM => {
+    const decoder = new TextDecoder("utf8", { fatal: false, ignoreBOM });
+    return decoder.decode(new Uint8Array([0xef]), { stream: true }) + decoder.decode(new Uint8Array([0xbb, 0xbf, 65]));
+  });
+  const encodings: Record<string, unknown> = {};
+  output.encodings = encodings;
+  for (const label of ["UTF8", " ascii ", "latin1", "windows-1252", "utf-16le", "utf-16be", "shift_jis", "x-user-defined", "replacement", "unknown"]) {
+    encodings[label] = result(() => {
+      const decoder = new TextDecoder(label);
+      return [decoder.encoding, decoder.fatal, decoder.ignoreBOM, decoder.decode(new Uint8Array([0x80, 0xff]))];
+    });
+  }
+  output.decoderErrors = [
+    result(() => new TextDecoder("utf8", { fatal: true, ignoreBOM: false }).decode(new Uint8Array([0xff]))),
+    // @ts-expect-error An array is not bytes.
+    result(() => new TextDecoder().decode([65])),
+    // @ts-expect-error Null is not bytes.
+    result(() => new TextDecoder().decode(null)),
+    // @ts-expect-error The options are null.
+    result(() => new TextDecoder("utf8", null)),
+    // @ts-expect-error The options are not an object.
+    result(() => new TextDecoder("utf8", true)),
+    // @ts-expect-error The options are null.
+    result(() => new TextDecoder().decode(undefined, null)),
+    // @ts-expect-error The options are not an object.
+    result(() => new TextDecoder().decode(undefined, true)),
+    // @ts-expect-error A symbol is not text.
+    result(() => new TextEncoder().encode(Symbol())),
+  ];
+  const fatalDecoder = new TextDecoder("utf8", { fatal: true, ignoreBOM: false });
+  output.fatalStreaming = [
+    result(() => fatalDecoder.decode(new Uint8Array([0xe2]), { stream: true })),
+    result(() => fatalDecoder.decode(new Uint8Array([0xff]), { stream: true })),
+    result(() => fatalDecoder.decode(new Uint8Array([65]))),
+    result(() => fatalDecoder.decode(new Uint8Array([66]))),
+  ];
+  const fatalState: Record<string, unknown> = {};
+  output.fatalState = fatalState;
+  for (const [label, chunks] of [
+    ["utf8", [[239,187,191,65], [255], [239,187,191,66]]],
+    ["utf-16le", [[255,254,65,0], [0,216,0,0], [255,254,66,0]]],
+    ["iso-2022-jp", [[27,36,66,36,34], [255], [36,36]]],
+  ] as const) {
+    const decoder = new TextDecoder(label, { fatal: true, ignoreBOM: false });
+    fatalState[label] = chunks.map(bytes => result(() => decoder.decode(new Uint8Array(bytes), { stream: true })));
+  }
+  output.decoderArguments = [
+    // @ts-expect-error A function is not options.
+    result(() => new TextDecoder("utf8", () => {}).encoding),
+    // @ts-expect-error A function is not options.
+    result(() => new TextDecoder().decode(new Uint8Array([65]), () => {})),
+    result(() => { const buffer = new ArrayBuffer(8); buffer.transfer(); return new TextDecoder().decode(buffer); }),
+    result(() => { const buffer = new ArrayBuffer(8); const view = new Uint8Array(buffer); buffer.transfer(); return new TextDecoder().decode(view); }),
+  ];
+  const conversions: string[] = [];
+  // @ts-expect-error The label is an object that converts to a string.
+  new TextDecoder({ toString() { conversions.push("label"); return "utf8"; } }, {
+    get fatal() { conversions.push("fatal"); return false; },
+    get ignoreBOM() { conversions.push("ignoreBOM"); return false; },
+  });
+  output.conversions = conversions;
+  const symbol = Symbol("name");
+  const symbolConversions: Record<string, () => unknown> = {
+    // @ts-expect-error A symbol is not a URL.
+    url: () => new URL(symbol),
+    // @ts-expect-error A symbol is not text.
+    encode: () => new TextEncoder().encode(symbol),
+    // @ts-expect-error A symbol is not an event type.
+    event: () => new Event(symbol),
+    // @ts-expect-error A symbol is not a mark name.
+    mark: () => performance.mark(symbol),
+    // @ts-expect-error A symbol is not text.
+    atob: () => atob(symbol),
+    // @ts-expect-error A symbol is not text.
+    localeCompare: () => "a".localeCompare(symbol),
+    localeCompareNull: () => String.prototype.localeCompare.call(null, "a"),
+    // @ts-expect-error A symbol is not a header value.
+    header: () => new Headers().append("name", symbol),
+    // @ts-expect-error A symbol is not a field name.
+    formData: () => new FormData().append(symbol, "value"),
+    // @ts-expect-error A symbol is not a blob part.
+    blob: () => new Blob([symbol]),
+    // @ts-expect-error A symbol is not text.
+    escape: () => process.getBuiltinModule("node:querystring").escape(symbol),
+  };
+  output.symbolConversions = Object.fromEntries(Object.entries(symbolConversions).map(([name, convert]) => [name, detailedResult(convert)]));
+  const symbolChunks: (() => unknown)[] = [
+    // @ts-expect-error A symbol is not text.
+    () => { const stream = new TextEncoderStream(); stream.readable.getReader().read().catch(() => {}); return stream.writable.getWriter().write(symbol); },
+    // @ts-expect-error A symbol is not content.
+    () => new HTMLRewriter().on("p", { element(element) { element.append(symbol); } }).transform(new Response("<p></p>")).text(),
+  ];
+  output.symbolChunks = await Promise.all(symbolChunks.map(detailedAsyncResult));
+  output.view = new TextDecoder().decode(new DataView(new Uint8Array([0, 65, 66, 0]).buffer, 1, 2));
+  output.encode = ["", "hello", "€", "😀", "\ud800", "\udc00", "\ud800A"].map(value => [...new TextEncoder().encode(value)]);
+  const encodeInto: object[] = [];
+  output.encodeInto = encodeInto;
+  for (const source of ["€", "😀a", "a\ud800b"]) {
+    for (const size of [0, 1, 2, 3, 4, 5]) {
+      const backing = new Uint8Array(size + 2).fill(99);
+      const destination = backing.subarray(1, size + 1);
+      encodeInto.push({ size, ...new TextEncoder().encodeInto(source, destination), bytes: [...backing] });
+    }
+  }
+  const otherViews: (new (buffer: ArrayBuffer) => ArrayBufferView)[] = [Uint8ClampedArray, Int8Array, DataView];
+  // @ts-expect-error Only a Uint8Array is a destination.
+  output.encodeErrors = otherViews.map(Type => result(() => new TextEncoder().encodeInto("", new Type(new ArrayBuffer(0)))));
+  const base64: Record<string, unknown> = {};
+  output.base64 = base64;
+  for (const value of ["", "aGVsbG8=", " aG\tVs\nbG8=\r", "AB", "/w==", "A", "A===", "ab=c", "aGVsbG8===", "é", "\fYQ=="]) {
+    base64[value] = result(() => atob(value));
+  }
+  output.btoa = ["", "hello", "\x00\xff", "€", "😀", "\ud800"].map(value => result(() => btoa(value)));
+  // @ts-expect-error Each needs an argument.
+  output.base64Missing = [result(() => atob()), result(() => btoa())];
+  output.randomErrors = [
+    // @ts-expect-error Float arrays are not integer arrays.
+    result(() => crypto.getRandomValues(new Float16Array(1))),
+    // @ts-expect-error Float arrays are not integer arrays.
+    result(() => crypto.getRandomValues(new Float32Array(1))),
+    // @ts-expect-error A DataView is not an integer array.
+    result(() => crypto.getRandomValues(new DataView(new ArrayBuffer(1)))),
+    result(() => crypto.getRandomValues(new Uint8Array(65537))),
+    // @ts-expect-error Null is not an integer array.
+    result(() => crypto.getRandomValues(null)),
+  ];
+  output.randomTypes = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array, BigInt64Array, BigUint64Array].map(Type => {
+    const value = new Type(0);
+    return crypto.getRandomValues(value) === value;
+  });
+  output.exceptionCodes = ["toString", "constructor", "InvalidCharacterError", "TypeMismatchError", "QuotaExceededError"].map(name => new DOMException("", name).code);
+  const bytes = new Uint8Array(34).fill(99);
+  const view = bytes.subarray(1, 33);
+  const originalRandom = Math.random;
+  Math.random = () => { throw new Error("Insecure random source"); };
+  output.random = {
+    identity: crypto.getRandomValues(view) === view,
+    boundaries: bytes[0] === 99 && bytes[33] === 99,
+    filled: view.some(value => value !== 99),
+  };
+  Math.random = originalRandom;
+  output.workerApis = {
+    randomUUID: result(() => {
+      const value = crypto.randomUUID();
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+    }),
+    structuredClone: result(() => {
+      const source = {
+        date: new Date("2024-07-01T12:34:56Z"),
+        map: new Map([["value", 42]]),
+        set: new Set(["value"]),
+        bytes: new Uint8Array([1, 2, 3]),
+      };
+      const clone = structuredClone(source);
+      const view = new DataView(new Uint8Array([9, 8, 7, 6]).buffer, 1, 2);
+      const viewClone = structuredClone(view);
+      const transferable = new ArrayBuffer(2);
+      new Uint8Array(transferable).set([4, 5]);
+      const transferred = structuredClone(transferable, { transfer: [transferable] });
+      return {
+        distinct: clone !== source && clone.bytes !== source.bytes,
+        date: clone.date.toISOString(),
+        map: clone.map.get("value"),
+        set: clone.set.has("value"),
+        bytes: [...clone.bytes],
+        view: { byteOffset: viewClone.byteOffset, byteLength: viewClone.byteLength, bytes: [...new Uint8Array(viewClone.buffer)] },
+        transfer: { bytes: [...new Uint8Array(transferred)], detached: transferable.byteLength === 0 },
+      };
+    }),
+    structuredCloneEdges: {
+      error: result(() => {
+        const source = Object.assign(new TypeError("boom", { cause: { value: 1 } }), { code: "ERR_TEST" });
+        const clone = structuredClone(source);
+        return {
+          tag: Object.prototype.toString.call(clone),
+          name: clone.name,
+          message: clone.message,
+          cause: clone.cause,
+          code: clone.code,
+          stack: typeof clone.stack,
+        };
+      }),
+      cycles: result(() => {
+        const source: { value: number; array: unknown[]; self?: unknown } = { value: 1, array: [] };
+        source.self = source;
+        source.array.push(source);
+        const clone = structuredClone(source);
+        return { self: clone.self === clone, array: clone.array[0] === clone };
+      }),
+      typedArray: result(() => {
+        const buffer = new ArrayBuffer(6);
+        new Uint8Array(buffer).set([1, 2, 3, 4, 5, 6]);
+        const source = new Uint16Array(buffer, 2, 2);
+        const clone = structuredClone(source);
+        return { constructor: clone.constructor.name, offset: clone.byteOffset, length: clone.length, bytes: [...new Uint8Array(clone.buffer)] };
+      }),
+      transferDetached: result(() => {
+        const buffer = new ArrayBuffer(2);
+        const clone = structuredClone({ value: 1 }, { transfer: [buffer] });
+        return { value: clone.value, detached: buffer.byteLength };
+      }),
+      invalidTransfer: [
+        // @ts-expect-error The transfer list is null.
+        result(() => structuredClone({}, { transfer: null })),
+        result(() => structuredClone({}, { transfer: [new Uint8Array()] })),
+        result(() => { const buffer = new ArrayBuffer(1); return structuredClone({}, { transfer: [buffer, buffer] }); }),
+      ],
+      messagePort: result(() => structuredClone(new MessageChannel().port1)),
+    },
+    intl: result(() => ({
+      date: normalizeIntlSpaces(new Intl.DateTimeFormat("en-GB", {
+        dateStyle: "full", timeStyle: "long", timeZone: "Europe/London",
+      }).format(new Date("2024-07-01T12:34:56Z"))),
+      dateParts: new Intl.DateTimeFormat("en-GB", {
+        year: "numeric", month: "long", day: "numeric", timeZone: "UTC",
+      }).formatToParts(new Date("2024-07-01T12:34:56Z")).map(({ type, value }) => [type, value]),
+      number: new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(1234.5),
+      plural: new Intl.PluralRules("en-GB").select(2),
+      locale: new Intl.Locale("en-GB").toString(),
+    })),
+    url: result(() => {
+      const url = new URL("https://example.test/path?x=1&x=2");
+      const params = url.searchParams;
+      params.append("y", "3");
+      const appended = { size: params.size, search: url.search, href: url.href };
+      url.search = "?z=4";
+      return { appended, replaced: [...url.searchParams], href: url.href };
+    }),
+    urlPattern: result(() => {
+      const match = new URLPattern({ pathname: "/users/:id" }).exec("https://example.test/users/42");
+      return match?.pathname.groups.id ?? null;
+    }),
+    abort: result(() => {
+      const controller = new AbortController();
+      const before = controller.signal.aborted;
+      controller.abort("cancelled");
+      return { before, after: controller.signal.aborted, reason: controller.signal.reason };
+    }),
+    abortEdges: {
+      nullReason: (() => {
+        const signal = AbortSignal.abort(null);
+        return { aborted: signal.aborted, reason: signal.reason, reasonIsNull: signal.reason === null };
+      })(),
+      any: (() => {
+        const first = AbortSignal.abort("first");
+        const second = new AbortController();
+        const signal = AbortSignal.any([second.signal, first]);
+        return { aborted: signal.aborted, reason: signal.reason };
+      })(),
+      listener: (() => {
+        const controller = new AbortController();
+        const events: unknown[] = [];
+        controller.signal.onabort = (event: Event) => events.push([event.type, event.target === controller.signal]);
+        controller.abort("reason");
+        controller.signal.onabort = null;
+        return { events, reason: controller.signal.reason };
+      })(),
+    },
+    events: result(() => {
+      const target = new EventTarget();
+      const events: unknown[] = [];
+      target.addEventListener("ready", () => events.push("first"), { once: true });
+      target.addEventListener("ready", () => events.push("second"));
+      target.dispatchEvent(new CustomEvent("ready", { detail: 42, cancelable: true }));
+      target.dispatchEvent(new Event("ready"));
+      return events;
+    }),
+    eventEdges: {
+      objectAndSignal: result(() => {
+        const target = new EventTarget();
+        const events: unknown[] = [];
+        const controller = new AbortController();
+        return {
+          add: result(() => { target.addEventListener("ready", event => events.push(["function", event.type]), { signal: controller.signal }); return true; }),
+          object: result(() => { target.addEventListener("ready", { handleEvent: event => events.push(["object", event.type]) }); return true; }),
+          first: result(() => target.dispatchEvent(new Event("ready"))),
+          abort: result(() => { controller.abort(); return true; }),
+          second: result(() => target.dispatchEvent(new Event("ready"))),
+          booleanCapture: result(() => { target.addEventListener("ready", () => events.push(["capture", true]), true); return true; }),
+          events,
+        };
+      }),
+      cancelable: result(() => {
+        const target = new EventTarget();
+        const event = new Event("cancel", { cancelable: true });
+        target.addEventListener("cancel", value => value.preventDefault());
+        return { canceled: target.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
+      }),
+      passive: result(() => {
+        const target = new EventTarget();
+        const event = new Event("passive", { cancelable: true });
+        target.addEventListener("passive", value => value.preventDefault(), { passive: true });
+        return { dispatched: target.dispatchEvent(event), defaultPrevented: event.defaultPrevented };
+      }),
+    },
+    cryptoDigest: await asyncResult(async () => {
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("abc")));
+      return [...digest].map(value => value.toString(16).padStart(2, "0")).join("");
+    }),
+    cryptoSubtle: await asyncResult(async () => {
+      try {
+        const key = await crypto.subtle.importKey(
+          "raw", new TextEncoder().encode("secret"),
+          { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"],
+        );
+        const data = new TextEncoder().encode("message");
+        const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
+        const verifyOnly = await crypto.subtle.importKey("raw", new TextEncoder().encode("secret"), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+        return {
+          type: key.type,
+          algorithm: key.algorithm,
+          usages: key.usages,
+          signature: [...signature].map(value => value.toString(16).padStart(2, "0")).join(""),
+          length: signature.length,
+          valid: await crypto.subtle.verify("HMAC", key, signature, data),
+          objectForm: await crypto.subtle.verify({ name: "HMAC" }, key, signature, data),
+          ignoredHash: await crypto.subtle.verify({ name: "HMAC", hash: "SHA-1" }, key, signature, data),
+          verifyOnly: await asyncResult(() => crypto.subtle.verify({ name: "HMAC", hash: "SHA-1" }, verifyOnly, signature, data)),
+          invalid: await crypto.subtle.verify("HMAC", key, signature.subarray(1), data),
+        };
+      } catch (error) {
+        return { error: member(error, "name"), message: member(error, "message"), stack: String(member(error, "stack")) };
+      }
+    }),
+    cryptoAesGcm: await asyncResult(async () => {
+      const key = await crypto.subtle.importKey(
+        "raw", new Uint8Array(16), { name: "AES-GCM" }, true, ["encrypt", "decrypt"],
+      );
+      const algorithm = { name: "AES-GCM", iv: new Uint8Array(12), additionalData: new Uint8Array([1, 2]) };
+      const plaintext = new TextEncoder().encode("secret message");
+      const ciphertext = new Uint8Array(await crypto.subtle.encrypt(algorithm, key, plaintext));
+      const decrypted = new Uint8Array(await crypto.subtle.decrypt(algorithm, key, ciphertext));
+      return {
+        type: key.type,
+        algorithm: key.algorithm,
+        usages: key.usages,
+        ciphertextLength: ciphertext.length,
+        plaintext: new TextDecoder().decode(decrypted),
+      };
+    }),
+    cryptoDigestStream: await asyncResult(async () => {
+      const stream = new crypto.DigestStream("SHA-256");
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1, 2, 3]));
+      const beforeClose = {
+        bytesWritten: stream.bytesWritten.toString(),
+        digestPromise: stream.digest instanceof Promise,
+        writable: stream instanceof WritableStream,
+        locked: stream.locked,
+      };
+      await writer.close();
+      const digest = new Uint8Array(await stream.digest);
+      return {
+        beforeClose,
+        afterCloseLocked: stream.locked,
+        digest: [...digest].map(value => value.toString(16).padStart(2, "0")).join(""),
+      };
+    }),
+    globals: {
+      errorEvent: typeof ErrorEvent,
+      closeEvent: typeof CloseEvent,
+      defaultReader: typeof ReadableStreamDefaultReader,
+      defaultController: typeof ReadableStreamDefaultController,
+      byteController: typeof ReadableByteStreamController,
+      byteRequest: typeof ReadableStreamBYOBRequest,
+      writableController: typeof WritableStreamDefaultController,
+      performance: typeof performance.now,
+      timers: [setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate].every(value => typeof value === "function"),
+      cacheStorage: typeof CacheStorage,
+      eventSource: typeof EventSource,
+      htmlRewriter: typeof HTMLRewriter,
+      messageChannel: typeof MessageChannel,
+      navigator: typeof navigator,
+    },
+    navigator: {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      language: navigator.language,
+      languages: [...navigator.languages],
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      sendBeacon: typeof navigator.sendBeacon,
+    },
+    cache: {
+      default: typeof caches.default,
+      open: typeof caches.open,
+      match: typeof member(caches, "match"),
+      has: typeof member(caches, "has"),
+      delete: typeof member(caches, "delete"),
+      keys: typeof member(caches, "keys"),
+    },
+    htmlRewriter: await asyncResult(async () => {
+      const response = new HTMLRewriter()
+        .on("title", { element(element) { element.setInnerContent("rewritten"); } })
+        .transform(new Response("<html><head><title>original</title></head></html>"));
+      return await response.text();
+    }),
+    htmlRewriterProbe: await asyncResult(async () => {
+      const events: unknown[] = [];
+      const source = "<!doctype html>before<div ID='x'>Hello<!--comment--><span>world</span></div>after";
+      const response = new HTMLRewriter()
+        .onDocument({
+          doctype(value) { events.push({ type: "document-doctype", value: describeHtmlRewriterValue(value, ["name", "publicId", "systemId"])}); },
+          comments(value) { events.push({ type: "document-comment", value: describeHtmlRewriterValue(value, ["text"])}); },
+          text(value) { events.push({ type: "document-text", value: describeHtmlRewriterValue(value, ["text", "lastInTextNode"])}); },
+          end(value) { events.push({ type: "document-end", value: describeHtmlRewriterValue(value) }); },
+        })
+        .on("div", {
+          element(value) {
+            const descriptor = describeHtmlRewriterValue(value, ["tagName", "tagNamePreserveCase", "namespaceURI", "isSelfClosing", "canHaveContent"]);
+            events.push({ type: "element", value: { ...descriptor, attributes: describeHtmlRewriterAttributes(value.attributes) } });
+          },
+          comments(value) { events.push({ type: "element-comment", value: describeHtmlRewriterValue(value, ["text"])}); },
+          text(value) { events.push({ type: "element-text", value: describeHtmlRewriterValue(value, ["text", "lastInTextNode"])}); },
+          // @ts-expect-error Element handlers declare no end handler.
+          end(value: object) { events.push({ type: "element-end", value: describeHtmlRewriterValue(value, ["name", "namePreserveCase"])}); },
+        })
+        .transform(new Response(source));
+      return { output: await response.text(), events };
+    }),
+    htmlRewriterMutationProbe: await asyncResult(async () => {
+      function describeReturn(value: unknown) {
+        if (value === undefined) return "undefined";
+        if (value === null || typeof value !== "object") return value;
+        return Object.prototype.toString.call(value);
+      }
+
+      function record(returns: unknown[], ...values: unknown[]) {
+        returns.push(...values.map(describeReturn));
+      }
+
+      async function elementCase(callback: (element: Element, returns: unknown[]) => void, source = "<div id='x'>body</div>") {
+        try {
+          const returns: unknown[] = [];
+          const response = new HTMLRewriter().on("div", {
+            element(element) { callback(element, returns); },
+          }).transform(new Response(source));
+          return { output: await response.text(), returns };
+        } catch (error) {
+          return errorResult(error);
+        }
+      }
+
+      const cases = {
+        attributes: await elementCase((element, returns) => {
+          record(returns, element.getAttribute("ID"), element.hasAttribute("id"));
+          record(returns, element.setAttribute("data-x", "<&\""));
+          record(returns, element.removeAttribute("ID"));
+          record(returns, element.getAttribute("id"), element.hasAttribute("id"));
+          returns.push([...element.attributes]);
+        }),
+        element: await elementCase((element, returns) => {
+          record(returns, element.before("before"));
+          record(returns, element.after("after"));
+          record(returns, element.prepend("prepend"));
+          record(returns, element.append("append"));
+          record(returns, element.setInnerContent("inner"));
+        }),
+        contentTypes: await elementCase((element, returns) => {
+          record(returns, element.setInnerContent("<b>html</b>", { html: true }));
+        }),
+        contentTypesFalse: await elementCase((element, returns) => {
+          record(returns, element.setInnerContent("<b>text</b>", { html: false }));
+        }),
+        contentTypesNull: await elementCase((element, returns) => {
+          // @ts-expect-error The options are null.
+          record(returns, element.setInnerContent("<b>null</b>", null));
+        }),
+        removed: await elementCase((element, returns) => {
+          record(returns, element.removed, element.remove(), element.removed);
+        }),
+        kept: await elementCase((element, returns) => {
+          record(returns, element.removeAndKeepContent());
+        }),
+        tagNameProperty: await asyncResult(async () => {
+          const response = new HTMLRewriter().on("div", {
+            element(value) { value.tagName = "section"; },
+          }).transform(new Response("<div>body</div>"));
+          return await response.text();
+        }),
+        text: await asyncResult(async () => {
+          const returns: unknown[] = [];
+          const response = new HTMLRewriter().on("div", {
+            text(value) {
+              record(returns, value.text, value.lastInTextNode, value.removed);
+              record(returns, value.before("before"), value.after("after"));
+              record(returns, value.replace("<b>replacement</b>", { html: true }));
+            },
+          }).transform(new Response("<div>body</div>"));
+          return { output: await response.text(), returns };
+        }),
+        textProperty: await asyncResult(async () => {
+          const response = new HTMLRewriter().on("div", {
+            // @ts-expect-error The text is read-only.
+            text(value) { value.text = "changed"; },
+          }).transform(new Response("<div>body</div>"));
+          return await response.text();
+        }),
+        comment: await asyncResult(async () => {
+          const returns: unknown[] = [];
+          const response = new HTMLRewriter().on("div", {
+            comments(value) {
+              record(returns, value.text, value.removed);
+              record(returns, value.before("before"), value.after("after"));
+              record(returns, value.replace("replacement"));
+            },
+          }).transform(new Response("<div><!--comment--></div>"));
+          return { output: await response.text(), returns };
+        }),
+        commentProperty: await asyncResult(async () => {
+          const response = new HTMLRewriter().on("div", {
+            comments(value) { value.text = "changed"; },
+          }).transform(new Response("<div><!--comment--></div>"));
+          return await response.text();
+        }),
+        endTag: await elementCase((element, returns) => {
+          record(returns, element.onEndTag(end => {
+            returns.push(describeHtmlRewriterValue(end, ["name", "namePreserveCase", "removed"]));
+            record(returns, end.name, member(end, "namePreserveCase"));
+          }));
+        }),
+        endTagMutation: await elementCase((element, returns) => {
+          record(returns, element.onEndTag(end => { end.before("before"); }));
+        }),
+        endTagChaining: await elementCase((element, returns) => {
+          record(returns, element.onEndTag(end => {
+            returns.push([end.before("<b>", { html: true }) === end, end.after("after") === end, end.remove() === end]);
+          }));
+        }),
+        document: await asyncResult(async () => {
+          const returns: unknown[] = [];
+          const response = new HTMLRewriter().onDocument({
+            text(value) { record(returns, value.replace("document")); },
+            comments(value) { record(returns, value.replace("comment")); },
+            end(value) { record(returns, value.append("end")); },
+          }).transform(new Response("text<!--comment-->"));
+          return { output: await response.text(), returns };
+        }),
+      };
+      return cases;
+    }),
+    htmlRewriterResponseProbe: await asyncResult(async () => {
+      const encoder = new TextEncoder();
+      const input = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode("<di"));
+          controller.enqueue(encoder.encode("v>body</div>"));
+          controller.close();
+        },
+      }), {
+        status: 201,
+        statusText: "Created",
+        headers: { "X-Test": "yes" },
+      });
+      const transformed = new HTMLRewriter().on("div", {
+        element(element) { element.setInnerContent("changed"); },
+      }).transform(input);
+      const chunks: string[] = [];
+      const reader = present(transformed.body).getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(new TextDecoder().decode(value));
+      }
+      return {
+        same: transformed === input,
+        status: transformed.status,
+        statusText: transformed.statusText,
+        header: transformed.headers.get("x-test"),
+        inputBodyUsed: input.bodyUsed,
+        // Byte stream chunk boundaries are transport details, not the HTML API.
+        streamedContent: chunks.join(""),
+        output: await new Response(new Blob(chunks)).text(),
+      };
+    }),
+    htmlRewriterValidationProbe: {
+      onReturn: result(() => {
+        const writer = new HTMLRewriter();
+        return writer.on("div", {}) === writer;
+      }),
+      // @ts-expect-error The handlers are missing.
+      missingHandlers: result(() => new HTMLRewriter().on("div")),
+      documentReturn: result(() => {
+        const writer = new HTMLRewriter();
+        return writer.onDocument({}) === writer;
+      }),
+      // @ts-expect-error Null is not a selector.
+      invalidSelector: result(() => new HTMLRewriter().on(null, {})),
+      // @ts-expect-error The handlers are null.
+      invalidHandlers: result(() => new HTMLRewriter().on("div", null)),
+      // @ts-expect-error The handlers are null.
+      invalidDocument: result(() => new HTMLRewriter().onDocument(null)),
+      // @ts-expect-error A string is not a response.
+      invalidTransform: result(() => new HTMLRewriter().transform("html")),
+    },
+    htmlRewriterRegistrationProbe: await asyncResult(async () => {
+      const calls: unknown[] = [];
+      const writer = new HTMLRewriter()
+        .onDocument({ end() { calls.push("first"); } })
+        .onDocument({ end() { calls.push("second"); } })
+        .on("div", { element() { calls.push("element-first"); } })
+        .on("div", { element() { calls.push("element-second"); } });
+      const response = writer.transform(new Response("<div></div>"));
+      await response.text();
+      return calls;
+    }),
+    htmlRewriterCallbackCaptureProbe: await asyncResult(async () => {
+      const calls: unknown[] = [];
+      const handlers = { element() { calls.push("original"); } };
+      const writer = new HTMLRewriter().on("div", handlers);
+      handlers.element = () => calls.push("changed");
+      await writer.transform(new Response("<div></div>")).text();
+      return calls;
+    }),
+    intlExtended: result(() => ({
+      percent: new Intl.NumberFormat("en-GB", { style: "percent" }).format(0.56),
+      list: new Intl.ListFormat("en-GB", { type: "disjunction" }).format(["a", "b", "c"]),
+      relative: new Intl.RelativeTimeFormat("en-GB", { numeric: "auto" }).format(-1, "day"),
+      compare: new Intl.Collator("en-GB").compare("a", "b") < 0,
+      segments: [...new Intl.Segmenter("en", { granularity: "word" }).segment("hello world")].map(value => value.segment),
+      maximize: new Intl.Locale("en").maximize().toString(),
+    })),
+    intlSurface: {
+      date: result(() => {
+        const formatter = new Intl.DateTimeFormat("en-GB", {
+          weekday: "long", year: "numeric", month: "long", day: "numeric",
+          hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Europe/London",
+          timeZoneName: "short",
+        });
+        return {
+          format: normalizeIntlSpaces(formatter.format(new Date("2024-07-01T12:34:56Z"))),
+          parts: formatter.formatToParts(new Date("2024-07-01T12:34:56Z")).map(part => ({ ...part, value: normalizeIntlSpaces(part.value) })),
+          options: formatter.resolvedOptions(),
+        };
+      }),
+      number: result(() => {
+        const formatter = new Intl.NumberFormat("de-DE", {
+          style: "currency", currency: "EUR", currencyDisplay: "code", minimumFractionDigits: 2,
+        });
+        return {
+          format: formatter.format(-1234.5),
+          parts: formatter.formatToParts(-1234.5),
+          options: formatter.resolvedOptions(),
+        };
+      }),
+      plural: result(() => {
+        const formatter = new Intl.PluralRules("ar", { type: "ordinal" });
+        return {
+          values: [0, 1, 2, 3, 11, 102].map(value => formatter.select(value)),
+          range: formatter.selectRange(1, 2),
+          options: formatter.resolvedOptions(),
+        };
+      }),
+      list: result(() => {
+        const formatter = new Intl.ListFormat("en-GB", { type: "unit", style: "short" });
+        return { format: formatter.format(["1m", "2s", "3ms"]), parts: formatter.formatToParts(["1m", "2s", "3ms"]), options: formatter.resolvedOptions() };
+      }),
+      relative: result(() => {
+        const formatter = new Intl.RelativeTimeFormat("en-GB", { numeric: "always", style: "short" });
+        return { format: formatter.format(-2, "hour"), parts: formatter.formatToParts(-2, "hour"), options: formatter.resolvedOptions() };
+      }),
+      locale: result(() => {
+        const locale = new Intl.Locale("en-US", { calendar: "gregory", hourCycle: "h12", numeric: true });
+        return {
+          string: locale.toString(), language: locale.language, region: locale.region, script: locale.script,
+          baseName: locale.baseName, calendar: locale.calendar, calendars: member(locale, "calendars"),
+          hourCycle: locale.hourCycle, hourCycles: member(locale, "hourCycles"), numberingSystem: locale.numberingSystem,
+          numberingSystems: member(locale, "numberingSystems"), textInfo: locale.getTextInfo(), weekInfo: locale.getWeekInfo(),
+          maximize: locale.maximize().toString(), minimize: locale.minimize().toString(),
+        };
+      }),
+      displayNames: result(() => {
+        const names = new Intl.DisplayNames("en", { type: "language" });
+        return { language: names.of("fr"), region: new Intl.DisplayNames("en", { type: "region" }).of("GB"), options: names.resolvedOptions() };
+      }),
+      collator: result(() => {
+        const collator = new Intl.Collator("en", { sensitivity: "base", numeric: true });
+        return { order: ["2", "10", "1"].sort(collator.compare), equal: collator.compare("a", "A"), options: collator.resolvedOptions() };
+      }),
+      segmenter: result(() => {
+        const segments = [...new Intl.Segmenter("en", { granularity: "word" }).segment("Hello, world!")];
+        return { values: segments, options: new Intl.Segmenter("en", { granularity: "word" }).resolvedOptions() };
+      }),
+      supported: result(() => ({
+        calendars: Intl.supportedValuesOf("calendar").slice(0, 3),
+        numberingSystems: Intl.supportedValuesOf("numberingSystem").slice(0, 3),
+        timeZones: Intl.supportedValuesOf("timeZone").filter(value => ["UTC", "Europe/London", "America/New_York"].includes(value)),
+      })),
+      additional: result(() => ({
+        dateStyles: [
+          new Intl.DateTimeFormat("en-GB", { dateStyle: "full", timeZone: "UTC" }).format(new Date("2024-07-01T12:34:56Z")),
+          new Intl.DateTimeFormat("en-GB", { timeStyle: "long", timeZone: "UTC" }).format(new Date("2024-07-01T12:34:56Z")),
+          new Intl.DateTimeFormat("en-GB", { hour: "numeric", hour12: true, timeZone: "UTC" }).format(new Date("2024-07-01T12:34:56Z")),
+        ].map(normalizeIntlSpaces),
+        numbers: [
+          new Intl.NumberFormat("de-DE", { style: "percent" }).format(-1234.5),
+          new Intl.NumberFormat("de-DE", { notation: "scientific" }).format(-1234.5),
+          new Intl.NumberFormat("de-DE", { notation: "compact" }).format(12345),
+          new Intl.NumberFormat("de-DE", { style: "unit", unit: "kilometer-per-hour", unitDisplay: "long" }).format(-1234.5),
+          new Intl.NumberFormat("en-US", { signDisplay: "always" }).format(0),
+        ],
+        plural: {
+          cardinal: new Intl.PluralRules("ru").resolvedOptions(),
+          ordinal: new Intl.PluralRules("en", { type: "ordinal" }).resolvedOptions(),
+          categories: new Intl.PluralRules("ru").selectRange(1, 2),
+          invalidType: (() => {
+            // @ts-expect-error The type is invalid.
+            try { return new Intl.PluralRules("en", { type: "nominal" }).resolvedOptions().type; }
+            catch (error) { return member(error, "name"); }
+          })(),
+        },
+        list: [
+          // @ts-expect-error The list is undefined.
+          new Intl.ListFormat("en", { type: "conjunction" }).format(undefined),
+          new Intl.ListFormat("en", { type: "conjunction" }).format([]),
+          new Intl.ListFormat("en", { type: "conjunction" }).format(["a"]),
+          new Intl.ListFormat("en", { type: "conjunction" }).format(["a", "b"]),
+          new Intl.ListFormat("en", { type: "conjunction" }).formatToParts(["a", "b"]),
+        ],
+        relative: [
+          new Intl.RelativeTimeFormat("en", { numeric: "auto" }).format(-1, "day"),
+          new Intl.RelativeTimeFormat("en", { style: "narrow" }).formatToParts(2, "hour"),
+        ],
+        locale: {
+          language: new Intl.Locale("zh-Hant-TW").language,
+          script: new Intl.Locale("zh-Hant-TW").script,
+          region: new Intl.Locale("zh-Hant-TW").region,
+          baseName: new Intl.Locale("en-US-u-ca-gregory-hc-h12-kn").baseName,
+          textInfo: new Intl.Locale("ar").getTextInfo(),
+          weekInfo: new Intl.Locale("en-US").getWeekInfo(),
+        },
+        displayNames: {
+          calendar: new Intl.DisplayNames("en", { type: "calendar" }).of("gregory"),
+          currency: new Intl.DisplayNames("en", { type: "currency" }).of("GBP"),
+          dateTimeField: new Intl.DisplayNames("en", { type: "dateTimeField" }).of("month"),
+          script: new Intl.DisplayNames("en", { type: "script" }).of("Latn"),
+        },
+        collator: [
+          new Intl.Collator("en", { sensitivity: "base" }).compare("a", "A"),
+          new Intl.Collator("en", { ignorePunctuation: true }).compare("a-b", "ab"),
+        ],
+        segmenter: {
+          grapheme: [...new Intl.Segmenter("en", { granularity: "grapheme" }).segment("A\u030A🙂")].map(value => value.segment),
+          sentence: [...new Intl.Segmenter("en", { granularity: "sentence" }).segment("One. Two!")].map(value => value.segment),
+        },
+      })),
+    },
+    timers: await asyncResult(async () => {
+      const values: unknown[] = [];
+      const canceled = setTimeout(() => values.push("canceled"), 0);
+      clearTimeout(canceled);
+      await new Promise<void>(resolve => setTimeout(() => { values.push("timeout"); resolve(); }, 1));
+      await new Promise<void>(resolve => setImmediate(() => { values.push("immediate"); resolve(); }));
+      const order: unknown[] = [];
+      const long = new Promise<void>(resolve => setTimeout(() => { order.push("long"); resolve(); }, 5));
+      const short = new Promise<void>(resolve => setTimeout(() => { order.push("short"); resolve(); }, 0));
+      await Promise.all([short, long]);
+      return { values, order };
+    }),
+    abortTimeout: await asyncResult(async () => {
+      const signal = AbortSignal.timeout(1);
+      await new Promise(resolve => setTimeout(resolve, 2));
+      return { aborted: signal.aborted, reason: signal.reason?.name };
+    }),
+    cryptoAesErrors: await asyncResult(async () => {
+      const key = await crypto.subtle.importKey(
+        "raw", new Uint8Array(16), { name: "AES-GCM" }, false, ["encrypt", "decrypt"],
+      );
+      const algorithm = { name: "AES-GCM", iv: new Uint8Array(12) };
+      const ciphertext = new Uint8Array(await crypto.subtle.encrypt(algorithm, key, new Uint8Array([1])));
+      const failure = async (input: Uint8Array) => {
+        try { await crypto.subtle.decrypt(algorithm, key, input); return null; }
+        catch (error) { return errorResult(error); }
+      };
+      ciphertext[0] ^= 1;
+      return { tampered: await failure(ciphertext), short: await failure(new Uint8Array()) };
+    }),
+    cryptoRsaPss: await detailedAsyncResult(async () => {
+      const keys = keyPair(await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]));
+      const data = new Uint8Array([1, 2, 3]);
+      const algorithm = { name: "RSA-PSS", saltLength: 32 };
+      const signature = await crypto.subtle.sign(algorithm, keys.privateKey, data);
+      const failures: unknown[] = [];
+      for (const saltLength of [0x80000000, 0xffffffff]) {
+        failures.push({
+          sign: await asyncResult(async () => { await crypto.subtle.sign({ ...algorithm, saltLength }, keys.privateKey, data); return "accepted"; }),
+          verify: await asyncResult(() => crypto.subtle.verify({ ...algorithm, saltLength }, keys.publicKey, signature, data)),
+        });
+      }
+      return {
+        valid: await crypto.subtle.verify(algorithm, keys.publicKey, signature, data),
+        ignoredHash: await crypto.subtle.verify({ ...algorithm, hash: "SHA-1" }, keys.publicKey, signature, data),
+        failures,
+      };
+    }),
+    cryptoDigestErrors: await asyncResult(async () => {
+      try { await crypto.subtle.digest("SHA-224", new Uint8Array([1])); return null; }
+      catch (error) { return errorResult(error); }
+    }),
+    cryptoKey: await asyncResult(async () => {
+      const key = await crypto.subtle.importKey(
+        "raw", new Uint8Array(16), { name: "AES-GCM" }, false, ["encrypt"],
+      );
+      const original = key.algorithm.name;
+      try { key.algorithm.name = "HMAC"; } catch {}
+      return {
+        type: typeof CryptoKey,
+        original,
+        name: key.algorithm.name,
+        // @ts-expect-error CryptoKey is not constructible.
+        constructor: typeof CryptoKey === "function" ? result(() => new CryptoKey()) : null,
+      };
+    }),
+    timerMicrotasks: await asyncResult(async () => {
+      const order: unknown[] = [];
+      const first = new Promise<void>(resolve => setTimeout(() => {
+        order.push("first");
+        queueMicrotask(() => order.push("micro"));
+        resolve();
+      }, 0));
+      const second = new Promise<void>(resolve => setTimeout(() => { order.push("second"); resolve(); }, 0));
+      await Promise.all([first, second]);
+      return order;
+    }),
+  };
+  const nodeCrypto = process.getBuiltinModule("node:crypto");
+  // Undetermined/invalid locales resolve unit display names to en-US in icu4x and
+  // world-English in workerd; that CLDR-root spelling is not a parity requirement,
+  // so those two locales assert structure and number parts, not the unit text.
+  const stripUnitSpelling = (parts: Intl.NumberFormatPart[]) => parts.map(part => part.type === "unit" ? { type: "unit" } : part);
+  output.localizedUnits = Object.fromEntries(["en", "de", "fr", "ja", "ar", "pl", "zh-TW", "sr-Latn-RS", "en-ZZ", "und", "zz"].map(locale => [locale,
+    ["kilometer-per-hour", "meter", "celsius", "liter-per-second"].flatMap(unit => (["short", "long", "narrow"] as const).map(unitDisplay => {
+      const formatter = new Intl.NumberFormat(locale, { style: "unit", unit, unitDisplay });
+      const tolerant = locale === "und" || locale === "zz";
+      return [0, 1, 2, 3.5].map(value => {
+        const parts = formatter.formatToParts(value);
+        return tolerant ? stripUnitSpelling(parts) : parts;
+      });
+    })),
+  ]));
+  output.localizedPlurals = Object.fromEntries(["sr", "sr-Latn", "sr-Latn-RS", "pt", "pt-PT", "pt-Latn-PT", "pl", "pl-Latn", "ja", "und", "zz"].map(locale => [
+    locale, [0, 1, 2, 3.5].map(value => new Intl.PluralRules(locale).select(value)),
+  ]));
+  output.timingSafeEqual = {
+    equal: nodeCrypto.timingSafeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 2])),
+    unequal: nodeCrypto.timingSafeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 3])),
+    offset: nodeCrypto.timingSafeEqual(new DataView(new Uint8Array([0, 1, 2, 3]).buffer, 1, 2), new Uint8Array([1, 2])),
+    empty: nodeCrypto.timingSafeEqual(new ArrayBuffer(0), new ArrayBuffer(0)),
+    size: result(() => nodeCrypto.timingSafeEqual(new Uint8Array(1), new Uint8Array(2))),
+    // @ts-expect-error Strings are not views.
+    invalid: result(() => nodeCrypto.timingSafeEqual("aa", "aa")),
+  };
+  output.authenticatedCiphers = Object.fromEntries([{}, { authTagLength: 12 }, { authLengthTag: 12 }].map(options => [JSON.stringify(options), detailedResult(() => {
+    const key = new Uint8Array(32).fill(1);
+    const iv = new Uint8Array(12).fill(2);
+    const cipher = nodeCrypto.createCipheriv("aes-256-gcm", key, iv, options);
+    const padding = detailedResult(() => cipher.setAutoPadding(false));
+    cipher.setAAD(new Uint8Array([1, 2, 3]));
+    const encrypted = process.getBuiltinModule("node:buffer").Buffer.concat([
+      cipher.update(new Uint8Array(8).fill(3)),
+      cipher.update(new Uint8Array(8).fill(3)),
+    ]);
+    const final = cipher.final();
+    const tag = cipher.getAuthTag();
+    const corruptedTag = new Uint8Array(tag);
+    corruptedTag[0] ^= 1;
+    const invalidDecipher = nodeCrypto.createDecipheriv("aes-256-gcm", key, iv, options);
+    invalidDecipher.setAAD(new Uint8Array([1, 2, 3]));
+    invalidDecipher.setAuthTag(corruptedTag);
+    const unauthenticated = invalidDecipher.update(encrypted).toString("hex");
+    const authentication = result(() => { invalidDecipher.final(); return "accepted"; });
+    const decipher = nodeCrypto.createDecipheriv("aes-256-gcm", key, iv, options);
+    decipher.setAAD(new Uint8Array([1, 2, 3]));
+    decipher.setAuthTag(tag);
+    const decrypted = process.getBuiltinModule("node:buffer").Buffer.concat([
+      decipher.update(encrypted.subarray(0, 8)),
+      decipher.update(encrypted.subarray(8)),
+    ]);
+    return {
+      padding: padding === cipher ? "accepted" : padding,
+      authentication,
+      unauthenticated,
+      encrypted: encrypted.toString("hex"),
+      final: final.toString("hex"),
+      tag: tag.toString("hex"),
+      decrypted: decrypted.toString("hex"),
+      decipherFinal: decipher.final().toString("hex"),
+      secondTag: detailedResult(() => cipher.getAuthTag().toString("hex")),
+      afterFinal: detailedResult(() => cipher.update(new Uint8Array(1))),
+    };
+  })]));
+  output.emptyAuthenticatedCipher = result(() => {
+    const cipher = nodeCrypto.createCipheriv("aes-256-gcm", new Uint8Array(32), new Uint8Array(12));
+    return { final: cipher.final().toString("hex"), tag: cipher.getAuthTag().toString("hex") };
+  });
+  output.incrementalCiphers = Object.fromEntries(["cbc", "ctr"].flatMap(mode => [true, false].map(padding => {
+    const name = `${mode}-${padding}`;
+    return [name, detailedResult(() => {
+      const key = new Uint8Array(32).fill(1);
+      const iv = new Uint8Array(16).fill(2);
+      const cipher = nodeCrypto.createCipheriv(`aes-256-${mode}`, key, iv);
+      // @ts-expect-error Only authenticated ciphers take additional data.
+      const aad = result(() => cipher.setAAD(new Uint8Array([1])));
+      cipher.setAutoPadding(padding);
+      const encrypted = [cipher.update(new Uint8Array(16).fill(3)), cipher.update(new Uint8Array(16).fill(4)), cipher.final()];
+      const decipher = nodeCrypto.createDecipheriv(`aes-256-${mode}`, key, iv);
+      decipher.setAutoPadding(padding);
+      const decrypted = encrypted.map(chunk => decipher.update(chunk));
+      decrypted.push(decipher.final());
+      return {
+        aad,
+        encrypted: encrypted.map(chunk => chunk.toString("hex")),
+        decrypted: decrypted.map(chunk => chunk.toString("hex")),
+      };
+    })];
+  })));
+  const nodeBufferCtor = process.getBuiltinModule("node:buffer").Buffer;
+  output.nodeCrypto = {
+    subtle: typeof nodeCrypto.subtle?.digest,
+    hash: result(() => {
+      const value = nodeCrypto.createHash("sha256").update("abc").digest();
+      return { buffer: value instanceof nodeBufferCtor, hex: value.toString("hex") };
+    }),
+    hmac: result(() => nodeCrypto.createHmac("sha256", "secret").update("message").digest("hex")),
+    randomLarge: result(() => nodeCrypto.randomBytes(65537).length),
+  };
+  output.nodeCryptoEdges = await asyncResult(async () => {
+    const hash = nodeCrypto.createHash("sha256");
+    const hmac = nodeCrypto.createHmac("sha256", "secret");
+    const target = new Uint8Array(4);
+    const filled = await new Promise<{ error: unknown; length: number | null }>(resolve => nodeCrypto.randomFill(target, (error, value) => resolve({ error: error ? errorResult(error) : null, length: value?.length ?? null })));
+    const random = await new Promise(resolve => nodeCrypto.randomBytes(3, (error, value) => resolve({ error: error ? errorResult(error) : null, length: value?.length ?? null })));
+    const randomInt = nodeCrypto.randomInt(10, 20);
+    return {
+      instances: {
+        hash: hash instanceof nodeCrypto.Hash,
+        hmac: hmac instanceof nodeCrypto.Hmac,
+        // @ts-expect-error KeyObject is not constructible.
+        key: result(() => new nodeCrypto.KeyObject()),
+      },
+      hash: hash.update("a").update("bc").digest("hex"),
+      hmac: hmac.update("message").digest("hex"),
+      hashOutput: {
+        type: result(() => typeof nodeCrypto.hash("sha256", "abc")),
+        value: result(() => String(nodeCrypto.hash("sha256", "abc"))),
+        // @ts-expect-error The output encoding is a string, not an options object.
+        buffer: result(() => nodeCrypto.hash("sha256", "abc", { outputFormat: "buffer" }) instanceof nodeBufferCtor),
+        // @ts-expect-error The output encoding is a string, not an options object.
+        hex: result(() => nodeCrypto.hash("sha256", "abc", { outputFormat: "hex" })),
+        // @ts-expect-error The output encoding is a string, not an options object.
+        outputEncoding: result(() => ({ type: typeof nodeCrypto.hash("sha256", "abc", { outputEncoding: "buffer" }), buffer: nodeCrypto.hash("sha256", "abc", { outputEncoding: "buffer" }) instanceof nodeBufferCtor })),
+      },
+      filled: { error: filled.error, length: filled.length, changed: target.some(value => value !== 0) },
+      random,
+      randomInt: randomInt >= 10 && randomInt < 20,
+      values: {
+        fips: [nodeCrypto.fips, nodeCrypto.getFips()],
+        hashes: nodeCrypto.getHashes().sort(),
+        ciphers: nodeCrypto.getCiphers().sort(),
+        curves: nodeCrypto.getCurves().sort(),
+        constantKeys: Object.keys(nodeCrypto.constants).sort(),
+        secureHeap: nodeCrypto.secureHeapUsed(),
+      },
+      timing: nodeCrypto.timingSafeEqual(new Uint8Array([1]), new Uint8Array([1])),
+      prototypes: {
+        hash: result(() => Object.getOwnPropertyNames(nodeCrypto.Hash.prototype).sort()),
+        hmac: result(() => Object.getOwnPropertyNames(nodeCrypto.Hmac.prototype).sort()),
+        randomUUID: result(() => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(nodeCrypto.randomUUID())),
+      },
+      errors: [result(() => nodeCrypto.randomBytes(65537)),
+        // @ts-expect-error The callback is required.
+        result(() => nodeCrypto.randomFill(new Uint8Array(1))), result(() => nodeCrypto.randomInt(1, 1)), result(() => nodeCrypto.timingSafeEqual(new Uint8Array(1), new Uint8Array(2)))],
+      keyDerivation: result(() => {
+        const key = nodeCrypto.createSecretKey(new Uint8Array([1, 2, 3]));
+        return {
+          key: {
+            type: key.type,
+            symmetricKeySize: key.symmetricKeySize,
+            export: [...new Uint8Array(key.export())],
+            equals: key.equals(nodeCrypto.createSecretKey(new Uint8Array([1, 2, 3]))),
+          },
+          hkdf: [...new Uint8Array(nodeCrypto.hkdfSync("sha256", "key", "salt", "info", 16))],
+          pbkdf2: [...nodeCrypto.pbkdf2Sync("password", "salt", 1, 16, "sha256")],
+        };
+      }),
+      keyObjects: result(() => {
+        const { privateKey, publicKey } = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 1024 });
+        const signature = nodeCrypto.createSign("sha256").update("message").sign(privateKey);
+        const verified = nodeCrypto.createVerify("sha256").update("message").verify(publicKey, signature);
+        const encrypted = nodeCrypto.publicEncrypt(publicKey, nodeBufferCtor.from("secret"));
+        const decrypted = nodeCrypto.privateDecrypt(privateKey, encrypted);
+        const cipher = nodeCrypto.createCipheriv("aes-256-gcm", nodeBufferCtor.alloc(32, 1), nodeBufferCtor.alloc(12, 2));
+        const ciphertext = nodeBufferCtor.concat([cipher.update(nodeBufferCtor.from("secret")), cipher.final()]);
+        const decipher = nodeCrypto.createDecipheriv("aes-256-gcm", nodeBufferCtor.alloc(32, 1), nodeBufferCtor.alloc(12, 2));
+        decipher.setAuthTag(cipher.getAuthTag());
+        const plaintext = nodeBufferCtor.concat([decipher.update(ciphertext), decipher.final()]);
+        const parsed = nodeCrypto.createPrivateKey(privateKey.export({ format: "pem", type: "pkcs8" }));
+        return {
+          types: [privateKey.type, publicKey.type, privateKey.asymmetricKeyType, publicKey.asymmetricKeyType, parsed.type],
+          verified,
+          decrypted: decrypted.toString(),
+          plaintext: plaintext.toString(),
+          exports: [
+            privateKey.export({ format: "pem", type: "pkcs8" }).includes("BEGIN PRIVATE KEY"),
+            publicKey.export({ format: "pem", type: "spki" }).includes("BEGIN PUBLIC KEY"),
+          ],
+          generatedSecret: nodeCrypto.generateKeySync("aes", { length: 256 }).symmetricKeySize,
+        };
+      }),
+      advanced: await asyncResult(async () => {
+        const prime = nodeCrypto.generatePrimeSync(16);
+        const alice = nodeCrypto.createECDH("prime256v1");
+        const bob = nodeCrypto.createECDH("prime256v1");
+        alice.generateKeys();
+        bob.generateKeys();
+        const aliceSecret = alice.computeSecret(bob.getPublicKey());
+        const bobSecret = bob.computeSecret(alice.getPublicKey());
+        const dhPrime = nodeBufferCtor.from("17", "hex");
+        const dhAlice = nodeCrypto.createDiffieHellman(dhPrime, 2);
+        const dhBob = nodeCrypto.createDiffieHellman(dhPrime, 2);
+        dhAlice.generateKeys();
+        dhBob.generateKeys();
+        const { privateKey, publicKey } = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 1024 });
+        const encrypted = nodeCrypto.privateEncrypt(privateKey, nodeBufferCtor.from("secret"));
+        const info = present(nodeCrypto.getCipherInfo("aes-256-gcm"));
+        return {
+          primes: {
+            small: nodeCrypto.checkPrimeSync(nodeBufferCtor.from([0x0b])),
+            composite: nodeCrypto.checkPrimeSync(nodeBufferCtor.from([0x0f])),
+            generated: { type: prime.constructor.name, length: prime.byteLength, prime: nodeCrypto.checkPrimeSync(prime) },
+            generatedBigint: typeof nodeCrypto.generatePrimeSync(16, { bigint: true }),
+            async: await new Promise(resolve => nodeCrypto.checkPrime(nodeBufferCtor.from([0x0b]), (error, value) => resolve({ error: error ? member(error, "code") ?? error.name : null, value }))),
+          },
+          cipherInfo: {
+            default: { name: info.name, nid: info.nid, blockSize: info.blockSize, ivLength: info.ivLength, keyLength: info.keyLength, mode: info.mode },
+            options: nodeCrypto.getCipherInfo("aes-256-gcm", { keyLength: 32, ivLength: 12 })?.keyLength,
+            unknown: nodeCrypto.getCipherInfo("unknown") === undefined,
+          },
+          ecdh: {
+            equal: aliceSecret.equals(bobSecret),
+            sizes: [alice.getPrivateKey().length, alice.getPublicKey().length, aliceSecret.length],
+            compressedHex: alice.getPublicKey("hex", "compressed").length,
+            converted: nodeCrypto.ECDH.convertKey(bob.getPublicKey(), "prime256v1", undefined, undefined, "compressed").length,
+          },
+          dh: { equal: dhAlice.computeSecret(dhBob.getPublicKey()).equals(dhBob.computeSecret(dhAlice.getPublicKey())), sizes: [dhAlice.getPrime().length, dhAlice.getGenerator().length] },
+          scrypt: [...nodeCrypto.scryptSync("password", "salt", 16, { N: 16, r: 1, p: 1 })],
+          rsaLegacy: nodeCrypto.publicDecrypt(publicKey, encrypted).toString(),
+          flags: {
+            engine: result(() => nodeCrypto.setEngine("")),
+            fips: result(() => nodeCrypto.setFips(true)),
+          },
+        };
+      }),
+    };
+  });
+  output.bodyApis = {
+    requestReader: await asyncResult(async () => {
+      const request = new Request("https://example.test", {
+        method: "POST", body: "payload", headers: { "content-type": "text/plain" },
+      });
+      const reader = present(request.body).getReader();
+      const first = await reader.read();
+      const second = await reader.read();
+      return { first: [...first.value], done: second.done, bodyUsed: request.bodyUsed };
+    }),
+    formData: await asyncResult(async () => {
+      const request = new Request("https://example.test", {
+        method: "POST", body: "first=one&first=two&empty=", headers: {
+          "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+      });
+      const form = await request.formData();
+      return { first: form.getAll("first"), empty: form.get("empty"), size: [...form].length };
+    }),
+    blobFile: await asyncResult(async () => {
+      const file = new File(["hello"], "hello.txt", { type: "text/plain", lastModified: 123 });
+      return { name: file.name, type: file.type, size: file.size, text: await file.text(), modified: file.lastModified };
+    }),
+    multipart: await asyncResult(async () => {
+      const body = new TextEncoder().encode(
+        "--boundary\r\n" +
+        "Content-Disposition: form-data; name=\"text\"\r\n\r\nvalue\r\n" +
+        "--boundary\r\n" +
+        "Content-Disposition: form-data; name=\"file\"; filename=\"data.bin\"\r\n" +
+        "Content-Type: application/octet-stream\r\n\r\n",
+      );
+      const suffix = new TextEncoder().encode("\r\n--boundary--\r\n");
+      const bytes = new Uint8Array(body.length + 3 + suffix.length);
+      bytes.set(body);
+      bytes.set([0, 255, 1], body.length);
+      bytes.set(suffix, body.length + 3);
+      const request = new Request("https://example.test", {
+        method: "POST", body: bytes,
+        headers: { "content-type": "multipart/form-data; boundary=boundary" },
+      });
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!(file instanceof File)) throw new TypeError("The file part is not a File");
+      return { text: form.get("text"), name: file.name, type: file.type, bytes: [...new Uint8Array(await file.arrayBuffer())] };
+    }),
+    clones: await asyncResult(async () => {
+      const request = new Request("https://example.test", { method: "POST", body: "request" });
+      const requestClone = request.clone();
+      const response = new Response("response");
+      const responseClone = response.clone();
+      return { before: request.bodyUsed, request: await requestClone.text(), response: await responseClone.text(), original: await request.text(), after: request.bodyUsed };
+    }),
+  };
+  output.cacheApis = await asyncResult(async () => {
+    const request = new Request("https://example.test/cache?b=2&a=1");
+    const cache = await detailedAsyncResult(() => caches.open("contract"));
+    if ("error" in cache) return { open: cache };
+    const response = new Response("cached", { headers: { "x-cache": "yes" } });
+    const put = await detailedAsyncResult(async () => { await cache.put(request, response); return "resolved"; });
+    // @ts-expect-error workerd's Cache takes no ignoreSearch option.
+    const ignoredSearch = await detailedAsyncResult(async () => { const value = await cache.match("https://example.test/cache?other=1", { ignoreSearch: true }); return value ? await value.text() : null; });
+    // @ts-expect-error workerd's Cache has no keys().
+    const keys = await detailedAsyncResult(async () => (await cache.keys()).map((value: Request) => value.url));
+    // @ts-expect-error workerd's Cache has no add().
+    const added = await detailedAsyncResult(async () => { await cache.add("https://example.test/cache-add"); return "resolved"; });
+    const storage = {
+      // @ts-expect-error workerd's CacheStorage has no has().
+      has: await detailedAsyncResult(() => caches.has("contract")),
+      // @ts-expect-error workerd's CacheStorage has no keys().
+      keys: await detailedAsyncResult(() => caches.keys()),
+      // @ts-expect-error workerd's CacheStorage has no match().
+      match: await detailedAsyncResult(async () => { const value = await caches.match(request); return value ? await value.text() : null; }),
+      // @ts-expect-error workerd's CacheStorage has no delete().
+      deleted: await detailedAsyncResult(() => caches.delete("contract")),
+      // @ts-expect-error workerd's CacheStorage has no has().
+      hasAfterDelete: await detailedAsyncResult(() => caches.has("contract")),
+    };
+    const defaultCache = caches.default;
+    const defaultPut = await detailedAsyncResult(async () => { await defaultCache.put(request, new Response("default-cached")); return "resolved"; });
+    return {
+      put,
+      ignoredSearch,
+      keys,
+      added,
+      default: { put: defaultPut },
+      storage,
+    };
+  });
+  output.runtimeSurface = {
+    globals: {
+      self: Object.is(self, globalThis),
+      origin,
+      fetch: typeof fetch,
+      reportError: typeof reportError,
+      queueMicrotask: typeof queueMicrotask,
+      constructors: [
+        "Body", "Crypto", "SubtleCrypto", "FetchEvent", "ExtendableEvent", "FixedLengthStream",
+        "IdentityTransformStream", "Navigator", "Performance", "PerformanceEntry", "PerformanceMark",
+        "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList", "PromiseRejectionEvent",
+        "ScheduledEvent", "TailEvent", "TraceEvent", "WebSocketRequestResponsePair", "WorkerGlobalScope",
+        "ServiceWorkerGlobalScope",
+      ].map(name => [name, typeof member(globalThis, name)]),
+    },
+    body: {
+      request: Request.prototype instanceof Body,
+      response: Response.prototype instanceof Body,
+      methods: Object.getOwnPropertyNames(Body.prototype).sort(),
+      responseJson: Response.json({ value: 42 }).headers.get("content-type"),
+      responseBytes: [...new Uint8Array(await new Response("bytes").bytes())],
+      responseBlob: await new Response("blob", { headers: { "content-type": "text/plain" } }).blob().then(async value => ({ type: value.type, text: await value.text() })),
+      blobTypes: await blobTypeContracts(),
+    },
+    url: {
+      static: [typeof URL.canParse, typeof URL.parse, typeof URL.createObjectURL, typeof URL.revokeObjectURL],
+      searchParams: (() => {
+        const url = new URL("https://example.test/path?x=1&x=2");
+        url.searchParams.delete("x", "1");
+        const afterDelete = { values: [...url.searchParams], size: url.searchParams.size, search: url.search };
+        url.searchParams.sort();
+        return { afterDelete, sorted: url.href };
+      })(),
+    },
+    streams: {
+      from: typeof member(ReadableStream, "from"),
+      values: typeof ReadableStream.prototype.values,
+      fixed: typeof FixedLengthStream,
+      identity: typeof IdentityTransformStream,
+    },
+  };
+  output.webPlatformSurface = {
+    websocket: result(() => {
+      const pair = new WebSocketPair();
+      const client = pair[0];
+      const server = pair[1];
+      const properties = Object.fromEntries(["url", "readyState", "protocol", "extensions", "binaryType"].map(name => [name, member(client, name)]));
+      server.accept();
+      server.send("hello");
+      return {
+        properties,
+        serverReady: server.readyState,
+        static: Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED", "READY_STATE_CONNECTING", "READY_STATE_OPEN", "READY_STATE_CLOSING", "READY_STATE_CLOSED"].map(name => [name, member(WebSocket, name)])),
+        prototype: Object.getOwnPropertyNames(WebSocket.prototype).sort(),
+      };
+    }),
+    performance: result(() => ({
+      prototype: Object.getOwnPropertyNames(Performance.prototype).sort(),
+      mark: (() => { const value = performance.mark("surface", { startTime: 3, detail: { value: 1 } }); return { name: value.name, entryType: value.entryType, startTime: value.startTime, duration: value.duration, detail: value.detail }; })(),
+      measure: (() => { performance.mark("surface-end", { startTime: 7 }); const value = performance.measure("surface-measure", "surface", "surface-end"); return { name: value.name, entryType: value.entryType, startTime: value.startTime, duration: value.duration }; })(),
+      eventCounts: typeof performance.eventCounts,
+      nodeTiming: typeof performance.nodeTiming,
+      timerify: typeof performance.timerify,
+      resourceTiming: typeof performance.markResourceTiming,
+      resourceTimingSurface: {
+        prototype: Object.getOwnPropertyNames(PerformanceResourceTiming.prototype).sort(),
+        // @ts-expect-error PerformanceResourceTiming is not constructible.
+        constructor: result(() => new PerformanceResourceTiming("resource")),
+      },
+    })),
+    eventSource: await asyncResult(async () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            ": ping\nretry: 10\ndata: one\ndata: two\nid: 7\nevent: update\n\ndata: last\n\n",
+          ));
+          controller.close();
+        },
+      });
+      const source = EventSource.from(stream);
+      const events: unknown[] = [];
+      const record = (event: Event) => events.push({ type: event.type, data: member(event, "data"), id: member(event, "lastEventId") });
+      source.onmessage = record;
+      source.addEventListener("update", record);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return {
+        url: source.url,
+        readyState: source.readyState,
+        withCredentials: source.withCredentials,
+        events,
+        prototype: Object.getOwnPropertyNames(EventSource.prototype).sort(),
+        static: Object.getOwnPropertyNames(EventSource).sort(),
+      };
+    }),
+  };
+  output.performanceObserver = await asyncResult(async () => {
+    performance.clearMarks();
+    performance.clearMeasures();
+    const calls: unknown[] = [];
+    const observer = new PerformanceObserver((list: PerformanceObserverEntryList) => calls.push(list.getEntries().map(entry => ({
+      name: entry.name,
+      type: entry.entryType,
+    }))));
+    observer.observe({ entryTypes: ["mark", "measure"] });
+    performance.mark("observed");
+    performance.measure("observed-measure", "observed");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const records = observer.takeRecords().map(entry => ({ name: entry.name, type: entry.entryType }));
+    observer.disconnect();
+    return { calls, records };
+  });
+  output.cloudflareSurface = await asyncResult(async () => {
+    const workers = await import("cloudflare:workers");
+    const sockets = await import("cloudflare:sockets");
+    const replacement = { FLAG: "replacement" };
+    const restored = workers.withEnv(replacement, () => workers.env.FLAG);
+    const span = workers.tracing.startSpan("contract");
+    const socket = sockets.connect({ hostname: "", port: 0 }, { secureTransport: "starttls", allowHalfOpen: false });
+    const upgradedSocket = socket.startTls();
+    socket.close().catch(() => {});
+    upgradedSocket.close().catch(() => {});
+    const failedSocket = sockets.connect({ hostname: "", port: 0 });
+    const failedSocketLifecycle = {
+      opened: await asyncResult(async () => await failedSocket.opened),
+      closed: await asyncResult(async () => await failedSocket.closed),
+      close: await asyncResult(async () => await failedSocket.close()),
+    };
+    return {
+      cacheDefault: typeof member(workers.cache, "default"),
+      cacheDefaultOpen: typeof member(member(workers.cache, "default"), "match"),
+      env: workers.env.FLAG,
+      restored,
+      envAfter: workers.env.FLAG,
+      rpcTarget: typeof workers.RpcTarget,
+      rpcStub: typeof workers.RpcStub,
+      rpcResults: [workers.RpcPromise, workers.RpcProperty].map(rpcResultContract),
+      waitUntil: typeof workers.waitUntil,
+      restore: typeof member(workers, "restore"),
+      tracing: {
+        prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(workers.tracing)).sort(),
+        spanPrototype: Object.getOwnPropertyNames(Object.getPrototypeOf(span)).sort(),
+        isTraced: span.isTraced,
+        setAttribute: span.setAttribute("key", "value") === span,
+        setAttributes: span.setAttributes({ key: "value" }) === span,
+        end: span.end(),
+        active: workers.tracing.startActiveSpan("active", () => "value"),
+        entered: workers.tracing.enterSpan("entered", () => "value"),
+        behaviour: await tracingContracts(workers.tracing),
+      },
+      sockets: {
+        prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(),
+        secureTransport: [socket.secureTransport, upgradedSocket.secureTransport],
+        upgraded: [socket.upgraded, upgradedSocket.upgraded],
+        startTls: [typeof socket.startTls, typeof upgradedSocket.startTls],
+        streams: [typeof socket.readable.getReader, typeof socket.writable.getWriter],
+        close: [typeof socket.close(), typeof upgradedSocket.close()],
+        httpClient: [
+          () => sockets.internalNewHttpClient(socket),
+          // @ts-expect-error The socket is required.
+          () => sockets.internalNewHttpClient(),
+        ].map(result),
+        failedSocketLifecycle,
+      },
+      context: {
+        own: Object.getOwnPropertyNames(ctx).sort(),
+        prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(ctx)).sort(),
+        waitUntil: result(() => ({
+          type: typeof ctx.waitUntil(Promise.resolve()),
+          private: "__waitUntil" in ctx,
+        })),
+        passThroughOnException: result(() => ({
+          type: typeof ctx.passThroughOnException(),
+        })),
+      },
+    };
+  });
+  output.cloudflareNode = await asyncResult(async () => {
+    const node = await import("cloudflare:node");
+    const http = await import("node:http");
+    const describe = (value: unknown) => value && {
+      type: typeof value,
+      own: Object.getOwnPropertyNames(value).sort(),
+      prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(value)).sort(),
+    };
+    // @ts-expect-error The port is required.
+    const rawRequest = node.handleAsNodeRequest(new Request("https://example.test"));
+    const rawRequestDescription = {
+      type: typeof rawRequest,
+      tag: Object.prototype.toString.call(rawRequest),
+      constructor: rawRequest?.constructor?.name,
+      own: Object.getOwnPropertyNames(rawRequest ?? {}).sort(),
+      prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(rawRequest ?? {})).sort(),
+    };
+    const server = http.createServer((request, response) => {
+      const chunks: unknown[] = [];
+      request.on("data", chunk => chunks.push(new TextDecoder().decode(chunk)));
+      request.on("end", () => {
+        response.setHeader("x-node", "yes");
+        response.write("node ");
+        response.end(`${request.method} ${request.url} ${chunks.join("")} ${request.socket.localPort}`);
+      });
+    });
+    server.listen(8787);
+    const handler = node.httpServerHandler(server);
+    const response = await Promise.race([
+      Promise.resolve(present(handler.fetch)(new Request("https://example.test/path?x=1", { method: "POST", body: "response" }), handlerEnv, ctx)).then(async value => ({
+        status: value.status,
+        body: await value.text(),
+        header: value.headers.get("x-node"),
+      }), error => errorResult(error)),
+      new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 10)),
+    ]);
+    return {
+      exports: Object.keys(node).sort(),
+      functions: [node.httpServerHandler.length, node.handleAsNodeRequest.length],
+      handlers: [
+        result(() => describe(node.httpServerHandler(8787))),
+        result(() => describe(node.httpServerHandler({ port: 8787 }))),
+        // @ts-expect-error The port or server is required.
+        result(() => node.httpServerHandler()),
+      ],
+      invalidRequest: rawRequestDescription,
+      serverResponse: response,
+      serverAddress: server.address(),
+      client: await asyncResult(async () => {
+        const originalFetch = globalThis.fetch;
+        let requestDetails: unknown;
+        globalThis.fetch = async (input, init) => {
+          const { method, body } = present(init);
+          requestDetails = {
+            input: String(input), method,
+            bodyType: typeof body,
+            bodyTag: Object.prototype.toString.call(body),
+            body: await new Response(body).text(),
+          };
+          return new Response("client response", { status: 201, headers: { "x-client": "yes" } });
+        };
+        try {
+          return await new Promise((resolve, reject) => {
+            const client = http.request({
+              protocol: "http:", hostname: "example.test", path: "/client?x=1", method: "POST",
+              headers: { "x-request": "yes" },
+            }, response => {
+              const chunks: unknown[] = [];
+              response.on("data", chunk => chunks.push(new TextDecoder().decode(chunk)));
+              response.on("end", () => resolve({
+                status: response.statusCode,
+                body: chunks.join(""),
+                header: response.headers["x-client"],
+                request: requestDetails,
+              }));
+              response.on("error", reject);
+            });
+            client.on("error", reject);
+            client.end("request body");
+          });
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      }),
+    };
+  });
+  output.streamApis = {
+    tee: await asyncResult(async () => {
+      const source = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
+      const [left, right] = source.tee();
+      const read = async (stream: ReadableStream<Uint8Array>) => [...present((await stream.getReader().read()).value)];
+      return { left: await read(left), right: await read(right) };
+    }),
+    text: await asyncResult(async () => {
+      const encoded = new TextEncoderStream();
+      const writer = encoded.writable.getWriter();
+      const text = new Response(encoded.readable).text();
+      await writer.write("hello");
+      await writer.close();
+      return text;
+    }),
+    compression: await asyncResult(async () => {
+      const input = new TextEncoder().encode("tokamak compression");
+      const compressed = new CompressionStream("gzip");
+      const writer = compressed.writable.getWriter();
+      await writer.write(input);
+      await writer.close();
+      const bytes = new Uint8Array(await new Response(compressed.readable).arrayBuffer());
+      const decompressed = new DecompressionStream("gzip");
+      const decompressedWriter = decompressed.writable.getWriter();
+      await decompressedWriter.write(bytes);
+      await decompressedWriter.close();
+      return { nonEmpty: bytes.length > 0, roundTrip: await new Response(decompressed.readable).text() };
+    }),
+  };
+  // --- streams/events differential contract ---
+  const settle = (promise: Promise<unknown>) => Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve("pending"), 20)),
+  ]);
+  const probe = (callback: () => unknown) => Promise.race([
+    asyncResult(callback),
+    new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 100)),
+  ]);
+  const nodeReadable = (chunks: (string | Uint8Array)[]) => {
+    const source = new streams.Readable({ read() {} });
+    for (const chunk of chunks) source.push(chunk);
+    source.push(null);
+    return source;
+  };
+  const streamConsumers = process.getBuiltinModule("node:stream/consumers");
+  const streamPromises = process.getBuiltinModule("node:stream/promises");
+  output.nodeStreamCompat = {
+    consumers: {
+      text: await probe(() => streamConsumers.text(nodeReadable(["hello ", new Uint8Array([119, 111, 114, 108, 100])]))),
+      json: await probe(() => streamConsumers.json(nodeReadable(['{"value":42}']))),
+      buffer: await probe(async () => [...await streamConsumers.buffer(nodeReadable([new Uint8Array([1, 2]), new Uint8Array([3, 4])]))]),
+      blob: await probe(async () => {
+        const value = await streamConsumers.blob(nodeReadable(["a", new Uint8Array([98, 255])]));
+        return { size: value.size, bytes: [...new Uint8Array(await value.arrayBuffer())] };
+      }),
+      arrayBuffer: await probe(async () => {
+        const value = await streamConsumers.arrayBuffer(nodeReadable(["a", new Uint8Array([98, 255])]));
+        return { byteLength: value.byteLength, bytes: [...new Uint8Array(value)] };
+      }),
+      webText: await probe(async () => {
+        const source = new ReadableStream({
+          start(controller) { controller.enqueue(new Uint8Array([104, 105])); controller.close(); },
+        });
+        const value = await streamConsumers.text(source);
+        return { value, locked: source.locked };
+      }),
+    },
+    promises: {
+      pipeline: await probe(async () => {
+        const received: unknown[] = [];
+        const source = new streams.Readable({ read() {} });
+        const destination = new streams.Writable({ write(_chunk, _encoding, callback) { callback(); } });
+        const write = destination.write;
+        destination.write = (chunk: unknown, ...args: unknown[]) => {
+          received.push(String(chunk));
+          return Reflect.apply(write, destination, [chunk, ...args]);
+        };
+        const completion = streamPromises.pipeline(source, destination);
+        queueMicrotask(() => { source.push("a"); source.push("b"); source.push(null); });
+        await completion;
+        return received;
+      }),
+      finished: await probe(async () => {
+        const source = new streams.Readable({ read() {} });
+        source.on("data", () => {});
+        const completion = streamPromises.finished(source);
+        source.push("done");
+        source.push(null);
+        await completion;
+        return "undefined";
+      }),
+    },
+  };
+  output.streamsEventsContract = {
+    readable: await probe(async () => {
+      const source = new ReadableStream({ start(controller) { controller.enqueue("value"); } });
+      const reader = source.getReader();
+      const first = await reader.read();
+      const locked = source.locked;
+      reader.releaseLock();
+      const releasedRead = await reader.read().catch(errorResult);
+      const releasedClosed = await settle(reader.closed.catch(errorResult));
+      const replacement = source.getReader();
+      await replacement.cancel("done");
+      return {
+        first, locked, unlocked: !source.locked,
+        prototype: Object.getPrototypeOf(reader) === ReadableStreamDefaultReader.prototype,
+        releasedRead, releasedClosed,
+      };
+    }),
+    writable: await probe(async () => {
+      const values: unknown[] = [];
+      const sink = { values, write(value: unknown) { this.values.push(value); }, close() { this.values.push("close"); } };
+      const stream = new WritableStream(sink);
+      const writer = stream.getWriter();
+      const before = { locked: stream.locked, desiredSize: writer.desiredSize, ready: await writer.ready.then(() => true) };
+      await writer.write("one");
+      writer.releaseLock();
+      const releasedWrite = await writer.write("two").catch(errorResult);
+      const releasedClosed = await settle(writer.closed.catch(errorResult));
+      const replacement = stream.getWriter();
+      await replacement.write("two");
+      await replacement.close();
+      return {
+        before, after: !stream.locked, releasedWrite, releasedClosed,
+        prototype: Object.getPrototypeOf(writer) === WritableStreamDefaultWriter.prototype,
+        values: sink.values,
+      };
+    }),
+    propagation: await probe(async () => {
+      const readError = new Error("read");
+      const errored = new ReadableStream({ start(controller) { controller.error(readError); } });
+      const reader = errored.getReader();
+      const read = await reader.read().catch(errorResult);
+      const closed = await reader.closed.catch(errorResult);
+      const canceled: unknown[] = [];
+      const received: unknown[] = [];
+      const source = new ReadableStream({
+        start(controller) { controller.enqueue(1); controller.enqueue(2); },
+        cancel(reason) { canceled.push(reason.message); },
+      });
+      const destination = new WritableStream({
+        write(value) { received.push(value); if (value === 2) throw new Error("write"); },
+        abort(reason) { canceled.push("abort:" + reason.message); },
+      });
+      const piped = await source.pipeTo(destination).then(() => null, error => error.message);
+      return { read, closed, piped, received, canceled, sourceLocked: source.locked, destinationLocked: destination.locked };
+    }),
+    pipeThrough: await probe(async () => {
+      const source = new ReadableStream({ start(controller) { controller.enqueue(1); controller.close(); } });
+      const transform = new TransformStream({ transform(value, controller) { controller.enqueue(value + 1); } });
+      const output = source.pipeThrough(transform);
+      const reader = output.getReader();
+      const value = await reader.read();
+      const done = await reader.read();
+      // The spec releases the source after the destination closes, which is after
+      // the last read; workerd releases it before. Reading the lock once the pipe
+      // has settled compares the state both reach.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return { same: output === transform.readable, value, done, sourceLocked: source.locked };
+    }),
+    tee: await probe(async () => {
+      const value = { value: 1 };
+      const source = new ReadableStream({ start(controller) { controller.enqueue(value); controller.close(); } });
+      const [left, right] = source.tee();
+      const [leftResult, rightResult] = await Promise.all([
+        left.getReader().read(), right.getReader().read(),
+      ]);
+      const reasons: unknown[] = [];
+      const cancelSource = new ReadableStream({ cancel(reason) { reasons.push(Array.isArray(reason) ? reason : String(reason)); } });
+      const [cancelLeft, cancelRight] = cancelSource.tee();
+      await Promise.all([cancelLeft.cancel("left"), cancelRight.cancel("right")]);
+      return {
+        same: leftResult.value === rightResult.value,
+        left: leftResult.value, right: rightResult.value,
+        locked: source.locked, cancelReasons: reasons,
+      };
+    }),
+    transform: await probe(async () => {
+      const calls: unknown[] = [];
+      const transformer = {
+        start(controller: TransformStreamDefaultController<number>) { calls.push(["start", this === transformer, controller instanceof TransformStreamDefaultController]); },
+        transform(value: number, controller: TransformStreamDefaultController<number>) { calls.push(["transform", this === transformer]); controller.enqueue(value + 1); },
+        flush(controller: TransformStreamDefaultController<number>) { calls.push(["flush", controller instanceof TransformStreamDefaultController]); },
+      };
+      const stream = new TransformStream(transformer);
+      const writer = stream.writable.getWriter();
+      const reader = stream.readable.getReader();
+      const valuePromise = reader.read();
+      await writer.write(1);
+      const value = await valuePromise;
+      const donePromise = reader.read();
+      await writer.close();
+      const done = await donePromise;
+      return { calls, value, done, readable: stream.readable instanceof ReadableStream, writable: stream.writable instanceof WritableStream };
+    }),
+    transformStart: await probe(async () => {
+      const calls: unknown[] = [];
+      const { promise: start, resolve: release } = Promise.withResolvers<void>();
+      const stream = new TransformStream({
+        start() { calls.push("start"); return start; },
+        transform(value, controller) { calls.push("transform"); controller.enqueue(value); },
+      });
+      const writer = stream.writable.getWriter();
+      const reader = stream.readable.getReader();
+      const write = settle(writer.write(1).then(() => "resolved", errorResult));
+      await Promise.resolve();
+      const before = [...calls];
+      release();
+      const result = await settle(reader.read().then(value => ({ done: value.done, value: value.value }), errorResult));
+      return { before, after: calls, write: await write, result };
+    }),
+    transformErrors: await probe(async () => {
+      const transform = new TransformStream({
+        async transform() { throw new Error("transform"); },
+      });
+      const transformWriter = transform.writable.getWriter();
+      const transformReader = transform.readable.getReader();
+      const transformReadPromise = transformReader.read().then(value => ({ done: value.done, value: value.value }), errorResult);
+      const transformWrite = await settle(transformWriter.write(1).then(() => "resolved", error => error.message));
+      const transformRead = await settle(transformReadPromise);
+
+      const flush = new TransformStream({
+        async flush() { throw new Error("flush"); },
+      });
+      const flushWriter = flush.writable.getWriter();
+      const flushReader = flush.readable.getReader();
+      const flushReadPromise = flushReader.read().then(value => ({ done: value.done, value: value.value }), errorResult);
+      const flushClose = await settle(flushWriter.close().then(() => "resolved", error => error.message));
+      const flushRead = await settle(flushReadPromise);
+      return { transformWrite, transformRead, flushClose, flushRead };
+    }),
+    events: await probe(async () => {
+      const basic = result(() => {
+        const target = new EventTarget();
+        const calls: unknown[] = [];
+        const objectListener = { handleEvent(event: Event) { calls.push(["object", this === objectListener, event.currentTarget === target, event.eventPhase]); } };
+        const functionListener = (event: Event) => {
+          calls.push(["function", event.target === target, event.currentTarget === target, event.eventPhase]);
+          event.preventDefault();
+        };
+        target.addEventListener("ready", functionListener, { once: true });
+        target.addEventListener("ready", objectListener);
+        const event = new CustomEvent("ready", { cancelable: true, detail: 0 });
+        const first = target.dispatchEvent(event);
+        const after = {
+          defaultPrevented: event.defaultPrevented, cancelBubble: event.cancelBubble,
+          returnValue: event.returnValue, currentTarget: event.currentTarget, target: event.target === target,
+        };
+        const second = target.dispatchEvent(new Event("ready"));
+        return {
+          calls, first, second, after,
+          detail: event.detail, prototype: Object.getPrototypeOf(event) === CustomEvent.prototype,
+        };
+      });
+      const passive = result(() => {
+        const target = new EventTarget();
+        const event = new Event("passive", { cancelable: true });
+        target.addEventListener("passive", value => value.preventDefault(), { passive: true });
+        return [target.dispatchEvent(event), event.defaultPrevented];
+      });
+      const signal = result(() => {
+        const target = new EventTarget();
+        const abortController = new AbortController();
+        let signaled = 0;
+        target.addEventListener("signal", () => { signaled += 1; }, { signal: abortController.signal });
+        abortController.abort();
+        target.dispatchEvent(new Event("signal"));
+        return signaled;
+      });
+      return { constants: [Event.NONE, Event.CAPTURING_PHASE, Event.AT_TARGET, Event.BUBBLING_PHASE], basic, passive, signal };
+    }),
+    eventEmitter: await probe(async () => {
+      const emitter = new EventEmitter();
+      const calls: unknown[] = [];
+      const regular = (value: unknown) => calls.push(["regular", value]);
+      emitter.on("value", regular);
+      emitter.prependOnceListener("value", value => calls.push(["once", value]));
+      const before = { max: emitter.getMaxListeners(), count: emitter.listenerCount("value") };
+      emitter.setMaxListeners(3);
+      emitter.emit("value", 1);
+      emitter.emit("value", 2);
+      return {
+        calls, before, after: { max: emitter.getMaxListeners(), count: EventEmitter.listenerCount(emitter, "value") },
+        listeners: emitter.listeners("value").length, names: emitter.eventNames(),
+        constants: { defaultMaxListeners: EventEmitter.defaultMaxListeners, errorMonitor: typeof EventEmitter.errorMonitor },
+      };
+    }),
+    releaseTerminal: await probe(async () => {
+      const outcome = (promise: Promise<unknown>) => promise.then(() => "resolved", errorResult);
+      const readable = new ReadableStream({ start(controller) { controller.close(); } });
+      const reader = readable.getReader();
+      await reader.read();
+      const readableBefore = await outcome(reader.closed);
+      reader.releaseLock();
+      const readableAfter = await outcome(reader.closed);
+
+      const writable = new WritableStream({ close() {} });
+      const writer = writable.getWriter();
+      await writer.close();
+      const writableBefore = await outcome(writer.closed);
+      writer.releaseLock();
+      const writableAfter = await outcome(writer.closed);
+
+      const open = new WritableStream();
+      const openWriter = open.getWriter();
+      const openReady = openWriter.ready.then(() => "resolved", errorResult);
+      const openClosed = openWriter.closed.then(() => "resolved", errorResult);
+      openWriter.releaseLock();
+      return {
+        readableBefore, readableAfter, writableBefore, writableAfter,
+        openReady: await openReady, openClosed: await openClosed,
+        releasedDesiredSize: result(() => openWriter.desiredSize),
+        releasedReady: await settle(openWriter.ready.then(() => "resolved", errorResult)),
+        releasedClosed: await settle(openWriter.closed.then(() => "resolved", errorResult)),
+      };
+    }),
+    lockErrors: await probe(async () => {
+      const readable = new ReadableStream();
+      const reader = readable.getReader();
+      const streamCancel = await asyncResult(() => readable.cancel("cancelled"));
+      reader.releaseLock();
+      const writable = new WritableStream();
+      const writer = writable.getWriter();
+      const streamAbort = await asyncResult(() => writable.abort("aborted"));
+      writer.releaseLock();
+      return { streamCancel, streamAbort };
+    }),
+    writableStart: await probe(async () => {
+      const calls: unknown[] = [];
+      const { promise: start, resolve: release } = Promise.withResolvers<void>();
+      const stream = new WritableStream({
+        start() { calls.push("start"); return start; },
+        abort(reason) { calls.push(["abort", reason]); },
+      });
+      const abort = settle(stream.abort("aborted").then(() => "resolved", errorResult));
+      await Promise.resolve();
+      const before = [...calls];
+      release();
+      return { before, after: calls, abort: await abort };
+    }),
+    backpressure: await probe(async () => {
+      const values: unknown[] = [];
+      const { promise: pending, resolve: release } = Promise.withResolvers<void>();
+      const stream = new WritableStream({ write(value) { values.push(value); return pending; } }, { highWaterMark: 1 });
+      const writer = stream.getWriter();
+      const write = writer.write("value");
+      const during = { desiredSize: writer.desiredSize, ready: await settle(writer.ready.then(() => "resolved", errorResult)) };
+      release();
+      await write;
+      return { during, after: { desiredSize: writer.desiredSize, ready: await settle(writer.ready.then(() => "resolved", errorResult)) }, values };
+    }),
+    closeReady: await probe(async () => {
+      const stream = new WritableStream({ close() {} }, { highWaterMark: 0 });
+      const writer = stream.getWriter();
+      const ready = writer.ready.then(() => "resolved", errorResult);
+      await writer.close();
+      return { ready: await settle(ready), closed: await writer.closed.then(() => "resolved", errorResult) };
+    }),
+    prototypes: await probe(async () => ({
+      readerRead: typeof ReadableStreamDefaultReader.prototype.read,
+      readerRelease: typeof ReadableStreamDefaultReader.prototype.releaseLock,
+      byobReadAtLeast: typeof ReadableStreamBYOBReader.prototype.readAtLeast,
+      byteRequestGetter: typeof Object.getOwnPropertyDescriptor(ReadableByteStreamController.prototype, "byobRequest")?.get,
+      byobViewGetter: typeof Object.getOwnPropertyDescriptor(ReadableStreamBYOBRequest.prototype, "view")?.get,
+      byobAtLeastGetter: typeof Object.getOwnPropertyDescriptor(ReadableStreamBYOBRequest.prototype, "atLeast")?.get,
+      writerWrite: typeof WritableStreamDefaultWriter.prototype.write,
+      writableAbort: typeof WritableStream.prototype.abort,
+      writableClose: typeof WritableStream.prototype.close,
+      transformReadableGetter: typeof Object.getOwnPropertyDescriptor(TransformStream.prototype, "readable")?.get,
+      transformWritableGetter: typeof Object.getOwnPropertyDescriptor(TransformStream.prototype, "writable")?.get,
+      readerReadEnumerable: Object.getOwnPropertyDescriptor(ReadableStreamDefaultReader.prototype, "read")?.enumerable,
+      byobReadAtLeastEnumerable: Object.getOwnPropertyDescriptor(ReadableStreamBYOBReader.prototype, "readAtLeast")?.enumerable,
+      writableCloseEnumerable: Object.getOwnPropertyDescriptor(WritableStream.prototype, "close")?.enumerable,
+      transformReadableEnumerable: Object.getOwnPropertyDescriptor(TransformStream.prototype, "readable")?.enumerable,
+    })),
+    construction: await probe(async () => ({
+      // @ts-expect-error A reader needs a stream.
+      defaultReader: result(() => new ReadableStreamDefaultReader()),
+      // @ts-expect-error A reader needs a stream.
+      byobReader: result(() => new ReadableStreamBYOBReader()),
+      // @ts-expect-error Controllers are not constructible.
+      defaultController: result(() => new ReadableStreamDefaultController()),
+      // @ts-expect-error Controllers are not constructible.
+      byteController: result(() => new ReadableByteStreamController()),
+      // @ts-expect-error Requests are not constructible.
+      byobRequest: result(() => new ReadableStreamBYOBRequest()),
+      // @ts-expect-error Controllers are not constructible.
+      writableController: result(() => new WritableStreamDefaultController()),
+      // @ts-expect-error Controllers are not constructible.
+      transformController: result(() => new TransformStreamDefaultController()),
+    })),
+    bytes: await probe(async () => {
+      const run = async (method: "read" | "readAtLeast") => {
+        let seen: unknown;
+        const stream = new ReadableStream({
+          type: "bytes",
+          pull(controller) {
+            const request = present(controller.byobRequest);
+            const view = present(request.view);
+            seen = { atLeast: request.atLeast, length: view.byteLength, desiredSize: controller.desiredSize };
+            view[0] = 7;
+            request.respond(1);
+          },
+        });
+        const reader = stream.getReader({ mode: "byob" });
+        const view = new Uint8Array(4);
+        const value = await (method === "readAtLeast" ? reader.readAtLeast(1, view) : reader.read(view));
+        return { value: { done: value.done, bytes: [...present(value.value)] }, seen, same: value.value === view };
+      };
+      const invalidReader = new ReadableStream({ type: "bytes" }).getReader({ mode: "byob" });
+      const invalidView = new Uint8Array(1);
+      const invalid = await Promise.all([
+        settle(asyncResult(() => invalidReader.readAtLeast(0, invalidView))),
+        settle(asyncResult(() => invalidReader.readAtLeast(1.5, invalidView))),
+        settle(asyncResult(() => invalidReader.readAtLeast(2, invalidView))),
+        // @ts-expect-error The view is required.
+        settle(asyncResult(() => invalidReader.readAtLeast(1, null))),
+      ]);
+      invalidReader.releaseLock();
+      return { read: await asyncResult(() => run("read")), readAtLeast: await asyncResult(() => run("readAtLeast")), invalid };
+    }),
+    pipeThroughError: await probe(async () => {
+      const error = new Error("read");
+      const source = new ReadableStream({ start(controller) { controller.error(error); } });
+      const transform = new TransformStream();
+      const readable = source.pipeThrough(transform);
+      const result = await readable.getReader().read().catch(errorResult);
+      return { result, writable: await transform.writable.getWriter().closed.catch(errorResult) };
+    }),
+    transformCancel: await probe(async () => {
+      const stream = new TransformStream({ cancel(reason) { return reason; } });
+      const writer = stream.writable.getWriter();
+      const closed = writer.closed.catch(errorResult);
+      await stream.readable.cancel("cancelled");
+      return { closed: await closed, writable: stream.writable.locked };
+    }),
+    eventGetters: await probe(async () => {
+      const event = new Event("test", { bubbles: true, cancelable: true, composed: true });
+      const before = {
+        type: event.type, target: event.target, currentTarget: event.currentTarget,
+        srcElement: event.srcElement, eventPhase: event.eventPhase, bubbles: event.bubbles,
+        cancelable: event.cancelable, defaultPrevented: event.defaultPrevented,
+        composed: event.composed, isTrusted: event.isTrusted,
+        cancelBubble: event.cancelBubble, returnValue: event.returnValue,
+        path: event.composedPath(),
+      };
+      event.cancelBubble = true;
+      event.preventDefault();
+      return {
+        before,
+        after: {
+          cancelBubble: event.cancelBubble, defaultPrevented: event.defaultPrevented,
+          returnValue: event.returnValue,
+        },
+        constants: [
+          Event.NONE, Event.CAPTURING_PHASE, Event.AT_TARGET, Event.BUBBLING_PHASE,
+          member(Event.prototype, "NONE"), member(Event.prototype, "CAPTURING_PHASE"),
+        ],
+      };
+    }),
+    listenerMutation: await probe(async () => {
+      const target = new EventTarget();
+      const calls: unknown[] = [];
+      const added = () => calls.push("added");
+      const first = () => {
+        calls.push("first");
+        target.addEventListener("change", added);
+        target.removeEventListener("change", second);
+      };
+      const second = () => calls.push("second");
+      target.addEventListener("change", first);
+      target.addEventListener("change", second);
+      target.dispatchEvent(new Event("change"));
+      target.dispatchEvent(new Event("change"));
+      return calls;
+    }),
+    eventDescriptors: await probe(async () => {
+      const descriptor = (name: string) => {
+        const value = Object.getOwnPropertyDescriptor(Event.prototype, name);
+        return { get: typeof value?.get, set: typeof value?.set, enumerable: value?.enumerable };
+      };
+      return {
+        type: descriptor("type"), target: descriptor("target"), currentTarget: descriptor("currentTarget"),
+        cancelBubble: descriptor("cancelBubble"), returnValue: descriptor("returnValue"),
+        preventDefault: descriptor("preventDefault"),
+        listenerMethods: Object.fromEntries(["addEventListener", "removeEventListener", "dispatchEvent"].map(name => {
+          const value = Object.getOwnPropertyDescriptor(EventTarget.prototype, name);
+          return [name, { value: typeof value?.value, enumerable: value?.enumerable }];
+        })),
+        constants: Object.fromEntries(["NONE", "CAPTURING_PHASE", "AT_TARGET", "BUBBLING_PHASE"].map(name => [
+          name, Object.getOwnPropertyDescriptor(Event.prototype, name),
+        ])),
+      };
+    }),
+  };
+  output.messaging = await asyncResult(async () => {
+    const channel = new MessageChannel();
+    const received: unknown[] = [];
+    channel.port2.onmessage = (event: MessageEvent) => received.push(event.data.value);
+    channel.port1.postMessage({ value: 42 });
+    await Promise.resolve();
+    return received;
+  });
+  output.globalScopeEvents = await asyncResult(async () => {
+    const calls: unknown[] = [];
+    function record(this: unknown, event: Event) {
+      calls.push([event.type, member(event, "message") ?? null, member(member(event, "error"), "message") ?? null, event.cancelable, event.target === globalThis, this === globalThis]);
+      event.preventDefault();
+    }
+    const types = ["error", "unhandledrejection", "custom"];
+    for (const type of types) addEventListener(type, record);
+    const dispatched = [dispatchEvent(new Event("custom")), globalThis.dispatchEvent(new Event("custom", { cancelable: true }))];
+    reportError(new Error("reported"));
+    reportError("text");
+    queueMicrotask(() => { throw new Error("microtask"); });
+    await new Promise(resolve => setTimeout(resolve));
+    for (const type of types) removeEventListener(type, record);
+    return {
+      calls, dispatched, afterRemoval: dispatchEvent(new Event("custom")),
+      foreignReceivers: [EventTarget.prototype.addEventListener, EventTarget.prototype.removeEventListener, EventTarget.prototype.dispatchEvent]
+        .map(method => detailedResult(() => Reflect.apply(method, {}, ["custom", record]))),
+    };
+  });
+  const tasks: unknown[] = [];
+  waitUntil(Promise.resolve().then(() => tasks.push("imported")));
+  ctx.waitUntil(Promise.resolve().then(() => tasks.push("context")));
+  await Promise.resolve();
+  output.tasks = tasks;
+  const headers = new Headers([["X-Test", "one"], ["x-test", "two"]]);
+  const request = new Request("https://example.test/path", { method: "post", body: "payload" });
+  output.web = {
+    headers: [...headers], header: headers.get("x-test"),
+    method: request.method, text: await request.text(),
+    url: new URL("/next", request.url).href,
+  };
+  const chunks = () => new ReadableStream({ start(controller) {
+    controller.enqueue(new Uint8Array([0xe2]));
+    controller.enqueue(new Uint8Array([0x82, 0xac, 0xff]));
+    controller.close();
+  } });
+  const response = new Response(chunks(), { status: 201, headers });
+  output.bodies = {
+    status: response.status,
+    text: await response.text(),
+    bytes: [...new Uint8Array(await new Response(chunks()).arrayBuffer())],
+    requestBytes: [...new Uint8Array(await new Request("https://example.test", { method: "POST", body: new Uint8Array([0, 255, 1, 0]).subarray(1, 3) }).arrayBuffer())],
+    responseBytes: [...new Uint8Array(await new Response(new DataView(new Uint8Array([0, 255, 1, 0]).buffer, 1, 2)).arrayBuffer())],
+  };
+
+  // Fetch/URL contract probes.
+  output.fetchUrlContracts = {
+    statusText: Array.from({ length: 400 }, (_, index) => new Response(null, { status: index + 200 }).statusText),
+    responseOptions: {
+      getterCounts: ["status", "statusText", "encodeBody"].map(name => result(() => {
+        let reads = 0;
+        const init = { get [name]() { if (++reads > 1) throw new Error("read twice"); return { status: 201, statusText: "Custom", encodeBody: "manual" }[name]; } };
+        const response = new Response(null, init);
+        return { reads, status: response.status, statusText: response.statusText };
+      })),
+      errorStatusText: [Response.error().statusText, Response.error().clone().statusText],
+      responseAsBody: await asyncResult(async () => {
+        const original = new Response("body", { status: 201, headers: { "x-test": "one" } });
+        // @ts-expect-error A Response is not a body.
+        const copy = new Response(original);
+        return { status: copy.status, text: await copy.text(), header: copy.headers.get("x-test") };
+      }),
+      nullBodyStatuses: [204, 205, 304].map(status => result(() => new Response("body", { status }))),
+      // @ts-expect-error Some of the values are not encodings.
+      encodeBody: [undefined, "automatic", "manual", "invalid", null, 1].map(encodeBody => result(() => { new Response("body", { encodeBody }); return true; })),
+      // @ts-expect-error A null status text converts to a string.
+      explicitStatusText: [undefined, "", "Custom", null, "bad\ntext"].map(statusText => result(() => new Response(null, { status: 201, statusText }).statusText)),
+    },
+    bodyState: await asyncResult(async () => {
+      const response = new Response("body");
+      const initial = { body: response.body !== null, bodyUsed: response.bodyUsed, locked: present(response.body).locked };
+      const reader = present(response.body).getReader();
+      const locked = { bodyUsed: response.bodyUsed, locked: present(response.body).locked };
+      const first = await reader.read();
+      reader.releaseLock();
+      return {
+        initial, locked, first: [...first.value], afterRead: { bodyUsed: response.bodyUsed, locked: present(response.body).locked },
+        cloneAfterRead: await asyncResult(async () => {
+          const clone = response.clone();
+          return { bodyUsed: clone.bodyUsed, text: await clone.text() };
+        }),
+        reuse: await asyncResult(() => response.text()),
+      };
+    }),
+    bodyCancel: await asyncResult(async () => {
+      const response = new Response("body");
+      await present(response.body).cancel();
+      return { bodyUsed: response.bodyUsed, locked: present(response.body).locked };
+    }),
+    streamClone: await asyncResult(async () => {
+      const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
+      const response = new Response(stream);
+      const clone = response.clone();
+      const request = new Request("https://example.test", { method: "POST", body: new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([3])); controller.close(); } }) });
+      const requestClone = request.clone();
+      return {
+        original: [...new Uint8Array(await response.arrayBuffer())],
+        clone: [...new Uint8Array(await clone.arrayBuffer())],
+        requestOriginalUsed: request.bodyUsed,
+        requestCloneBody: requestClone.body !== null,
+      };
+    }),
+    repeatedBody: await asyncResult(async () => {
+      const response = new Response("body");
+      return { first: await response.text(), second: await response.text(), bodyUsed: response.bodyUsed };
+    }),
+    requestState: await asyncResult(async () => {
+      const request = new Request("https://example.test", { method: "POST", body: "body" });
+      const copy = await asyncResult(() => new Request(request));
+      const original = await asyncResult(() => request.text());
+      const copyText = copy instanceof Request ? await asyncResult(() => copy.text()) : null;
+      return { copy: copy instanceof Request, original, copyText, usedCopy: copy instanceof Request && copy.bodyUsed, usedOriginal: request.bodyUsed };
+    }),
+    nullBody: await asyncResult(async () => {
+      const response = new Response();
+      return { body: response.body, used: response.bodyUsed, text: await response.text(), usedAfter: response.bodyUsed };
+    }),
+    bodyInit: {
+      urlSearchParams: new Request("https://example.test", { method: "POST", body: new URLSearchParams([["a", "b c"]]) }).headers.get("content-type"),
+      blob: new Request("https://example.test", { method: "POST", body: new Blob(["x"], { type: "text/custom" }) }).headers.get("content-type"),
+      formData: new Request("https://example.test", { method: "POST", body: new FormData() }).headers.get("content-type")?.startsWith("multipart/form-data; boundary="),
+    },
+    staticJsonUndefined: await asyncResult(async () => { const response = Response.json(undefined); return await response.text(); }),
+    headers: {
+      iterable: [...new Headers(new Map([["X-Test", "one"], ["x-test", "two"]]))],
+      invalidName: result(() => new Headers([["bad name", "value"]])),
+      invalidValue: result(() => new Headers([["x-test", "bad\nvalue"]])),
+      setCookie: (() => { const headers = new Headers([["set-cookie", "a=1"], ["Set-Cookie", "b=2"]]); return { get: headers.get("set-cookie"), all: headers.getSetCookie(), entries: [...headers] }; })(),
+    },
+    url: result(() => {
+      const params = new URLSearchParams([["space key", "!*'()~"], ["surrogate", "\ud800"]]);
+      const url = new URL("https://example.test/path?x=1&x=2");
+      url.searchParams.append("q", "a b");
+      const appended = { search: url.search, href: url.href, size: url.searchParams.size };
+      url.search = "?";
+      return {
+        encoded: params.toString(),
+        percentLiteral: new URLSearchParams([["percent", "%20"]]).toString(),
+        invalidPercent: [...new URLSearchParams("a=%")],
+        appended,
+        replaced: { search: url.search, values: [...url.searchParams], href: url.href },
+        static: [URL.canParse("https://example.test"), URL.canParse("relative"), URL.parse("relative"), typeof URL.createObjectURL, typeof URL.revokeObjectURL],
+        constructorLength: URL.length,
+        // @ts-expect-error The object is not a Blob.
+        staticErrors: [result(() => URL.createObjectURL(new Blob(["x"]))), result(() => URL.createObjectURL({ size: 1 })), result(() => URL.revokeObjectURL("blob:x"))],
+      };
+    }),
+    urlPattern: result(() => {
+      const pattern = new URLPattern({ protocol: "https", hostname: "*.example.test", pathname: "/users/:id", search: "q=*" });
+      const match = pattern.exec("https://api.example.test/users/42?q=ok");
+      const regexp = new URLPattern({ pathname: "/(\\d+)" });
+      const regexpMatch = regexp.exec("https://example.test/42");
+      const lookahead = new URLPattern({ pathname: "/((?!admin)[a-z]+)/:id" });
+      const protocol = new URLPattern({ protocol: "(https?)", pathname: "/a b" });
+      const ignoreCase = new URLPattern({ pathname: "/Users/:id" }, { ignoreCase: true });
+      const constructorString = new URLPattern("(https?)://example.test/:id");
+      return { test: pattern.test("https://api.example.test/users/42?q=ok"), groups: match && { hostname: match.hostname.groups, id: match.pathname.groups.id, search: match.search.groups }, parts: match && { inputs: match.inputs, protocol: match.protocol, hostname: match.hostname, pathname: match.pathname, search: match.search, hash: match.hash }, regexp: { pathname: regexp.pathname, hasRegExpGroups: regexp.hasRegExpGroups, groups: regexpMatch?.pathname.groups },
+        lookahead: { users: lookahead.exec("https://example.test/users/7")?.pathname.groups, admin: lookahead.test("https://example.test/admin/7") },
+        protocol: { pathname: protocol.pathname, groups: protocol.exec("https://example.test/a%20b")?.protocol.groups, other: protocol.test("ftp://example.test/a%20b") },
+        ignoreCase: ignoreCase.exec("https://example.test/users/7")?.pathname.groups,
+        constructorString: { protocol: constructorString.protocol, pathname: constructorString.pathname, groups: constructorString.exec("http://example.test/9")?.protocol.groups, other: constructorString.test("ftp://example.test/9") },
+        lookaheadProtocol: new URLPattern("((?!ftp)[a-z]+)://example.test").pathname,
+        ecmaScriptOnly: result(() => new URLPattern({ pathname: "/(\\Aa)" }).pathname),
+        constructorBase: new URLPattern("/books/:id", "https://example.test").exec("https://example.test/books/1")?.pathname.groups,
+        initWithBase: result(() => new URLPattern({ pathname: "/x" }, "https://example.test")),
+        execWithBase: new URLPattern({ pathname: "/books/:id" }).exec("/books/1", "https://example.test")?.pathname.groups,
+        reentrant: (() => {
+          const original = Reflect.apply;
+          try {
+            // Assigned with Object.assign, since TypeScript cannot check a
+            // replacement against Reflect.apply's generic overload.
+            Object.assign(Reflect, { apply: function (target: Function, thisArgument: unknown, argumentsList: ArrayLike<unknown>) { new URLPattern({ pathname: "/(r)" }); return original(target, thisArgument, argumentsList); } });
+            return new URLPattern({ protocol: "(https?)", pathname: "/a b" }).pathname;
+          } finally { Reflect.apply = original; }
+        })(),
+        invalid: result(() => new URLPattern({ pathname: "/(()" })) };
+    }),
+    errorsAndEdges: {
+      relativeUrl: [result(() => new URL("relative")), result(() => new URL("/relative"))],
+      paramsIterable: result(() => [...new URLSearchParams([new Set(["a", "b"])])]),
+      // @ts-expect-error The values are not strings, records or pairs.
+      paramsPrimitive: [new URLSearchParams(1).toString(), new URLSearchParams(true).toString(), result(() => new URLSearchParams(Symbol()).toString())],
+      fileUrls: [result(() => new URL("file:///tmp/a").href), result(() => new URL("file:/tmp/a").href), result(() => new URL("file:c:/a").href), result(() => new URL("file://host/share").origin)],
+      headerWhitespace: result(() => new Headers([["x-test", "  one\t two  "]]).get("x-test")),
+      status: [result(() => new Response(null, { status: 0 })), result(() => new Response(null, { status: 1000 })), result(() => Response.redirect("https://example.test", 304))],
+      // @ts-expect-error A null status converts to 0.
+      statusConversions: [result(() => new Response(null, { status: 302.5 }).status), result(() => new Response(null, { status: null }).status), result(() => Response.redirect("https://example.test", 302.5).status)],
+      blobSlice: result(() => { const blob = new Blob(["abcd"], { type: "TEXT/PLAIN" }).slice(3, 1, "TEXT/CUSTOM"); return { size: blob.size, type: blob.type }; }),
+      // @ts-expect-error The type is null, and the File has no bits or name.
+      blobOptions: [new Blob([], { type: null }).type, result(() => new File())],
+      // @ts-expect-error The options are null.
+      fileOptions: [new File([], "x", { type: null, lastModified: null }).type, new File([], "x", { lastModified: null }).lastModified],
+      formSet: (() => { const form = new FormData(); form.append("a", "one"); form.append("b", "two"); form.append("a", "three"); form.set("a", "four"); return [...form]; })(),
+      responseContentTypes: [
+        new Response("text").headers.get("content-type"),
+        new Response(new URLSearchParams("a=b")).headers.get("content-type"),
+        new Response(new Blob(["x"], { type: "TEXT/X" })).headers.get("content-type"),
+      ],
+      requestDefaults: (() => { const request = new Request("https://example.test"); return { method: request.method, body: request.body, duplex: member(request, "duplex"), redirect: request.redirect, referrer: member(request, "referrer") }; })(),
+      requestProperties: (() => { const request = new Request("https://example.test", { method: "POST", body: "body" }); return { cache: request.cache, credentials: member(request, "credentials"), destination: member(request, "destination"), integrity: request.integrity, keepalive: request.keepalive, mode: member(request, "mode"), referrer: member(request, "referrer"), referrerPolicy: member(request, "referrerPolicy"), duplex: member(request, "duplex") }; })(),
+      requestValidation: {
+        // @ts-expect-error The init is null.
+        nullInit: result(() => new Request("https://example.test", null).body),
+        redirect: [result(() => new Request("https://example.test", { redirect: "FOLLOW" }).redirect), result(() => new Request("https://example.test", { redirect: "invalid" }))],
+        // @ts-expect-error The signal is not an AbortSignal.
+        signal: [result(() => new Request("https://example.test", { signal: {} })), (() => { const first = new Request("https://example.test"); const second = new Request("https://example.test"); return { distinct: first.signal !== second.signal, aborted: first.signal.aborted }; })()],
+        invalidCopy: (() => { const source = new Request("https://example.test", { method: "POST", body: "body" }); const outcome = result(() => new Request(source, { redirect: "invalid" })); return { outcome, used: source.bodyUsed }; })(),
+        // @ts-expect-error The members are null.
+        nullMembers: [result(() => new Request("https://example.test", { method: null })), result(() => new Request("https://example.test", { redirect: null })), result(() => new Request("https://example.test", { integrity: null }))],
+      },
+      responseValidation: { error: (() => { const response = Response.error(); const clone = response.clone(); return { status: response.status, ok: response.ok, type: response.type, clone: [clone.status, clone.ok, clone.type] }; })(), statusText: result(() => new Response(null, { statusText: "x\t" })), webSocket: (() => { const client = new WebSocketPair()[0]; return { accepted: result(() => { const response = new Response(null, { status: 101, webSocket: client }); return { status: response.status, ok: response.ok, socket: response.webSocket === client }; }), missingSocket: result(() => new Response(null, { status: 101 })) }; })() },
+      requestSurface: (() => { const request = new Request("https://example.test"); return { own: Object.keys(request), prototype: Object.getOwnPropertyNames(Request.prototype).sort(), signal: typeof request.signal, cf: request.cf }; })(),
+      responseSurface: (() => { const response = new Response("body"); return { own: Object.keys(response), prototype: Object.getOwnPropertyNames(Response.prototype).sort(), url: response.url, type: response.type, redirected: response.redirected, webSocket: response.webSocket }; })(),
+      blobSurface: (() => { const blob = new Blob(["body"]); return { own: Object.keys(blob), prototype: Object.getOwnPropertyNames(Blob.prototype).sort(), filePrototype: Object.getOwnPropertyNames(File.prototype).sort(), formPrototype: Object.getOwnPropertyNames(FormData.prototype).sort(), headersPrototype: Object.getOwnPropertyNames(Headers.prototype).sort() }; })(),
+      urlSurface: { url: Object.getOwnPropertyNames(URL.prototype).sort(), params: Object.getOwnPropertyNames(URLSearchParams.prototype).sort(), pattern: Object.getOwnPropertyNames(URLPattern.prototype).sort() },
+    },
+    formDataEdges: {
+      malformedUrlEncoded: await asyncResult(async () => {
+        const values: unknown[] = [];
+        for (const body of ["a=%", "a=%GG", "a=%E2%82", "%GG=x"]) {
+          const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "application/x-www-form-urlencoded" } });
+          values.push(await asyncResult(async () => [...await request.formData()]));
+        }
+        return values;
+      }),
+      emptyUrlEncoded: await asyncResult(async () => {
+        const request = new Request("https://example.test", { method: "POST", body: "", headers: { "content-type": "application/x-www-form-urlencoded" } });
+        return [...await request.formData()];
+      }),
+      quotedMultipart: await asyncResult(async () => {
+        const body = new TextEncoder().encode("--b\r\nContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue\r\n--b--\r\n");
+        const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": 'multipart/form-data; boundary="b"' } });
+        return [...await request.formData()];
+      }),
+      // Each body uses the boundary workerd reads from the parameters.
+      boundaryParameters: await asyncResult(async () => {
+        const values: unknown[] = [];
+        for (const [parameters, boundary] of [
+          ['boundary="abc', "abc"],
+          ['boundary="abc\\"', 'abc"'],
+          ['boundary="abc\\', "abc\\"],
+          ['boundary="a\\b\\\\c"', "ab\\c"],
+          ['boundary="ab"c', "ab"],
+          ['boundary="a;b"', "a;b"],
+          ['boundary= "ab"', ' "ab"'],
+          ['boundary ="ab"', "ab"],
+          ["BOUNDARY=ab cd ", "ab cd"],
+          ['boundary=""', ""],
+          ['x="a;boundary=ab";boundary=cd', "cd"],
+          ["boundary=;boundary=cd", "cd"],
+          ["boundary=ab;boundary=cd", "ab"],
+          ['boundary="' + "\\!".repeat(50000), "!".repeat(50000)],
+          ["boundary=a" + " ".repeat(50000) + "b", "a" + " ".repeat(50000) + "b"],
+        ]) values.push(await multipartEntries(onePart(boundary, 'form-data; name="field"'), parameters));
+        return values;
+      }),
+      // workerd reads quoted parameters until one does not match.
+      dispositions: await asyncResult(async () => {
+        const values: unknown[] = [];
+        for (const disposition of [
+          'form-data; name="field"   x',
+          'form-data; name="field"x',
+          "form-data; name=field",
+          'form-data;name="field"',
+          'FORM-DATA; name="field"',
+          'form-data; NAME="field"',
+          'form-data; name="a\\"b\\\\c"',
+          'form-data name="field"',
+          'attachment; name="field"',
+          'form-data; x; name="field"',
+          'form-data; name="field"; filename="a.txt"; x',
+          'form-data; filename="a.txt"; name="field"',
+          'form-data; name="field"; name="other"',
+          'form-data; name=""',
+          "form-data",
+          'form-data; filename=a.txt; name="field"',
+          ' form-data ; name = "field" ',
+        ]) values.push(await multipartEntries(onePart("b", disposition)));
+        return values;
+      }),
+      // workerd skips a preamble, accepts LF line breaks and reads part
+      // headers as kj's HttpHeaders does.
+      bodies: await asyncResult(async () => {
+        const values: unknown[] = [];
+        const field = 'Content-Disposition: form-data; name="f"';
+        for (const body of [
+          `--b\n${field}\n\nv\n--b--\n`,
+          `--b\r\n${field}\r\n\r\nv\n--b--`,
+          `--b\r\n${field}\n\nv\r\n--b--`,
+          `--b\r\n${field}\r\n\nv\r\n--b--`,
+          `--b\r\n${field}\n\r\nv\r\n--b--`,
+          `preamble\r\n--b\r\n${field}\r\n\r\nv\r\n--b--`,
+          `xx--b\r\n${field}\r\n\r\nv\r\n--b--epilogue`,
+          `--b\r\n${field}\r\n\r\nx--by\r\n--b--`,
+          `--b\r\n${field}\r\n\r\nv\r\n--b\r\n`,
+          `--b\r\n${field}\r\n\r\nv\r\n--b`,
+          `--b\r\n${field}\r\n\r\nv\r\n--bx`,
+          "--b--",
+          "--b",
+          "no boundary",
+          `--b\n${field.replace('"f"', '"a"')}\n\n1\n--b\r\n${field.replace('"f"', '"b"')}\r\n\r\n2\r\n--b--`,
+          '--b\r\nContent-Disposition: form-data;\r\n name="f"\r\n\r\nv\r\n--b--',
+          `--b\r\n${field}\r\n\r\nv\r\r\n--b--`,
+          `--b\r\n${field}\r\n\r\n\r\n--b--`,
+          "--b\r\n\r\nv\r\n--b--",
+          `--b\r\n${field}\r\nContent-Disposition: form-data; name="g"\r\n\r\nv\r\n--b--`,
+          '--b\r\nContent-Disposition : form-data; name="f"\r\n\r\nv\r\n--b--',
+          `--b\r\nX-Nul: a\0b\r\n${field}\r\n\r\nv\r\n--b--`,
+          `--b\r\nX-Cr: 1\r${field}\r\n\r\nv\r\n--b--`,
+          `--b\r\n${field}; filename="a.txt"\r\ncontent-type:\tText/Plain  \r\n\r\nv\r\n--b--`,
+          `--b\r\n${field}; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-Type: text/html\r\n\r\nv\r\n--b--`,
+        ]) values.push(await multipartEntries(body));
+        return values;
+      }),
+      longWhitespace: await asyncResult(async () => {
+        const spaces = " ".repeat(50000);
+        const body = `--b\r\nContent-Disposition: form-data; name="field"\r\nX-Padding: a${spaces}b\r\n\r\nvalue\r\n--b--\r\n`;
+        const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; boundary=b" } });
+        const response = new Response("", { headers: { "content-type": `text/plain${spaces}x` } });
+        return {
+          header: new Headers({ name: `a${spaces}b` }).get("name")?.length,
+          form: await asyncResult(async () => [...await request.formData()]),
+          type: (await response.blob()).type,
+        };
+      }),
+      missingBoundary: await asyncResult(async () => {
+        const request = new Request("https://example.test", { method: "POST", body: "body", headers: { "content-type": "multipart/form-data" } });
+        return [...await request.formData()];
+      }),
+      byteOrderMarkMultipart: await asyncResult(async () => {
+        const body = "--b\r\n\ufeffContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue\r\n--b--\r\n";
+        const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; boundary=b" } });
+        return [...await request.formData()];
+      }),
+    },
+  };
+  const nodeAssert = process.getBuiltinModule("node:assert");
+  const nodeAssertStrict = process.getBuiltinModule("node:assert/strict");
+  const nodeBuffer = process.getBuiltinModule("node:buffer");
+  const nodePath = process.getBuiltinModule("node:path");
+  const nodeUrl = process.getBuiltinModule("node:url");
+  const nodeQuerystring = process.getBuiltinModule("node:querystring");
+  const nodeUtil = process.getBuiltinModule("node:util");
+  const nodeModule = process.getBuiltinModule("node:module");
+  const nodeTimers = process.getBuiltinModule("node:timers");
+  const nodeTimersPromises = process.getBuiltinModule("node:timers/promises");
+  const nodeOs = process.getBuiltinModule("node:os");
+  const nodePerfHooks = process.getBuiltinModule("node:perf_hooks");
+  const nodeDiagnostics = process.getBuiltinModule("node:diagnostics_channel");
+  const nodeAsyncHooks = process.getBuiltinModule("node:async_hooks");
+  const nodeStringDecoder = process.getBuiltinModule("node:string_decoder");
+  const nodeConsole = process.getBuiltinModule("node:console");
+  const nodeZlib = process.getBuiltinModule("node:zlib");
+  const nodeNet = process.getBuiltinModule("node:net");
+  const nodeTls = process.getBuiltinModule("node:tls");
+  const nodeTest = process.getBuiltinModule("node:test");
+  output.nodeCompat = {
+    assert: {
+      strictAlias: nodeAssert === nodeAssertStrict,
+      equal: result(() => { nodeAssert.equal(1, "1"); return "ok"; }),
+      deepMap: result(() => { nodeAssert.deepEqual(new Map([[{ a: 1 }, 2]]), new Map([[{ a: 1 }, 2]])); return "ok"; }),
+      // @ts-expect-error The message is not a string or Error.
+      fail: result(() => nodeAssert.fail(["why"])),
+      error: result(() => { throw new nodeAssert.AssertionError({ actual: 1, expected: 2, operator: "strictEqual", message: "custom" }); }),
+    },
+    deepEquality: (() => {
+      const loop = (value: object) => Object.assign(value, { self: value });
+      const outer = { a: 1 };
+      const tagged = (value: object) => Object.assign(value, { [Symbol.toStringTag]: "Tagged" });
+      const symbol = Symbol("key");
+      const pairs = {
+        numberString: [1, "1"], zero: [0, -0], nan: [NaN, NaN], prototype: [Object.create(null), {}], holes: [[1, , 3], [1, undefined, 3]],
+        arrayProperty: [Object.assign([1], { extra: 1 }), [1]], symbolKeys: [{ [symbol]: 1 }, { [symbol]: 2 }],
+        boxed: [new Number(1), new Number(2)], boxedBoolean: [new Boolean(false), new Boolean(true)], boxedSymbol: [Object(Symbol("a")), Object(Symbol("a"))],
+        boxedPrimitive: [new String("a"), "a"], dateProperty: [Object.assign(new Date(0), { extra: 1 }), new Date(0)], invalidDates: [new Date(NaN), new Date(NaN)],
+        regexpIndex: [Object.assign(/a/g, { lastIndex: 2 }), /a/g], regexpProperty: [Object.assign(/a/g, { extra: 1 }), /a/g],
+        errorProperty: [Object.assign(new Error("m"), { extra: 1 }), new Error("m")], errorCause: [new Error("m", { cause: 1 }), new Error("m", { cause: 2 })],
+        errorMessage: [new Error("a"), new Error("b")], errorKind: [new Error("m"), new TypeError("m")],
+        typed: [new Uint8Array([1, 2]), new Uint8Array([1, 2])], typedDiff: [new Uint8Array([1, 2]), new Uint8Array([1, 3])], typedKind: [new Uint8Array([1]), new Int8Array([1])],
+        floatNaN: [new Float64Array([NaN]), new Float64Array([NaN])], floatZero: [new Float64Array([0]), new Float64Array([-0])],
+        typedProperty: [Object.assign(new Uint8Array([1]), { extra: 1 }), new Uint8Array([1])], typedBuffer: [new Uint8Array([1]), nodeBuffer.Buffer.from([1])],
+        buffers: [new Uint8Array([1, 2]).buffer, new Uint8Array([1, 2]).buffer], buffersDiff: [new Uint8Array([1, 2]).buffer, new Uint8Array([1, 3]).buffer],
+        sharedBuffer: [new SharedArrayBuffer(2), new ArrayBuffer(2)], dataViews: [new DataView(new Uint8Array([1]).buffer), new DataView(new Uint8Array([2]).buffer)],
+        mapProperty: [Object.assign(new Map(), { extra: 1 }), new Map()], mapZero: [new Map([[0, 1]]), new Map([[-0, 1]])], mapLoose: [new Map([[1, "a"]]), new Map([["1", "a"]])],
+        mapKeys: [new Map([[outer, 1], [{ a: 2 }, 1]]), new Map([[{ a: 1 }, 1], [{ a: 1 }, 1]])],
+        mapEntries: [new Map([[{ k: 1 }, "a"], [{ k: 1 }, "b"]]), new Map([[{ k: 1 }, "b"], [{ k: 1 }, "a"]])],
+        setConsumed: [new Set([{ a: 1 }, { a: 1 }]), new Set([{ a: 1 }, { a: 2 }])], setOfSets: [new Set([new Set([1]), new Set([1])]), new Set([new Set([1]), new Set([2])])],
+        setMixed: [new Set([1, { a: 1 }]), new Set([{ a: 1 }, 1])], setLoose: [new Set([1]), new Set(["1"])],
+        circular: [loop({ a: 1 }), loop({ a: 1 })], circularDepth: [loop({ a: 1 }), (() => { const value: { a: number; self?: unknown } = { a: 1 }; value.self = { a: 1, self: value }; return value; })()],
+        tag: [tagged({}), {}], forgedDates: [Object.create(Date.prototype), Object.create(Date.prototype)], forgedDate: [Object.create(Date.prototype), new Date(0)],
+        proxy: [new Proxy({ a: 1 }, {}), { a: 1 }], proxyArray: [new Proxy([1], {}), [1]], functions: [() => 1, () => 1], arguments: [(function (_value: number) { return arguments; })(1), [1]],
+      };
+      return Object.fromEntries(Object.entries(pairs).map(([name, [actual, expected]]) => [name, [
+        nodeUtil.isDeepStrictEqual(actual, expected),
+        result(() => nodeAssert.deepStrictEqual(actual, expected)) ?? true,
+        result(() => nodeAssert.deepEqual(actual, expected)) ?? true,
+        result(() => nodeAssert.notDeepStrictEqual(actual, expected)) ?? true,
+      ]]));
+    })(),
+    partialEquality: Object.fromEntries(Object.entries({
+      prefix: [[1, 2], [1]], longer: [[1], [1, 2]], middle: [[1, 2, 3], [2]], nested: [[1, { a: 1, b: 2 }], [1, { a: 1 }]], missingKey: [{}, { a: undefined }],
+      prototype: [new Error("x"), { message: "x" }], errors: [new Error("x"), new Error("y")], primitives: [1, 1], zero: [0, -0],
+      typed: [new Uint8Array([1, 2]), new Uint8Array([1])], buffers: [new Uint8Array([1, 2]).buffer, new Uint8Array([1]).buffer],
+      mapSubset: [new Map<number, unknown>([[1, { a: 1, b: 2 }], [2, 2]]), new Map([[1, { a: 1 }]])], mapMissing: [new Map([[1, 1]]), new Map([[2, 2]])],
+      setSubset: [new Set([1, 2]), new Set([1])], setObjects: [new Set([{ a: 1, b: 2 }]), new Set([{ a: 1 }])],
+    }).map(([name, [actual, expected]]) => [name, result(() => nodeAssert.partialDeepStrictEqual(actual, expected)) ?? true])),
+    buffer: (() => {
+      const source = new Uint8Array([1, 2]);
+      const shared = nodeBuffer.Buffer.from(source.buffer);
+      shared[0] = 9;
+      const copied = nodeBuffer.Buffer.from(source);
+      copied[0] = 8;
+      const slicedSource = nodeBuffer.Buffer.from([1, 2, 3]);
+      slicedSource.slice(1)[0] = 9;
+      const encoded = nodeBuffer.Buffer.from("deadbeef", "hex");
+      return {
+        constants: nodeBuffer.constants,
+        encodings: [nodeBuffer.Buffer.from("abc", "hex"), nodeBuffer.Buffer.from("aGVsbG8===", "base64")].map(value => [...value]),
+        shared: [source[0], [...shared]],
+        copied: [source[0], [...copied]],
+        slice: [...slicedSource],
+        inspect: encoded.inspect(),
+        json: encoded.toJSON(),
+        static: [nodeBuffer.Buffer.byteLength("€"), nodeBuffer.Buffer.compare(nodeBuffer.Buffer.from([1]), nodeBuffer.Buffer.from([2])), nodeBuffer.Buffer.isEncoding("utf-8"), nodeBuffer.Buffer.of(1, 257)[1]],
+        aliases: [Object.is(nodeBuffer.Blob, Blob), Object.is(nodeBuffer.File, File), nodeBuffer.atob === globalThis.atob, nodeBuffer.btoa === globalThis.btoa],
+        base64Names: [nodeBuffer.atob.name, nodeBuffer.btoa.name],
+        base64: ["aGVsbG8", "aGVsbG8===", "aGVs*bG8=", "a-_b", "aGVsbG8=aGVsbG8=", "=aGVsbG8", "abcde", "YR==", "Zm9véYmFy", "AAAA====AAAA", "%%%"].map(value => [
+          [...nodeBuffer.Buffer.from(value, "base64")], [...nodeBuffer.Buffer.from(value, "base64url")], nodeBuffer.Buffer.byteLength(value, "base64"), detailedResult(() => nodeBuffer.atob(value)),
+        ]),
+        base64Encoded: [[], [0], [0, 1], [255, 254, 253, 252]].map(bytes => [nodeBuffer.Buffer.from(bytes).toString("base64"), nodeBuffer.Buffer.from(bytes).toString("base64url")]),
+        hex: ["0a1B", "0a1", "0a zz", "zz0a", ""].map(value => [...nodeBuffer.Buffer.from(value, "hex")]),
+        largeLatin1: (["latin1", "ascii"] as const).map(encoding => nodeBuffer.Buffer.alloc(70000, 0xe9).toString(encoding).length),
+        decoderStrings: (["hex", "base64", "utf8"] as const).map(encoding => new nodeStringDecoder.StringDecoder(encoding).write("ab")),
+        decoded: [[0x00, 0xd8], [0x41, 0x00, 0x00, 0xd8, 0x42], [0xef, 0xbb, 0xbf, 0x41]].map(bytes => (["utf16le", "utf8"] as const).map(encoding => [...nodeBuffer.Buffer.from(bytes).toString(encoding)].map(text => text.codePointAt(0)))),
+        btoa: ["hello", "\x00\xff", "€"].map(value => detailedResult(() => nodeBuffer.btoa(value))),
+        // @ts-expect-error The input is required.
+        base64Missing: [detailedResult(() => nodeBuffer.atob()), detailedResult(() => nodeBuffer.btoa())],
+        bigWrites: ([[5n, "writeBigInt64LE"], [5, "writeBigInt64LE"], ["5", "writeBigInt64LE"], [2n ** 63n, "writeBigInt64LE"], [-1n, "writeBigUInt64LE"], [2n ** 64n - 1n, "writeBigUInt64BE"]] as const).map(([value, method]) => result(() => {
+          const bytes = nodeBuffer.Buffer.alloc(8);
+          // @ts-expect-error Some of the values are not bigints.
+          bytes[method](value);
+          return [...bytes];
+        })),
+        // @ts-expect-error BigInts are not bytes.
+        bigElements: [new BigInt64Array([1n]), [1n]].map(value => result(() => [...nodeBuffer.Buffer.from(value)])),
+      };
+    })(),
+    path: {
+      identity: [nodePath === nodePath.posix, nodePath.win32 !== nodePath.posix],
+      posix: [nodePath.normalize("//a///b"), nodePath.join("/a", "", "b", "..", "c"), nodePath.resolve("a", "..", "b"), nodePath.dirname("/foo/bar"), nodePath.basename("/foo/bar.txt", ".txt"), nodePath.extname(".index.md"), nodePath.parse("/home/user/dir/file.txt"), nodePath.format({ dir: "/home/user/dir", name: "file", ext: ".txt" })],
+      win32: [nodePath.win32.normalize("C:\\foo\\..\\bar"), nodePath.win32.join("C:\\a", "b", "..", "c"), nodePath.win32.resolve("C:foo"), nodePath.win32.relative("C:\\foo", "D:\\bar")],
+      glob: [result(() => nodePath.matchesGlob("/a/b.txt", "/a/*.txt")), result(() => nodePath.win32.matchesGlob("C:\\a\\b.txt", "C:\\a\\*.txt"))],
+    },
+    url: (() => {
+      const legacy = nodeUrl.parse("https://user:pass@example.com:8080/a%20b?x=1#h", true, true);
+      const file = new nodeUrl.URL("file:///tmp/a");
+      return {
+        identity: [Object.is(nodeUrl.URL, URL), nodeUrl.URLSearchParams === URLSearchParams, !Object.is(nodeUrl.parse, nodeUrl.URL.parse)],
+        legacy: { protocol: legacy.protocol, slashes: legacy.slashes, auth: legacy.auth, host: legacy.host, hostname: legacy.hostname, port: legacy.port, pathname: legacy.pathname, search: legacy.search, query: legacy.query, hash: legacy.hash, path: legacy.path, href: legacy.href },
+        format: nodeUrl.format({ protocol: "https:", host: "example.test", pathname: "/a b", query: { x: "1" } }),
+        resolve: nodeUrl.resolve("https://example.test/a/b", "../c"),
+        file: [nodeUrl.fileURLToPath(file), nodeUrl.pathToFileURL("relative/a").href, nodeUrl.toPathIfFileURL(file), nodeUrl.toPathIfFileURL("file:///tmp/a")],
+        domains: [nodeUrl.domainToASCII("español.com"), nodeUrl.domainToUnicode("xn--espaol-zwa.com")],
+        http: nodeUrl.urlToHttpOptions(new nodeUrl.URL("https://user:pass@example.com:8443/a?x=1#h")),
+      };
+    })(),
+    querystring: (() => {
+      const parsed = nodeQuerystring.parse("a+b=c+d&empty&x=");
+      // @ts-expect-error A nested object is not a query value.
+      return { nullPrototype: Object.getPrototypeOf(parsed) === null, parsed, repeated: nodeQuerystring.parse("foo=bar&abc=xyz&abc=123"), stringified: nodeQuerystring.stringify({ foo: "bar", abc: ["xyz", "123"], empty: "", nil: null, undef: undefined, num: 42, bool: true, obj: { x: 1 } }), escaped: nodeQuerystring.escape("a b&c"), unescaped: nodeQuerystring.unescape("a+b%26c"), buffer: [...nodeQuerystring.unescapeBuffer("a+b%26c")], spaces: [...nodeQuerystring.unescapeBuffer("a+b", true)] };
+    })(),
+    querystringBytes: {
+      bom: nodeQuerystring.unescape("%EF%BB%BFa%ZZ%EF%BB%BFb"),
+      fallback: [...nodeQuerystring.unescape("%ZZ\u20ac\u00e9\ud83d\ude00")].map(character => character.charCodeAt(0)),
+      buffer: [...nodeQuerystring.unescapeBuffer("\u20aca%41\ud83d\ude00+")],
+      bufferIsBuffer: nodeQuerystring.unescapeBuffer("a") instanceof nodeBuffer.Buffer,
+      unescapeSpaces: [nodeQuerystring.unescape("a+b%ZZ", true), nodeQuerystring.unescape("a+b%41", true)],
+      parse: Object.entries(nodeQuerystring.parse("k%ZZ\u00e9=v%ZZ\u20ac+x&e=%41%ZZ\u20ac")),
+    },
+    querystringScanner: (() => {
+      const entries = (callback: () => object) => () => Object.entries(callback());
+      const decoded: unknown[] = [];
+      const throwing = (value: string) => { decoded.push(value); if (value.includes("%")) throw new URIError("bad"); return `<${value}>`; };
+      const decoders: [input: string, decoder: (value: string) => string][] = [
+        ["a=%ZZ&b=%41&c=x+y", throwing], ["%E2%82%AC=%ZZ%41+&k+=v", throwing], ["a=b&c", throwing], ["a=&=b&&c=", throwing], ["a+b=c+d&%41=%42", value => value.toUpperCase()],
+        ["a=%zz+%41", () => { throw new Error("always"); }], ["x=%ZZ%E2%82%AC", () => { throw 1; }],
+      ];
+      const customDecoders = decoders.map(([input, decoder]) => detailedResult(entries(() => nodeQuerystring.parse(input, undefined, undefined, { decodeURIComponent: decoder }))));
+      const parsed = [
+        ["a=1;b=2", ";"], ["a:1&b:2", "&", ":"], ["a==1"], ["=1"], ["&&a=1&&"], ["a=1&a=2&a=3"], ["a=1&b=2&c=3", "&", "=", { maxKeys: 2 }],
+        ...[0, -1, "1", 1.5, NaN].map(maxKeys => ["a=1&b=2", "&", "=", { maxKeys }]),
+        ["a=1&&b=2", "&&"], ["a=1aab=2", "ab"], ["a=1&b=2", ""], ["a=1&b=2", 0], ["a1b", "&", 1], ["a==1&b==2", "&", "=="], ["a=b==c", "&", "=="], ["a=1", [], []],
+        [5], [null], [{ toString: () => "a=1" }], ["a=%E2%82%AC&b=%zz%41&c=%"], ["%2B=%2b"], ["__proto__=1&constructor=2"], ["%41%42=\u20ac%"], ["a=%4+1"], ["a=1+&b=%2"],
+      // @ts-expect-error Each entry is a call's arguments, and some are invalid.
+      ].map(args => detailedResult(entries(() => nodeQuerystring.parse(...args))));
+      const encodeBrackets = (value: string) => `[${value}]`;
+      const stringified = [
+        [{ a: 1, b: "x y", c: [1, 2], d: [], e: null, f: undefined, g: true, h: 1e21, i: NaN, j: Infinity, k: 10n, l: {}, m: -0, n: "" }],
+        [{ a: 1, b: 2 }, ";", ":"], [{ a: 1 }, "", ""], [{ a: [1, 2] }, null, null], ["abc"], [5], [[1, 2]], [{ a: [1, , 2] }], [{ "": ["", ""] }, "&", []],
+        [{ a: 1e21, b: -1e21, c: 1.5 }, "&", "=", { encodeURIComponent: encodeBrackets }], [{ a: [1, null, {}], b: 2n, c: true }, "&", "=", { encodeURIComponent: encodeBrackets }],
+        [{ "\ud800": 1 }], [{ a: "\ud800" }], [{ a: "\ud800b\udc00c" }],
+      // @ts-expect-error Each entry is a call's arguments, and some are invalid.
+      ].map(args => detailedResult(() => nodeQuerystring.stringify(...args)));
+      // @ts-expect-error Some of the values are not strings.
+      const escaped = ["\ud800", "a\udc00", "\ud800\ud800", "\udc00x", "\ud83d\ude00", "!'()*-._~", { toString: () => "x y" }, true].map(value => detailedResult(() => nodeQuerystring.escape(value)));
+      // @ts-expect-error A symbol is not a string.
+      return { customDecoders, decoded, parsed, stringified, escaped, symbol: result(() => nodeQuerystring.escape(Symbol("s"))) };
+    })(),
+    util: {
+      format: nodeUtil.format("%s:%d:%j:%o:%O:%%", "x", 2, { a: 1 }, { a: 1 }, { a: 1 }),
+      inspect: [nodeUtil.inspect({ a: 1, b: "x", c: [true, null] }), nodeUtil.inspect({ a: { b: { c: 1 } } }, { depth: 1 }), nodeUtil.inspect(new Map([["a", 1]]))],
+      predicates: [nodeUtil.isArray([]), nodeUtil.isBuffer(nodeBuffer.Buffer.from([1])), nodeUtil.isDeepStrictEqual({ a: 1 }, { a: 1 }), nodeUtil.types.isArrayBuffer(new ArrayBuffer(0)), nodeUtil.types.isTypedArray(new Uint8Array(0))],
+      usv: nodeUtil.toUSVString("a\ud800b"),
+      usvBom: nodeUtil.toUSVString("\ufeffa\ud800b"),
+      systemErrors: [
+        () => nodeUtil.getSystemErrorName(-2), () => nodeUtil.getSystemErrorMessage(-2), () => nodeUtil.getSystemErrorMap(),
+        () => nodeUtil._errnoException(-2, "open"), () => nodeUtil._exceptionWithHostPort(-111, "connect", "1.2.3.4", 80),
+      ].map((callback: () => unknown) => detailedResult(callback)),
+      mime: (() => { const value = new nodeUtil.MIMEType("text/html; charset=utf-8"); return { essence: value.essence, type: value.type, subtype: value.subtype, params: [...value.params], string: value.toString() }; })(),
+      parseArgs: result(() => nodeUtil.parseArgs()),
+      parseEnv: result(() => nodeUtil.parseEnv("A=1\nB=two\n# comment\nEMPTY=\nQUOTED=\"a b\"")),
+      inspectCustom: (() => {
+        const custom = nodeUtil.inspect.custom;
+        const calls: unknown[] = [];
+        const recorder = { [custom](depth: number, options: InspectOptionsStylized) { calls.push([depth, options.depth, typeof options.stylize, options.showHidden, options.breakLength]); return "R"; } };
+        const prototype = function Thing() {}.prototype;
+        prototype[custom] = () => "instance";
+        const cycle: Record<PropertyKey, unknown> = { [custom]: () => "cycle" };
+        cycle.self = cycle;
+        const describeDepth = { [custom]: (depth: number, options: InspectOptionsStylized) => `d${depth}:${options.depth}` };
+        const depths: [unknown, InspectOptions?][] = [[recorder], [{ a: recorder }], [{ a: { b: recorder } }, { depth: 0 }], [{ a: recorder }, { depth: 0 }], [recorder, { depth: null }], [recorder, { depth: -1 }]];
+        return {
+          empty: [{}, [], new Map(), new Set(), new Uint8Array(0), { a: {} }, [[]]].map(value => nodeUtil.inspect(value)),
+          depths: depths.map(args => nodeUtil.inspect(...args)),
+          calls,
+          results: [() => ({ x: 1 }), () => [1, 2], () => 5, () => undefined, () => null].map(method => nodeUtil.inspect({ [custom]: method })),
+          nestedResult: nodeUtil.inspect({ a: { [custom]: () => ({ x: { y: { z: 1 } } }) } }),
+          skipped: [nodeUtil.inspect(Object.create(prototype)), nodeUtil.inspect({ [custom]: () => "custom" }, { customInspect: false }) === "custom"],
+          cycles: [nodeUtil.inspect({ c: cycle }), nodeUtil.inspect({ x: { [custom]: () => "deep" } }, { depth: -1 })],
+          formats: [nodeUtil.format("%s", describeDepth), nodeUtil.format("%o", describeDepth), nodeUtil.format("%O", describeDepth)],
+        };
+      })(),
+    },
+    module: {
+      aliases: [nodeModule === nodeModule.Module, nodeModule.builtinModules === nodeModule.Module.builtinModules, nodeModule.isBuiltin === nodeModule.Module.isBuiltin, nodeModule.createRequire === nodeModule.Module.createRequire, nodeModule === member(nodeModule, "default")],
+      builtin: [nodeModule.isBuiltin("node:buffer"), nodeModule.isBuiltin("node:not-real")],
+      require: nodeModule.createRequire("/bundle/contracts.ts")("node:buffer") === nodeBuffer,
+      stripTypeScriptTypes: result(() => nodeModule.stripTypeScriptTypes("const value: number = 1;")),
+    },
+    timers: await asyncResult(async () => {
+      const value = await nodeTimersPromises.setTimeout(0, "value");
+      const immediate = await nodeTimersPromises.setImmediate("immediate");
+      const wait = await nodeTimersPromises.scheduler.wait(0);
+      const controller = new AbortController();
+      controller.abort();
+      const aborted = await asyncResult(async () => nodeTimersPromises.setTimeout(0, "never", { signal: controller.signal }));
+      // @ts-expect-error The values are not AbortSignals.
+      const invalidSignals = await Promise.all([5, {}, { aborted: false }].map(signal => asyncResult(async () => nodeTimersPromises.setTimeout(0, "never", { signal }))));
+      return { identity: nodeTimers.promises === nodeTimersPromises, stable: nodeTimers.promises === nodeTimers.promises, types: [typeof nodeTimers.setTimeout, typeof nodeTimers.setImmediate, typeof nodeTimersPromises.setInterval], values: [value, immediate, wait], aborted, invalidSignals };
+    }),
+    os: {
+      values: { EOL: nodeOs.EOL, devNull: nodeOs.devNull, arch: nodeOs.arch(), platform: nodeOs.platform(), type: nodeOs.type(), release: nodeOs.release(), version: nodeOs.version(), machine: nodeOs.machine(), endianness: nodeOs.endianness(), tmpdir: nodeOs.tmpdir(), homedir: nodeOs.homedir(), hostname: nodeOs.hostname(), availableParallelism: nodeOs.availableParallelism(), cpus: nodeOs.cpus(), loadavg: nodeOs.loadavg(), freemem: nodeOs.freemem(), totalmem: nodeOs.totalmem(), uptime: nodeOs.uptime(), networkInterfaces: nodeOs.networkInterfaces(), userInfo: nodeOs.userInfo() },
+      constants: { udpReuse: nodeOs.constants.UV_UDP_REUSEADDR, priority: nodeOs.constants.priority, dlopen: nodeOs.constants.dlopen },
+      priority: [nodeOs.getPriority(), result(() => nodeOs.setPriority(0))],
+    },
+    perfHooks: (() => {
+      nodePerfHooks.performance.clearMarks();
+      nodePerfHooks.performance.clearMeasures();
+      const mark = nodePerfHooks.performance.mark("node-compat", { startTime: 1 });
+      const measure = nodePerfHooks.performance.measure("node-compat-measure", "node-compat", "node-compat");
+      return { identity: [Object.is(nodePerfHooks.performance, performance), nodePerfHooks.PerformanceEntry === PerformanceEntry, Object.is(nodePerfHooks.PerformanceObserver, PerformanceObserver)], entries: [mark.name, mark.entryType, mark.startTime, measure.name, measure.entryType, measure.duration], supported: member(nodePerfHooks.PerformanceObserver, "supportedEntryTypes"), utilization: nodePerfHooks.eventLoopUtilization(), histogram: result(() => nodePerfHooks.createHistogram()) };
+    })(),
+    diagnostics: (() => {
+      const value = nodeDiagnostics.channel("node-compat");
+      const events: unknown[] = [];
+      const listener = (message: unknown, name: string | symbol) => events.push([member(message, "value"), name]);
+      value.subscribe(listener);
+      const subscribed = value.hasSubscribers;
+      value.publish({ value: 1 });
+      value.unsubscribe(listener);
+      const tracing = nodeDiagnostics.tracingChannel("node-compat-trace");
+      return { subscribed, events, unsubscribed: value.hasSubscribers, tracing: Object.getOwnPropertyNames(Object.getPrototypeOf(tracing)).sort(), tracingSubscribers: tracing.hasSubscribers };
+    })(),
+    asyncContext: await asyncResult(async () => {
+      const storage = new nodeAsyncHooks.AsyncLocalStorage();
+      const other = new nodeAsyncHooks.AsyncLocalStorage();
+      const result = await Promise.all(["first", "second"].map(label => storage.run(label, async () => {
+        const values = [storage.getStore()];
+        await Promise.resolve();
+        values.push(storage.getStore());
+        await new Promise<void>(resolve => setTimeout(() => { values.push(storage.getStore()); resolve(); }, 1));
+        await Promise.reject("expected").catch(() => values.push(storage.getStore()));
+        values.push(await other.run("nested", async () => { await 0; return [storage.getStore(), other.getStore()]; }));
+        values.push(await storage.exit(async () => { await 0; return storage.getStore() ?? null; }));
+        values.push(storage.getStore());
+        return values;
+      })));
+      const resource = storage.run("resource", () => new nodeAsyncHooks.AsyncResource("test"));
+      const scope = await storage.run("caller", () => resource.runInAsyncScope(async () => { await 0; return storage.getStore(); }));
+      const { promise: pending, resolve } = Promise.withResolvers<void>();
+      const subscriber = storage.run("subscriber", () => pending.then(() => storage.getStore()));
+      storage.run("resolver", resolve);
+      const receiver = function (this: unknown) { return this === globalThis ? "global" : this === null ? "null" : member(this, "value") ?? typeof this; };
+      const boundReceivers = [undefined, null, { value: "bound" }].map(value => resource.bind(receiver, value).call({ value: "caller" }));
+      const staticBoundReceivers = [undefined, null, { value: "bound" }].map(value => nodeAsyncHooks.AsyncResource.bind(receiver, "bound", value).call({ value: "caller" }));
+      return { result, scope, subscriber: await subscriber, boundReceivers, staticBoundReceivers, outside: storage.getStore() ?? null };
+    }),
+    asyncHooks: (() => {
+      const storage = new nodeAsyncHooks.AsyncLocalStorage({ name: "scope" });
+      const scoped = storage.run({ value: 1 }, () => ({ inside: storage.getStore(), nested: storage.run(2, () => storage.getStore()), afterNested: storage.getStore() }));
+      const resource = new nodeAsyncHooks.AsyncResource("resource");
+      // @ts-expect-error The callbacks are null.
+      const hook = nodeAsyncHooks.createHook(null);
+      return { storage: { name: storage.name, scoped, after: storage.getStore(), enterWith: result(() => storage.enterWith(1)), disable: result(() => storage.disable()) }, resource: { type: member(resource, "type"), asyncId: resource.asyncId(), triggerAsyncId: resource.triggerAsyncId(), scope: resource.runInAsyncScope(() => "ok") }, hook: hook.enable() === hook && hook.disable() === hook, ids: [nodeAsyncHooks.executionAsyncId(), nodeAsyncHooks.triggerAsyncId()], resourceType: typeof nodeAsyncHooks.executionAsyncResource(), providers: typeof nodeAsyncHooks.asyncWrapProviders.PROMISE };
+    })(),
+    stringDecoder: (() => {
+      const decoder = new nodeStringDecoder.StringDecoder("utf8");
+      return { encoding: member(decoder, "encoding"), chunks: [decoder.write(new Uint8Array([0xe2])), decoder.write(new Uint8Array([0x82, 0xac])), decoder.end()], state: [member(decoder, "lastNeed"), member(decoder, "lastTotal"), member(decoder, "lastChar")] };
+    })(),
+    streamEncoding: (() => {
+      const readable = new streams.Readable();
+      readable.setEncoding("utf8");
+      const chunks: unknown[] = [];
+      readable.on("data", value => chunks.push(value));
+      readable.push(new Uint8Array([0xe2]));
+      readable.push(new Uint8Array([0x82, 0xac]));
+      readable.push(null);
+      return chunks;
+    })(),
+    console: {
+      identity: nodeConsole === globalThis.console,
+      methods: ["log", "warn", "error", "time", "timeEnd", "table", "trace"].map(name => typeof member(nodeConsole, name)),
+      // @ts-expect-error The output stream is required.
+      constructor: result(() => new nodeConsole.Console()),
+    },
+    zlib: (() => {
+      const compressed = nodeZlib.gzipSync("hello");
+      const gzipBytes = [...compressed];
+      if (gzipBytes.length > 9) gzipBytes[9] = 0;
+      const brotli = nodeZlib.brotliCompressSync("brotli");
+      const zstd = nodeZlib.zstdCompressSync("zstd");
+      return { roundTrip: nodeZlib.gunzipSync(compressed).toString(), compressed: gzipBytes, brotli: nodeZlib.brotliDecompressSync(brotli).toString(), zstd: nodeZlib.zstdDecompressSync(zstd).toString(), constants: { noFlush: nodeZlib.constants.Z_NO_FLUSH, finish: nodeZlib.constants.Z_FINISH, defaultLevel: nodeZlib.constants.Z_DEFAULT_LEVEL, gzip: nodeZlib.constants.GZIP, deflate: nodeZlib.constants.DEFLATE, raw: nodeZlib.constants.DEFLATERAW, unzip: nodeZlib.constants.UNZIP }, codes: { ok: nodeZlib.codes.Z_OK, streamEnd: nodeZlib.codes.Z_STREAM_END, dataError: nodeZlib.codes.Z_DATA_ERROR }, transforms: [typeof nodeZlib.createGzip, typeof nodeZlib.Gzip], supportedSurface: [typeof nodeZlib.brotliCompressSync, typeof nodeZlib.zstdCompressSync] };
+    })(),
+    net: {
+      functions: [typeof nodeNet.connect, typeof nodeNet.createConnection, typeof nodeNet.createServer],
+      factoryOptions: [nodeNet.connect, nodeNet.createConnection].map(connect => {
+        const socket = connect({ host: "127.0.0.1", port: 0, allowHalfOpen: true, readableHighWaterMark: 123, writableHighWaterMark: 456 });
+        socket.on("error", () => {});
+        const options = [socket.allowHalfOpen, socket.readableHighWaterMark, socket.writableHighWaterMark];
+        socket.destroy();
+        return options;
+      }),
+      // @ts-expect-error Some of the values are not strings.
+      addresses: ["127.0.0.1", "256.1.2.3", "01.2.3.4", "::1", "a:b", "fe80::1%eth0", "::ffff:192.0.2.1", "1:2:3:4:5:6:7:8:9", "::", "", null, 123].map(value => [nodeNet.isIP(value), nodeNet.isIPv4(value), nodeNet.isIPv6(value)]),
+      writable: await asyncResult(async () => {
+        const socket = new nodeNet.Socket({ highWaterMark: 4 });
+        const chunks: unknown[] = [];
+        const events: unknown[] = [];
+        socket._read = () => {};
+        socket._write = (chunk, encoding, callback) => {
+          chunks.push(chunk.toString());
+          setTimeout(callback, 1);
+        };
+        socket._final = callback => callback();
+        socket.on("drain", () => events.push("drain"));
+        const finished = new Promise((resolve, reject) => { socket.on("finish", resolve); socket.on("error", reject); });
+        const writes = [socket.write("abcd"), socket.write("ef")];
+        socket.end();
+        await finished;
+        socket.destroy();
+        return { writes, chunks, events };
+      }),
+      socket: result(() => {
+        const socket = new nodeNet.Socket();
+        return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), destroyed: socket.destroyed };
+      }),
+      socketAddresses: await asyncResult(async () => {
+        const describe = (socket: NetSocket) => [
+          socket.address(), socket._getsockname(), socket._getpeername(),
+          socket.localAddress, socket.localPort, socket.localFamily, socket.remoteAddress, socket.remotePort, socket.remoteFamily,
+        ];
+        const unconnected = new nodeNet.Socket();
+        const states = [describe(unconnected)];
+        for (const host of ["127.0.0.1", "::1", "localhost"]) {
+          const socket = nodeNet.connect({ host, port: 0 });
+          const closed = new Promise(resolve => socket.on("close", resolve));
+          socket.on("error", () => {});
+          states.push(describe(socket));
+          socket.destroy();
+          states.push(describe(socket));
+          await closed;
+          states.push(describe(socket));
+        }
+        return states;
+      }),
+      server: result(() => nodeNet.createServer()),
+      blockList: (() => {
+        const list = new nodeNet.BlockList();
+        const added = [
+          () => list.addAddress("8.8.8.8"), () => list.addRange("10.0.0.1", "10.0.0.10"), () => list.addSubnet("192.168.0.0", 16),
+          () => list.addAddress("::1", "ipv6"), () => list.addRange("fe80::1", "fe80::ff", "ipv6"), () => list.addSubnet("2001:db8::", 32, "ipv6"),
+          () => list.addAddress("1.2.3.4", "ipv6"), () => list.addRange("10.0.0.10", "10.0.0.1"), () => list.addSubnet("1.0.0.0", 33),
+          // @ts-expect-error A number is not an address, and ipv5 is not a type.
+          () => list.addSubnet("1.0.0.0", 1.5), () => list.addAddress("not an ip"), () => list.addAddress(1), () => list.addAddress("1.2.3.4", "ipv5"),
+        ].map(detailedResult);
+        const checks = [
+          ["8.8.8.8"], ["10.0.0.5"], ["10.0.0.11"], ["192.168.4.4"], ["192.169.0.0"], ["1.1.1.1"], ["::1", "ipv6"], ["::1"],
+          ["fe80::80", "ipv6"], ["fe80::100", "ipv6"], ["2001:db8:1::5", "ipv6"], ["::ffff:8.8.8.8", "ipv6"], ["::FFFF:10.0.0.5", "ipv6"],
+          ["::ffff:192.168.1.1", "ipv6"], ["8.8.8.8", "ipv6"], ["garbage"], ["8.8.8.8", "IPv4"], [123],
+        // @ts-expect-error Each entry is a call's arguments, and some are invalid.
+        ].map(args => detailedResult(() => list.check(...args)));
+        const edges = [
+          // @ts-expect-error A prefix is a number.
+          () => list.addRange("10.0.0.1", "200.0.0.1"), () => list.check("::ffff:c0a8:5", "ipv6"), () => list.addSubnet("1.0.0.0", "8"),
+          // @ts-expect-error A number is not an address.
+          () => list.addSubnet("1.0.0.0", 2 ** 31), () => list.addSubnet("::", 129, "ipv6"), () => list.addRange("1.1.1.1", 5),
+          // @ts-expect-error The values are not addresses.
+          () => list.addRange("::2", "::1", "ipv6"), () => list.addRange("::2", "1.1.1.1", "ipv6"), () => list.check(true), () => list.check({}),
+          () => { const other = new nodeNet.BlockList(); other.addRange("::1", "::ffff", "ipv6"); return [other.check("::ff", "ipv6"), other.check("::1:0", "ipv6")]; },
+          () => { const other = new nodeNet.BlockList(); other.addSubnet("0.0.0.0", 0); return [other.check("1.2.3.4"), other.check("::ffff:1.2.3.4", "ipv6"), other.check("::1", "ipv6")]; },
+        ].map(detailedResult);
+        return { added, checks, edges, own: Object.getOwnPropertyNames(list), rules: list.rules, json: result(() => list.toJSON()), isBlockList: result(() => [nodeNet.BlockList.isBlockList(list), nodeNet.BlockList.isBlockList({})]) };
+      })(),
+      blockListJSON: (() => {
+        const load = (data: string | readonly string[]) => () => {
+          const list = new nodeNet.BlockList();
+          return { returned: list.fromJSON(data) === undefined, rules: list.rules };
+        };
+        const source = new nodeNet.BlockList();
+        source.addAddress("1.2.3.4"); source.addRange("10.0.0.1", "10.0.0.9"); source.addSubnet("192.168.0.0", 16);
+        source.addAddress("::1", "ipv6"); source.addRange("fe80::1", "fe80::ff", "ipv6"); source.addSubnet("2001:db8::", 32, "ipv6");
+        const loaded = [
+          source.toJSON(), JSON.stringify(source.toJSON()), [], ["garbage"], ["Address: IPv4 1.2.3.4567"], ["Subnet: IPv4 1.2.3.0/123"], ["Subnet: IPv4 1.2.3.0/33"],
+          ["xx Address: IPv4 5.6.7.8 yy"], ["Address: ipv6 ::1"], ["Address: IPv6 ABCD::1"], ["address: IPv6 ::2"], ["IPv4 Address: IPv6 ::3"], ["Range: IPv4 9.9.9.9-1.1.1.1"],
+          ["Subnet: IPv6 ::/129"], ["Subnet: IPv6 ::/1290"], ["Range: IPv6 ::1-::ff"], ["Address: IPv4 1.2.3.4", "Address: IPv4 1.2.3.4"], [["x"]], ["Address: IPv4 999.1.1.1"],
+          ["Range: IPv6 ::1-1.2.3.4"], "not json", "[1,2]", "{}", "null", "\"Address: IPv4 1.2.3.4\"", {}, null, undefined, 5, { length: 1, 0: "Address: IPv4 1.2.3.4" }, "x".repeat(200),
+        // @ts-expect-error Some of the data are not strings or string arrays.
+        ].map(data => detailedResult(load(data)));
+        // @ts-expect-error The arrays hold values that are not strings.
+        const unreadable = [["Address: IPv4 1.2.3.4", 5], [5], [null], [["IPv4"]]].map(data => result(load(data)));
+        return { loaded, unreadable, method: result(() => [typeof nodeNet.BlockList.prototype.fromJSON, nodeNet.BlockList.prototype.fromJSON.length, Object.getOwnPropertyNames(nodeNet.BlockList.prototype)]) };
+      })(),
+      blockListInspect: (() => {
+        const list = new nodeNet.BlockList();
+        list.addAddress("1.2.3.4");
+        const inspections: [unknown, InspectOptions?][] = [[new nodeNet.BlockList()], [list], [list, { depth: 0 }], [list, { depth: -1 }], [{ a: list }, { depth: 0 }]];
+        return inspections.map(args => nodeUtil.inspect(...args));
+      })(),
+      socketAddress: (() => {
+        const { SocketAddress } = nodeNet;
+        const describe = (callback: () => unknown) => () => {
+          const value = callback();
+          return value instanceof SocketAddress ? { address: value.toJSON() } : { value: value === undefined ? "undefined" : value };
+        };
+        const constructed = [
+          undefined, null, "x", 1, [], () => {}, {}, { family: "IPv6" }, { family: "ipv5" }, { family: 4 }, { family: "" }, { family: null }, { family: { toLowerCase: () => "ipv6" } },
+          { address: 1 }, { address: "::1" }, { address: "::1", family: "ipv6" }, { address: "1.2.3.4", family: "ipv6" }, { address: "01.2.3.4" }, { address: "" },
+          { address: "1.2.3.4", port: "80" }, { port: -1 }, { port: 65536 }, { port: "65536" }, { port: 1.5 }, { port: "abc" }, { port: "" }, { port: null }, { port: true }, { port: NaN },
+          { port: " 80 " }, { port: "0x10" }, { port: 65535 }, { port: 80n }, { flowlabel: -1 }, { flowlabel: 2 ** 32 }, { flowlabel: 2 ** 32 - 1 }, { flowlabel: 1.5 }, { flowlabel: "1" },
+          { flowlabel: null }, { address: "fe80::1%eth0", family: "ipv6" }, { address: "::ffff:1.2.3.4", family: "ipv6" },
+        // @ts-expect-error Some of the options are invalid.
+        ].map(options => detailedResult(describe(() => new SocketAddress(options))));
+        const parsed = [
+          "1.2.3.4", "1.2.3.4:80", "[::1]:8080", "[::1]", "::1", "example.com:80", "1.2.3.4:99999", "1.2.3.4:abc", "", "1.2.3.4:080", "user@1.2.3.4:80", "1.2.3.4/path",
+          "0x7f.1", "1.2.3.4:", "[fe80::1%25eth0]:1", "127.1", "[::ffff:1.2.3.4]:5", "1.2.3.4:443", " 1.2.3.4", "1.2.3.4?x", "[::1]:65535", "%31.2.3.4", undefined, 1, null, {},
+        // @ts-expect-error Some of the inputs are not strings.
+        ].map(input => detailedResult(describe(() => SocketAddress.parse(input))));
+        const address = new SocketAddress({ address: "::1", family: "ipv6", port: 8080, flowlabel: 7 });
+        const shape = {
+          own: Object.getOwnPropertyNames(address), prototype: Object.getOwnPropertyNames(SocketAddress.prototype), statics: Object.getOwnPropertyNames(SocketAddress).sort(),
+          json: JSON.stringify(address), string: String(address), values: [address.address, address.port, address.family, address.flowlabel], length: SocketAddress.length,
+          is: [SocketAddress.isSocketAddress(address), SocketAddress.isSocketAddress({}), SocketAddress.isSocketAddress(address.toJSON())],
+          // @ts-expect-error A class needs new.
+          call: result(() => SocketAddress()),
+          // @ts-expect-error The port is read-only.
+          assign: result(() => { address.port = 1; }),
+          noArguments: new SocketAddress().toJSON(),
+        };
+        const inspected = [
+          nodeUtil.inspect(address), nodeUtil.inspect(new SocketAddress()), nodeUtil.inspect(address, { depth: 0 }), nodeUtil.inspect(address, { depth: null }),
+          nodeUtil.format("%s", address), nodeUtil.format("%o", address), nodeUtil.format("%O", address), nodeUtil.format("%j", address), result(() => nodeUtil.inspect(SocketAddress.prototype).length > 0),
+        ];
+        const list = new nodeNet.BlockList();
+        const ipv4 = new SocketAddress({ address: "10.0.0.1" });
+        const ipv6 = new SocketAddress({ address: "::5", family: "ipv6" });
+        const blockList = [
+          () => list.addAddress(ipv4), () => list.addAddress(ipv6, "ipv4"), () => list.addRange(new SocketAddress({ address: "10.1.0.1" }), new SocketAddress({ address: "10.1.0.9" })),
+          () => list.addRange(ipv4, ipv6), () => list.addRange(ipv6, "::9"), () => list.addRange("::1", ipv6, "ipv6"), () => list.addRange("10.0.0.1", ipv6),
+          // @ts-expect-error ipv5 is not a type.
+          () => list.addSubnet(new SocketAddress({ address: "172.16.0.0" }), 12), () => list.addSubnet(ipv6, 200), () => list.addSubnet(ipv6, 120, "ipv5"), () => list.check(ipv4),
+          () => list.check(ipv6, "ipv4"), () => list.check(new SocketAddress({ address: "172.20.0.1" })), () => list.check(new SocketAddress({ address: "::ffff:10.0.0.1", family: "ipv6" })),
+        ].map(detailedResult);
+        return { constructed, parsed, shape, inspected, blockList, rules: list.rules };
+      })(),
+    },
+    dns: await (async () => {
+      const dns = await import("node:dns");
+      const dnsPromises = await import("node:dns/promises");
+      const codes = (module: object) => ["NOTFOUND", "ADDRCONFIG", "ALL", "V4MAPPED", "EOF", "CANCELLED"].map(name => member(module, name));
+      return {
+        namespace: Object.keys(dns).sort(),
+        promisesNamespace: Object.keys(dnsPromises).sort(),
+        codes: [dns, dns.default, dns.promises, dnsPromises, dnsPromises.default].map(codes),
+      };
+    })(),
+    tls: {
+      functions: [typeof nodeTls.connect, typeof nodeTls.createSecureContext, typeof nodeTls.createServer],
+      context: result(() => ({ prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(nodeTls.createSecureContext())).sort() })),
+      socket: result(() => {
+        const socket = new nodeTls.TLSSocket();
+        return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), encrypted: socket.encrypted };
+      }),
+    },
+    nodeTest: {
+      exports: result(() => Object.keys(nodeTest).sort()),
+      types: result(() => ({
+        mock: typeof nodeTest.mock,
+        tracker: typeof nodeTest.MockTracker,
+        context: typeof nodeTest.MockFunctionContext,
+        fn: typeof nodeTest.mock.fn,
+        method: typeof nodeTest.mock.method,
+        getter: typeof nodeTest.mock.getter,
+        setter: typeof nodeTest.mock.setter,
+        reset: typeof nodeTest.mock.reset,
+        restoreAll: typeof nodeTest.mock.restoreAll,
+      })),
+      trackerSurface: result(() => ({
+        tracker: Object.getOwnPropertyNames(nodeTest.MockTracker.prototype).sort(),
+        mock: Object.getOwnPropertyNames(Object.getPrototypeOf(nodeTest.mock)).sort(),
+        context: Object.getOwnPropertyNames(nodeTest.MockFunctionContext.prototype).sort(),
+      })),
+      fn: result(() => {
+        const tracker = new nodeTest.MockTracker();
+        const seen: unknown[] = [];
+        const fn = tracker.fn(function (...args: unknown[]) {
+          seen.push(args.map(value => typeof value));
+          return args.map(value => typeof value).join(":");
+        });
+        const receiver = { marker: true };
+        const values = [fn.call(receiver, 1, "two"), fn(3)];
+        const calls = fn.mock.calls.map(call => ({
+          properties: Object.getOwnPropertyNames(call).sort(),
+          arguments: call.arguments,
+          thisValue: call.this,
+        }));
+        const copiedCalls = fn.mock.calls;
+        copiedCalls.pop();
+        const throwing = tracker.fn(() => { throw new Error("boom"); });
+        const thrown = result(() => throwing());
+        const thrownCall = throwing.mock.calls[0];
+        function Constructor(this: { value: unknown }, value: unknown) { this.value = value; }
+        const constructor = tracker.fn(Constructor);
+        // Reflect.construct, since TypeScript does not construct plain functions.
+        const instance = Reflect.construct(constructor, [5]);
+        const constructorCall = constructor.mock.calls[0];
+        fn.mock.mockImplementation((...args: unknown[]) => `implementation:${args.join(",")}`);
+        const implementation = fn("a");
+        fn.mock.mockImplementationOnce((...args: unknown[]) => `once:${args.join(",")}`);
+        const once = [fn("b"), fn("c")];
+        fn.mock.resetCalls();
+        const resetCalls = fn.mock.callCount();
+        fn.mock.restore();
+        return {
+          values,
+          seen,
+          calls,
+          surface: Object.getOwnPropertyNames(fn).sort(),
+          copiedCalls: [copiedCalls.length, fn.mock.calls.length],
+          thrown,
+          thrownCall: { error: member(thrownCall.error, "message"), result: thrownCall.result },
+          constructor: { value: instance.value, target: typeof constructorCall.target, targetName: member(constructorCall.target, "name"), thisValue: member(constructorCall.this, "value") },
+          implementation,
+          once,
+          resetCalls,
+          restored: fn("d"),
+        };
+      }),
+      methods: result(() => {
+        const tracker = new nodeTest.MockTracker();
+        const target = {
+          value: 2,
+          method(left: number, right: number) { return this.value + left + right; },
+          get answer() { return this.value; },
+          set answer(value: number) { this.value = value; },
+        };
+        const method = tracker.method(target, "method", (...args: unknown[]) => `method:${args.join(",")}`);
+        const getter = tracker.getter(target, "answer", (...args: unknown[]) => `getter:${args.join(",")}`);
+        const setter = tracker.setter(target, "answer", (...args: unknown[]) => `setter:${args.join(",")}`);
+        target.answer = 9;
+        return {
+          method: target.method(3, 4),
+          getter: target.answer,
+          setterCalls: setter.mock.calls.map(call => call.arguments),
+          methodCalls: method.mock.calls.map(call => call.arguments),
+          getterCalls: getter.mock.calls.map(call => call.arguments),
+        };
+      }),
+      resetRestore: result(() => {
+        const tracker = new nodeTest.MockTracker();
+        const target = { value: 1, method() { return "original"; } };
+        const method = tracker.method(target, "method", () => "mocked");
+        const before = target.method();
+        tracker.reset();
+        const afterReset = { callCount: method.mock.callCount(), value: target.method(), identity: target.method === method };
+        tracker.restoreAll();
+        return { before, afterReset, restored: target.method(), identity: target.method === method };
+      }),
+      contextRestore: result(() => {
+        const tracker = new nodeTest.MockTracker();
+        const target = { method() { return "original"; } };
+        const method = tracker.method(target, "method", () => "mocked");
+        method.mock.mockImplementation(() => "changed");
+        const changed = target.method();
+        method.mock.restore();
+        return { changed, restored: target.method(), identity: target.method === method };
+      }),
+      options: result(() => {
+        const tracker = new nodeTest.MockTracker();
+        const fn = tracker.fn(() => "original", () => "mocked", { times: 2 });
+        const values = [fn(), fn(), fn(), fn()];
+        const once = tracker.fn(() => "original");
+        once.mock.mockImplementationOnce(() => "next", 2);
+        const onceValues = [once(), once(), once(), once()];
+        return { values, onceValues, calls: [fn.mock.callCount(), once.mock.callCount()] };
+      }),
+      validation: {
+        // @ts-expect-error The function is null, and so are the times.
+        fn: [result(() => nodeTest.mock.fn(null)), result(() => nodeTest.mock.fn(() => {}, () => {}, { times: 0 })), result(() => nodeTest.mock.fn(() => {}, { times: null }))],
+        // @ts-expect-error The objects have no such method.
+        method: [result(() => nodeTest.mock.method({}, "missing")), result(() => nodeTest.mock.method({ method: 1 }, "method"))],
+        once: [
+          result(() => { const fn = nodeTest.mock.fn(); fn(); return fn.mock.mockImplementationOnce(() => {}, 0); }),
+          result(() => nodeTest.mock.fn().mock.mockImplementationOnce(() => {}, -1)),
+          // @ts-expect-error The call number is null.
+          result(() => nodeTest.mock.fn().mock.mockImplementationOnce(() => {}, null)),
+          result(() => nodeTest.mock.fn().mock.mockImplementationOnce(() => {}, 1.5)),
+        ],
+        context: result(() => {
+          const context = new nodeTest.MockFunctionContext();
+          return { callCount: context.callCount(), calls: context.calls };
+        }),
+      },
+      global: result(() => {
+        const target = { method() { return "original"; } };
+        const fn = nodeTest.mock.fn(() => "mocked");
+        nodeTest.mock.method(target, "method", () => "method");
+        const before = [fn(), target.method()];
+        nodeTest.mock.restoreAll();
+        const restored = [fn(), target.method()];
+        nodeTest.mock.reset();
+        return { before, restored, identity: target.method.name };
+      }),
+    },
+  };
+  return output;
+}

@@ -1,20 +1,47 @@
-use rquickjs::{Ctx, Value, qjs};
+use rquickjs::{Ctx, FromJs, IntoJs, Value, qjs};
+use tokamak_macros::host_function;
 
 unsafe extern "C" {
     fn JS_GetAsyncContext(ctx: *mut qjs::JSContext) -> qjs::JSValue;
     fn JS_SetAsyncContext(ctx: *mut qjs::JSContext, value: qjs::JSValue);
 }
 
-pub(super) fn get(ctx: Ctx<'_>) -> Value<'_> {
+/// The async context the engine carries across promise jobs: a value the
+/// runtime's TypeScript creates, whose type it declares, and Rust only holds.
+pub(super) struct AsyncContextFrame<'js>(Value<'js>);
+
+impl<'js> FromJs<'js> for AsyncContextFrame<'js> {
+    fn from_js(_: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Self> {
+        Ok(Self(value))
+    }
+}
+
+impl<'js> IntoJs<'js> for AsyncContextFrame<'js> {
+    fn into_js(self, _: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        Ok(self.0)
+    }
+}
+
+impl crate::typescript::JsType for AsyncContextFrame<'_> {
+    fn typescript(_: &mut crate::typescript::Types) -> String {
+        "AsyncContextFrame".to_owned()
+    }
+}
+
+#[host_function]
+pub(super) fn get(ctx: Ctx<'_>) -> Option<AsyncContextFrame<'_>> {
     // The engine returns an owned reference belonging to this context.
     let value = unsafe { JS_GetAsyncContext(ctx.as_raw().as_ptr()) };
-    unsafe { Value::from_raw(ctx, value) }
+    let value = unsafe { Value::from_raw(ctx, value) };
+    (!value.is_undefined()).then_some(AsyncContextFrame(value))
 }
 
 #[allow(clippy::needless_pass_by_value)] // Native function arguments are owned by rquickjs.
-pub(super) fn set(value: Value<'_>) {
+#[host_function]
+pub(super) fn set<'js>(ctx: Ctx<'js>, frame: Option<AsyncContextFrame<'js>>) {
+    let value = frame.map_or_else(|| Value::new_undefined(ctx.clone()), |frame| frame.0);
     // The engine retains its own reference; the argument remains borrowed.
-    unsafe { JS_SetAsyncContext(value.ctx().as_raw().as_ptr(), value.as_raw()) };
+    unsafe { JS_SetAsyncContext(ctx.as_raw().as_ptr(), value.as_raw()) };
 }
 
 #[cfg(test)]

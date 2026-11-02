@@ -4526,6 +4526,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "tokamak-macros",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -4580,11 +4581,22 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokamak",
+ "tokamak-macros",
  "tokio",
  "tokio-rustls",
  "tokio-util",
  "walkdir",
  "win32job",
+]
+
+[[package]]
+name = "tokamak-macros"
+version = "0.1.1"
+dependencies = [
+ "convert_case",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

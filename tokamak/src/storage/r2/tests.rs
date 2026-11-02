@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::multipart::UploadedPart;
 use super::{
-    Body, Checksum, Failure, GetRequest, Object, ObjectMetadata, PutRequest, R2Bucket, Read,
+    Body, Checksum, Failure, GetRequest, ObjectMetadata, PutRequest, R2Bucket, R2Object, Read,
 };
 use crate::storage::{Location, Open};
 
@@ -45,7 +45,7 @@ fn put_request(only_if: &Value) -> TestResult<PutRequest> {
     request(&json!({ "onlyIf": only_if, "metadata": metadata() }))
 }
 
-fn put(bucket: &R2Bucket, key: &str, bytes: &[u8]) -> TestResult<Object> {
+fn put(bucket: &R2Bucket, key: &str, bytes: &[u8]) -> TestResult<R2Object> {
     let body = body(bucket, bytes, None)?;
     bucket
         .put(key, body, &put_request(&Value::Null)?, NOW)?
@@ -148,7 +148,7 @@ fn replaces_an_object_whole_while_it_is_read() -> TestResult {
 fn writes_only_when_the_conditions_hold() -> TestResult {
     let (directory, bucket) = bucket()?;
     let first = put(&bucket, "k", b"one")?;
-    let conditional = |only_if: Value| -> TestResult<Option<Object>> {
+    let conditional = |only_if: Value| -> TestResult<Option<R2Object>> {
         let body = body(&bucket, b"two", None)?;
         Ok(bucket.put("k", body, &put_request(&only_if)?, NOW + 1)?)
     };

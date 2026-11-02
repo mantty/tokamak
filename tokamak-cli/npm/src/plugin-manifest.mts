@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
+import { type PluginManifest, reservedPluginWords } from "./contracts.generated.mjs";
 
 interface ModuleExport {
   module: string;
@@ -21,10 +22,14 @@ export interface PluginDefinition {
   platforms: NativePlatform[];
 }
 
-const nativePlatforms: readonly NativePlatform[] = ["ios", "macos", "android", "windows", "linux"];
+/** A manifest's fields that tok reads, and those only the Vite plugin reads, which it checks. */
+interface Manifest extends PluginManifest {
+  api?: unknown;
+  web?: unknown;
+  operations?: unknown;
+}
 
-const reservedIds = ["tokamak", "android", "ios", "macos", "windows", "name", "identifier", "icon", "version",
-  "module", "build", "project", "platform", "skip", "host", "help", "vite", "session"];
+const nativePlatforms: readonly NativePlatform[] = ["ios", "macos", "android", "windows", "linux"];
 
 /** Installed direct dependencies select the application's plugin services. */
 export function discoverPlugins(root: string): PluginDefinition[] {
@@ -42,14 +47,14 @@ export function discoverPlugins(root: string): PluginDefinition[] {
     const candidate = path.join(directory, "tokamak-plugin.json");
     if (!fs.existsSync(candidate)) continue;
     const manifest = fs.realpathSync(candidate).split(path.sep).join("/");
-    const data = JSON.parse(fs.readFileSync(manifest, "utf8"));
+    const data: Manifest = JSON.parse(fs.readFileSync(manifest, "utf8"));
     // Schema version one supplies only native build metadata.
     if (data.schemaVersion === 1) continue;
     if (data.schemaVersion !== 2) throw new Error(`${manifest}: unsupported plugin schema version ${data.schemaVersion}.`);
     if (typeof data.id !== "string" || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(data.id) || data.id.length > 63) {
       throw new Error(`${manifest}: plugin id must be lowercase words joined by single hyphens.`);
     }
-    const reserved = reservedIds.find(word => data.id === word || data.id.startsWith(`${word}-`));
+    const reserved = reservedPluginWords.find(word => data.id === word || data.id.startsWith(`${word}-`));
     if (reserved) throw new Error(`${manifest}: plugin id must not start with '${reserved}', which Tokamak's options use.`);
     if (data.operations !== undefined) {
       throw new Error(`${manifest}: operations is no longer read; tag a method that only some platforms implement with @platforms in its doc comment.`);
