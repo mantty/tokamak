@@ -19,7 +19,7 @@
     "@tokamakdev/plugin-notifications": "link:../../plugins/notifications",
     "@tokamakdev/plugin-secure-storage": "link:../../plugins/secure-storage",
     "@tokamakdev/tok": "file:../../tokamak-cli/npm",
-    "astro": "6.1.5",
+    "astro": "7.4.7",
     "tailwindcss": "^4.2.2"
   },
   "devDependencies": {
