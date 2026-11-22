@@ -166,12 +166,11 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeHasHandler(
     packaged_dir: JString,
     handler: JString,
 ) -> jboolean {
-    let handled = text(&mut env, &packaged_dir)
-        .and_then(|packaged_dir| Ok((packaged_dir, text(&mut env, &handler)?)))
-        .is_ok_and(|(packaged_dir, handler)| {
-            crate::has_handler(&crate::PackageLayout::new(packaged_dir), &handler)
-        });
-    jboolean::from(handled)
+    let app = text(&mut env, &packaged_dir).map(crate::PackageLayout::new);
+    let handler = text(&mut env, &handler);
+    jboolean::from(
+        matches!((app, handler), (Ok(app), Ok(handler)) if crate::has_handler(&app, &handler)),
+    )
 }
 
 /// Record whether the app starts in the `foreground`, and deliver `_onStart`

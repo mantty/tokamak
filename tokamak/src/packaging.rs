@@ -330,8 +330,8 @@ mod tests {
 
     use super::{
         AssetManifest, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, WorkerManifest,
-        read_asset_manifest, read_worker_manifest, read_worker_module, write_asset_manifest,
-        write_worker,
+        has_handler, read_asset_manifest, read_worker_manifest, read_worker_module,
+        write_asset_manifest, write_worker,
     };
     use crate::compiler::{SourceText, compile_module};
 
@@ -360,6 +360,28 @@ mod tests {
     #[test]
     fn reports_no_assets_without_a_manifest() {
         assert!(!PackageLayout::new("/apps/missing").serves_assets());
+    }
+
+    #[test]
+    fn reports_the_handlers_the_tokamak_worker_runs_for() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let app = PackageLayout::new(directory.path());
+        assert!(!has_handler(&app, "_onStart"), "without a Tokamak worker");
+
+        let worker = app.tokamak_worker();
+        fs::create_dir_all(worker.root())?;
+        let recorded = r#"{"entry":"index.js","modules":{},"handlers":["_onStart"]}"#;
+        fs::write(worker.worker_manifest(), recorded)?;
+        assert!(has_handler(&app, "_onStart"));
+        assert!(!has_handler(&app, "_beforeStart"));
+
+        fs::write(
+            worker.worker_manifest(),
+            r#"{"entry":"index.js","modules":{}}"#,
+        )?;
+        assert!(has_handler(&app, "_beforeStart"), "without a record");
+        Ok(())
     }
 
     #[test]
