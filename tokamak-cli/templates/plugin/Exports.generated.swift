@@ -23,7 +23,7 @@ extension {{class}} {
 
   public func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data {
     switch name {
-    case "echoed":
+    case "_onEchoed":
       return try tokamakEvent(name, event, as: Echo.self)
     default:
       throw .unlistedEvent(name)

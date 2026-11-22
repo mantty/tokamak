@@ -250,7 +250,7 @@ fn delivers_events_through_the_dev_socket() -> TestResult {
     assert_eq!(
         events,
         [
-            r#"{"type":"event","id":0,"name":"start","event":{"foreground":true}}"#,
+            r#"{"type":"event","id":0,"name":"_onStart","event":{"foreground":true}}"#,
             r#"{"type":"event","id":1,"name":"example.ping","event":{"id":"1"}}"#,
         ]
     );
@@ -305,11 +305,11 @@ fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
                 endpoint: format!("http://127.0.0.1:{}", listener.local_addr()?.port()),
                 session_token: "test-session".to_owned(),
             },
-            foreground: false,
             plugins: Some(Arc::new(Shell(sender))),
         },
         |_| {},
     )?;
+    runtime.deliver_start(false);
     let (mut socket, _) = accept_dev_socket(&listener)?;
     answer_event(&mut socket)?;
     let next_request = || requests.recv_timeout(Duration::from_secs(5));
@@ -380,11 +380,11 @@ fn relays_a_call_body_as_the_device_pulls_each_chunk() -> TestResult {
                 endpoint: format!("http://127.0.0.1:{}", listener.local_addr()?.port()),
                 session_token: "test-session".to_owned(),
             },
-            foreground: false,
             plugins: Some(Arc::new(Shell(sender))),
         },
         |_| {},
     )?;
+    runtime.deliver_start(false);
     let (mut socket, _) = accept_dev_socket(&listener)?;
     answer_event(&mut socket)?;
     let next_request = || requests.recv_timeout(Duration::from_secs(5));
@@ -429,11 +429,11 @@ fn reopens_the_dev_socket_after_it_closes() -> TestResult {
     });
     reopening.recv_timeout(Duration::from_secs(10))?;
 
-    let reply = runtime.emit("suspend", b"{}", Duration::from_secs(5));
+    let reply = runtime.emit("_onSuspend", b"{}", Duration::from_secs(5));
 
     assert_eq!(
         host_server.join().map_err(|_| "host server panicked")??,
-        r#"{"type":"event","id":1,"name":"suspend","event":{}}"#
+        r#"{"type":"event","id":1,"name":"_onSuspend","event":{}}"#
     );
     assert_eq!(reply?, b"null");
     Ok(())
@@ -508,7 +508,7 @@ fn fails_an_event_no_dev_socket_answers_before_its_deadline() -> TestResult {
 
     assert_eq!(
         error.to_string(),
-        "example.ping timed out waiting for start"
+        "example.ping timed out waiting for _onStart"
     );
     Ok(())
 }
@@ -650,11 +650,11 @@ fn start_test_runtime_reporting(
                 endpoint,
                 session_token: "test-session".to_owned(),
             },
-            foreground: true,
             plugins: None,
         },
         events,
     )?;
+    runtime.deliver_start(true);
     Ok((listener, runtime, temporary))
 }
 

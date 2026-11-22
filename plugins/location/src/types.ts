@@ -25,22 +25,6 @@ export interface PositionOptions {
 export type PositionCallback = (position: Position) => void;
 export type PositionErrorCallback = (error: DOMException) => void;
 
-/**
- * Long-term location awareness, which runs across launches and restarts, uses little power and shows
- * no indicator: `setup` starts what it names and stops what it leaves out. Off screen it needs
- * permission at all times, with which the system launches the app for its events.
- */
-export interface SetupConfig {
-  /**
-   * Delivers moves of 500 metres or more, at most every 5 minutes, to `onLocationUpdate`, located
-   * from cellular and Wi-Fi rather than GPS: Apple's significant-change service, and on Android a
-   * low-power request with the same thresholds, which Android limits to a few an hour off screen.
-   */
-  readonly significantChanges?: boolean;
-  /** Apple only: delivers arrivals at and departures from places to `onVisit`. */
-  readonly visits?: boolean;
-}
-
 /** Whether the user granted a permission, denied it, or has not been asked. */
 export type Permission = "granted" | "denied" | "prompt";
 
@@ -132,7 +116,7 @@ export interface Region {
   readonly longitude: number;
   /** In metres. */
   readonly radius: number;
-  /** Whether entering the region reaches `onRegionTransition`; true by default. */
+  /** Whether entering the region reaches `_onRegionTransition`; true by default. */
   readonly onEntry?: boolean;
   /** Whether leaving it does; true by default. */
   readonly onExit?: boolean;

@@ -3,7 +3,11 @@ import TokamakPlugin
 extension TokamakLocationPlugin: TokamakExports {
   public static func exports(_ e: inout TokamakExporter<TokamakLocationPlugin>) {
     e.call(
-      setup, doc: "Applies long-term location awareness, replacing the previous configuration.")
+      startSignificantChanges,
+      doc: "Starts significant changes of location, until `stopSignificantChanges`.")
+    e.call(stopSignificantChanges)
+    e.call(startVisits, doc: "Starts arrivals at and departures from places, until `stopVisits`.")
+    e.call(stopVisits)
     e.call(
       recentPosition, doc: "Core Location's latest position, when it is no older than `maximumAge`."
     )
@@ -24,25 +28,27 @@ extension TokamakLocationPlugin: TokamakExports {
     e.call(getRegions, doc: "The monitored regions.")
     e.call(removeRegion)
     e.stream(
-      onLocationUpdate, overflow: .dropOldest, doc: "The updates the Worker's listeners receive.")
-    e.stream(onRegionTransition, doc: "The transitions the Worker's listeners receive.")
-    e.stream(onVisit, doc: "The visits the Worker's listeners receive.")
-    e.stream(onLocationError, doc: "The failures the Worker's listeners receive.")
+      onLocationUpdate, overflow: .dropOldest,
+      doc: "The updates the Worker's `_onLocationUpdate` receives.")
+    e.stream(
+      onRegionTransition, doc: "The transitions the Worker's `_onRegionTransition` receives.")
+    e.stream(onVisit, doc: "The visits the Worker's `_onVisit` receives.")
+    e.stream(onLocationError, doc: "The failures the Worker's `_onLocationError` receives.")
     e.event(
-      "update", LocationUpdate.self,
+      "_onLocationUpdate", LocationUpdate.self,
       doc:
         "Receives continuous updates and significant changes, including those that launch the app."
     )
     e.event(
-      "region", RegionTransition.self,
+      "_onRegionTransition", RegionTransition.self,
       doc: "Receives each region entry or exit, including one that launches the app.")
     e.event(
-      "visit", Visit.self,
+      "_onVisit", Visit.self,
       doc:
         "Receives each arrival at or departure from a place, including one that launches the app."
     )
     e.event(
-      "error", LocationErrorEvent.self,
+      "_onLocationError", LocationErrorEvent.self,
       doc:
         "Receives failures of background services, such as a region Core Location cannot monitor."
     )

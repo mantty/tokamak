@@ -20,7 +20,7 @@ use url::Url;
 
 use crate::dev_socket::DevSocket;
 use crate::gateway::{
-    Delivery, EventJob, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
+    EventJob, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
     WebSocketOutbound,
 };
 use crate::linked::{DevelopmentEntry, DevelopmentHandler};
@@ -360,10 +360,7 @@ impl Handler for DevProxy {
                     }
                 })
             });
-        let _ = event.delivered.send(delivered.map(|reply| Delivery {
-            reply,
-            listened: None,
-        }));
+        let _ = event.delivered.send(delivered);
     }
 
     fn start(&self, tokio: &tokio::runtime::Handle, stopped: &CancellationToken) {
@@ -534,7 +531,7 @@ mod tests {
                     endpoint: "http://localhost:5173".to_owned(),
                     session_token: "token\nforged-header: value".to_owned(),
                 },
-                crate::plugin_calls::PluginCalls::new(None, true),
+                crate::plugin_calls::PluginCalls::new(None),
             )
             .is_err()
         );

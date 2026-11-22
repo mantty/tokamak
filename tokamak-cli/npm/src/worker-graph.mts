@@ -99,7 +99,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
     const source = serviceEntrypoint(entry, contracts.services());
     writeChanged(generated, `${source}import { eventEntrypoint } from ${JSON.stringify(events)};
 export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
-    writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contracts.native.methods)}\n`);
+    writeChanged(path.join(output, "handlers.json"), `${JSON.stringify(contracts.native.handlers)}\n`);
   }
   /** The name of the main Worker configuration `config`, which binds none of the generated names. */
   const checkedName = (config: ServiceConfiguration): string => {

@@ -107,11 +107,6 @@ extension TokamakLocationPlugin {
     let purpose: String?
   }
 
-  struct SetupConfig: Codable {
-    let significantChanges: Bool?
-    let visits: Bool?
-  }
-
   /// The live update configuration, by Apple's name.
   enum Activity: String, Codable {
     case `default`

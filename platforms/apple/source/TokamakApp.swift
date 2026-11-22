@@ -8,8 +8,10 @@ import WebKit
 #endif
 
 private let startupErrorFile = "startup-error.log"
-/// How long the Worker has for `resume` and `suspend`.
+/// How long the Worker has for `_onResume` and `_onSuspend`.
 private let lifecycleDeadline: TimeInterval = 10
+/// How long launch waits for the Worker's `_beforeStart`.
+private let beforeStartDeadline: TimeInterval = 1
 #if os(iOS)
   /// The system gives an app about 30 seconds after it leaves the foreground.
   private let suspendDeadline: TimeInterval = 25
@@ -28,7 +30,7 @@ final class TokamakApp: TokamakHostApp {
   private var waiting: [(Result<RuntimeHandle, Error>) -> Void] = []
   /// The Worker's calls and subscriptions on the plugins.
   private var workerRequests: TokamakPluginRequests<UInt64>!
-  /// Delivers `resume` and `suspend` one at a time, in order.
+  /// Delivers `_onResume` and `_onSuspend` one at a time, in order.
   private let lifecycle = DispatchQueue(label: "tokamak.lifecycle")
   #if os(iOS)
     /// The scenes in the foreground.
@@ -55,14 +57,39 @@ final class TokamakApp: TokamakHostApp {
       })
   }
 
-  /// Starts the runtime in the background, which delivers `start` with
-  /// `foreground`. Call it once, on the main thread.
-  func start(foreground: Bool) {
+  /// Starts the runtime in the background. When the Worker receives
+  /// `_beforeStart`, waits until it returns or its deadline passes, running
+  /// the plugin calls it makes on the main thread. Call it once, on the main
+  /// thread, inside the platform's launch.
+  func start() {
     dispatchPrecondition(condition: .onQueue(.main))
     let plugins = workerPlugins
-    DispatchQueue.global(qos: .userInitiated).async {
-      let result = Result { try RuntimeHandle(foreground: foreground, plugins: plugins) }
-      DispatchQueue.main.async { self.started(result) }
+    let waits = RuntimeHandle.receivesBeforeStart
+    let deadline = Date() + beforeStartDeadline
+    let launch = {
+      let result = Result { try RuntimeHandle(plugins: plugins) }
+      TokamakMainThread.post { self.started(result) }
+      guard waits, case .success(let runtime) = result else { return }
+      do {
+        _ = try runtime.emit(
+          "_beforeStart", payload: Data("{}".utf8), timeout: deadline.timeIntervalSinceNow)
+      } catch {
+        print("tokamak _beforeStart failed: \(error)")
+      }
+    }
+    if waits {
+      TokamakMainThread.run(until: deadline, work: launch)
+    } else {
+      DispatchQueue.global(qos: .userInitiated).async(execute: launch)
+    }
+  }
+
+  /// Records whether the app starts in the `foreground` and delivers
+  /// `_onStart` with it, once the runtime has started. Call it once, on the
+  /// main thread, after the platform's launch.
+  func deliverStart(foreground: Bool) {
+    ready { started in
+      if case .success(let runtime) = started { runtime.deliverStart(foreground: foreground) }
     }
   }
 
@@ -124,10 +151,10 @@ final class TokamakApp: TokamakHostApp {
   }
 
   /// Delivers the event `name`, whose encoded data is `payload`, to the
-  /// Worker's listeners, and calls `completion` on the main thread with their
-  /// encoded reply, which is empty when none replied. Fails unless they
-  /// return within `timeout`, which includes runtime startup. Call it on the
-  /// main thread.
+  /// Worker's method of that name, and calls `completion` on the main thread
+  /// with its encoded reply, which is empty when it returns nothing. Fails
+  /// unless it returns within `timeout`, which includes runtime startup. Call
+  /// it on the main thread.
   func emit(
     _ name: String,
     payload: Data,
@@ -188,10 +215,10 @@ final class TokamakApp: TokamakHostApp {
   }
 
   /// Records the app moving into or out of the foreground once the runtime
-  /// has started, and delivers `resume` or `suspend` when that changed its
-  /// stage. Call it on the main thread.
+  /// has started, and delivers `_onResume` or `_onSuspend` when that changed
+  /// its stage. Call it on the main thread.
   func moved(toForeground foreground: Bool) {
-    let name = foreground ? "resume" : "suspend"
+    let name = foreground ? "_onResume" : "_onSuspend"
     #if os(iOS)
       // The system suspends the app soon after it leaves the foreground
       // unless a background task holds it there.
@@ -225,7 +252,7 @@ final class TokamakApp: TokamakHostApp {
   }
 
   #if os(iOS)
-    /// Delivers `resume` as the first scene enters the foreground.
+    /// Delivers `_onResume` as the first scene enters the foreground.
     func sceneWillEnterForeground() {
       foregroundScenes += 1
       if foregroundScenes == 1 {
@@ -233,7 +260,7 @@ final class TokamakApp: TokamakHostApp {
       }
     }
 
-    /// Delivers `suspend` as the last scene leaves the foreground.
+    /// Delivers `_onSuspend` as the last scene leaves the foreground.
     func sceneDidEnterBackground() {
       foregroundScenes -= 1
       if foregroundScenes == 0 {
@@ -320,9 +347,18 @@ final class RuntimeHandle {
   let appHost: String
   private var handle: UnsafeMutableRawPointer?
 
-  /// Starts the runtime, which delivers `start` with `foreground`, and whose
-  /// Worker calls `plugins`.
-  init(foreground: Bool, plugins: TokamakPluginHandler) throws {
+  /// Whether the Worker receives `_beforeStart`: its packaged class has that
+  /// method, or it runs in the development server, which receives every event.
+  static var receivesBeforeStart: Bool {
+    if Bundle.main.object(forInfoDictionaryKey: "TokamakDevEndpoint") is String { return true }
+    guard let app = Bundle.main.resourceURL?.appendingPathComponent("app") else { return false }
+    return app.path.withCString { app in
+      "_beforeStart".withCString { tokamak_has_handler(app, $0) }
+    }
+  }
+
+  /// Starts the runtime, whose Worker calls `plugins`.
+  init(plugins: TokamakPluginHandler) throws {
     guard let appHost = Bundle.main.tokamakHost, !appHost.isEmpty else {
       throw RuntimeError(description: "TokamakHost is required")
     }
@@ -344,7 +380,6 @@ final class RuntimeHandle {
                   appHost,
                   endpoint,
                   sessionToken,
-                  foreground,
                   plugins,
                   error.baseAddress,
                   error.count
@@ -370,7 +405,6 @@ final class RuntimeHandle {
                   statePath,
                   storagePath,
                   appHost,
-                  foreground,
                   plugins,
                   error.baseAddress,
                   error.count
@@ -415,9 +449,16 @@ final class RuntimeHandle {
     return port
   }
 
+  /// Records whether the app starts in the `foreground`, and delivers
+  /// `_onStart` with it in the background.
+  func deliverStart(foreground: Bool) {
+    tokamak_runtime_deliver_start(handle, foreground)
+  }
+
   /// Delivers the event `name`, whose encoded data is `payload`, to the
-  /// Worker's listeners, blocking until they return or `timeout` passes, and
-  /// returns their encoded reply, which is empty when none replied.
+  /// Worker's method of that name, blocking until it returns or `timeout`
+  /// passes, and returns its encoded reply, which is empty when it returns
+  /// nothing.
   func emit(_ name: String, payload: Data, timeout: TimeInterval) throws -> Data {
     var reply = TokamakBytes()
     var error = [CChar](repeating: 0, count: 1024)

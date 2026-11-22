@@ -1,5 +1,6 @@
 export { TokamakEntrypoint, platform } from "@tokamakdev/plugin/worker";
-export type { TokamakContext, TokamakEvent, WebView } from "@tokamakdev/plugin/worker";
+export type { StartEvent, TokamakContext, WebView } from "@tokamakdev/plugin/worker";
+export { lifecycleStage as getLifecycleStage, type LifecycleStage } from "@tokamakdev/plugin";
 
 /** A setting value. */
 export type Value = string | number | boolean;

@@ -127,9 +127,28 @@ enum PluginRequestsTests {
     precondition(queued.calls == 0)
     testResources(app)
     testBodies(app)
+    testMainThreadWait()
     print(
-      "Passed native bytes, codecs, completion, cancellation, isolation, late-reply, resource and body tests"
+      "Passed native bytes, codecs, completion, cancellation, isolation, late-reply, resource, body and main thread tests"
     )
+  }
+
+  /// While the main thread waits, it runs the work posted to it, until the
+  /// waited work returns or the deadline passes.
+  private static func testMainThreadWait() {
+    var ranOnMain = false
+    TokamakMainThread.run(until: Date() + 5) {
+      let ran = DispatchSemaphore(value: 0)
+      TokamakMainThread.post {
+        ranOnMain = Thread.isMainThread
+        ran.signal()
+      }
+      precondition(ran.wait(timeout: .now() + 2) == .success)
+    }
+    precondition(ranOnMain)
+    let started = Date()
+    TokamakMainThread.run(until: Date() + 0.05) { Thread.sleep(forTimeInterval: 2) }
+    precondition(Date().timeIntervalSince(started) < 1)
   }
 
   /// A call reads its body one chunk per pull, on its executor, until the

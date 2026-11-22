@@ -205,14 +205,14 @@
   ],
   "events": [
     {
-      "name": "entered",
+      "name": "_onEntered",
       "doc": "Each region the device enters.",
       "type": {
         "named": "Region"
       }
     },
     {
-      "name": "asked",
+      "name": "_onAsked",
       "type": {
         "named": "Region"
       },
@@ -221,13 +221,13 @@
       }
     },
     {
-      "name": "chose",
+      "name": "_onChose",
       "type": {
         "named": "Precision"
       }
     },
     {
-      "name": "visited",
+      "name": "_onVisited",
       "type": {
         "named": "Visit"
       },

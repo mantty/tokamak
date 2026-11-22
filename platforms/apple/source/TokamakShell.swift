@@ -361,6 +361,7 @@ private final class TokamakController {
     private var visible = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+      app.start()
       let window = NSWindow(
         contentRect: NSRect(x: 0, y: 0, width: 1024, height: 768),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -374,7 +375,7 @@ private final class TokamakController {
       NSApplication.shared.activate(ignoringOtherApps: true)
       self.window = window
       visible = !NSApplication.shared.isHidden
-      app.start(foreground: visible)
+      app.deliverStart(foreground: visible)
       observeVisibility()
 
       guard let content = window.contentView else { return }
@@ -477,14 +478,15 @@ private final class TokamakController {
     /// Exists from launch, whether or not a scene connects.
     let app = TokamakApp()
 
-    /// Starts the runtime once launch finishes. A scene a user launches the
-    /// app into has entered the foreground by then.
+    /// Starts the runtime, and delivers `_onStart` once launch finishes. A
+    /// scene a user launches the app into has entered the foreground by then.
     func application(
       _ application: UIApplication,
       didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+      app.start()
       DispatchQueue.main.async {
-        self.app.start(foreground: self.app.hasForegroundScene)
+        self.app.deliverStart(foreground: self.app.hasForegroundScene)
       }
       return true
     }

@@ -5,7 +5,7 @@ import com.tokamak.runtime.TokamakPluginError
 
 /**
  * Throws `TypeError` unless Android can show the notification: its id is not empty and its colour
- * is one Android reads. A Worker's `onPush` reply is checked too, when it arrives.
+ * is one Android reads. A Worker's `_onPush` reply is checked too, when it arrives.
  */
 internal fun NotificationContent.check() {
     if (id.isEmpty()) throw TokamakPluginError.typeError("id must be a non-empty string")

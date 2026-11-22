@@ -15,6 +15,12 @@ export interface WorkerContract {
   declarations: string;
 }
 
+/** The Tokamak worker's contract. */
+export interface NativeContract extends WorkerContract {
+  /** The members whose names start with `_`, which only the native host calls, with its events. */
+  handlers: string[];
+}
+
 export interface PluginContract extends WorkerContract {
   definition: PluginDefinition;
   webMethods: string[];
@@ -26,11 +32,11 @@ export interface PluginContract extends WorkerContract {
 }
 
 /** Worker handler names, which are not RPC methods. */
-const HANDLERS = ["fetch", "event", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"];
+const HANDLERS = ["fetch", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"];
 
 /** The contract of a Tokamak worker without a module. */
-export function emptyContract(): WorkerContract {
-  return { methods: [], files: [], declarations: serviceTypes("{}", []) };
+export function emptyContract(): NativeContract {
+  return { methods: [], handlers: [], files: [], declarations: serviceTypes("{}", []) };
 }
 
 export function findModule(root: string, name: string | undefined): string | undefined {
@@ -44,7 +50,7 @@ export function findModule(root: string, name: string | undefined): string | und
 
 /** Analyze both entrypoints in one TypeScript program. */
 export function readWorkerContracts(entry: string | undefined, main: string | undefined, root: string, validate: boolean, plugins: PluginDefinition[] = []): {
-  native: WorkerContract;
+  native: NativeContract;
   named: Record<string, WorkerContract>;
   main: Record<string, WorkerContract>;
   plugins: PluginContract[];
@@ -246,7 +252,7 @@ function apiObject(checker: ts.TypeChecker, type: ts.Type): boolean {
     !type.getConstructSignatures().length && !type.getProperty("then") && !checker.getIndexInfosOfType(type).length;
 }
 
-function classContract(module: ReturnType<typeof workerModule>, name: string, native: boolean, validate: boolean): WorkerContract {
+function classContract(module: ReturnType<typeof workerModule>, name: string, native: boolean, validate: boolean): NativeContract {
   const { entry, program, checker, source } = module;
   const constructor = module.exports.get(name)?.getConstructSignatures()[0];
   const instance = constructor?.getReturnType();
@@ -263,8 +269,13 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     throw new Error(`Tokamak entrypoint ${entry} must extend TokamakEntrypoint from @tokamakdev/tok or WorkerEntrypoint from cloudflare:workers; include its type declarations.`);
   }
   const methods: ServiceMethod[] = [];
+  const handlers: string[] = [];
   for (const property of instance.getProperties()) {
     if (!property.declarations?.some((node) => prototypes.has(node.parent))) continue;
+    if (native && property.name.startsWith("_")) {
+      handlers.push(property.name);
+      continue;
+    }
     if (!exposedMethod(property)) continue;
     const type = checker.getTypeOfSymbolAtLocation(property, source);
     if (validate) checkRpcMethod(checker, type, property.name);
@@ -273,6 +284,7 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
   methods.sort(byName);
   return {
     methods: methods.map((method) => method.name),
+    handlers: handlers.sort(),
     declarations: serviceTypes(
       `InstanceType<typeof import(${JSON.stringify(entry.split(path.sep).join("/"))}, { with: { "resolution-mode": "import" } })[${JSON.stringify(name)}]>`,
       methods,
@@ -334,7 +346,7 @@ function exposedMethod(property: ts.Symbol): boolean {
     String(property.escapedName).startsWith("__@")) return false;
   if (declarations.some((node) => ts.getModifiers(node)?.some((modifier) =>
     modifier.kind === ts.SyntaxKind.PrivateKeyword || modifier.kind === ts.SyntaxKind.ProtectedKeyword))) {
-    throw new Error(`Method ${property.name} is on the public JavaScript prototype; use a #private method for a local helper.`);
+    throw new Error(`Method ${property.name} is on the public JavaScript prototype; prefix its name with _ to keep it from pages and the app's Worker.`);
   }
   assertMethodName(property.name);
   return !HANDLERS.includes(property.name);

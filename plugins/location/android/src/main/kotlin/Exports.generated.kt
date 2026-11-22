@@ -17,7 +17,8 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
     override fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? {
         val arguments by lazy(LazyThreadSafetyMode.NONE) { TokamakValue.arguments(payload) }
         return when (method) {
-            "setup" -> respond(reply) { plugin.setup(config = arguments["config"].asSetupConfig()) }
+            "startSignificantChanges" -> respond(reply) { plugin.startSignificantChanges() }
+            "stopSignificantChanges" -> respond(reply) { plugin.stopSignificantChanges() }
             "recentPosition" -> respond(reply) {
                 val result = plugin.recentPosition(
                     maximumAge = arguments["maximumAge"].double(),
@@ -62,9 +63,9 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
     companion object : TokamakCodec {
         override fun eventPayload(name: String, event: Any): ByteArray =
             when (name) {
-                "update" -> encodeEvent(name, event, LocationUpdate::class) { json(it) }
-                "region" -> encodeEvent(name, event, RegionTransition::class) { json(it) }
-                "error" -> encodeEvent(name, event, LocationErrorEvent::class) { json(it) }
+                "_onLocationUpdate" -> encodeEvent(name, event, LocationUpdate::class) { json(it) }
+                "_onRegionTransition" -> encodeEvent(name, event, RegionTransition::class) { json(it) }
+                "_onLocationError" -> encodeEvent(name, event, LocationErrorEvent::class) { json(it) }
                 else -> super.eventPayload(name, event)
             }
 
@@ -80,7 +81,6 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
                 is Region -> json(value)
                 is RegionTransition -> json(value)
                 is ServiceNotification -> json(value)
-                is SetupConfig -> json(value)
                 is UpdateOptions -> json(value)
                 else -> super.encodeValue(value)
             }
@@ -97,7 +97,6 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
                 Region::class -> json.asRegion()
                 RegionTransition::class -> json.asRegionTransition()
                 ServiceNotification::class -> json.asServiceNotification()
-                SetupConfig::class -> json.asSetupConfig()
                 UpdateOptions::class -> json.asUpdateOptions()
                 else -> super.decodeValue(json, type)
             }
@@ -241,15 +240,6 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
                 .put("title", value.title)
                 .put("body", value.body)
                 .put("channel", value.channel)
-
-        private fun TokamakValue.asSetupConfig(): SetupConfig =
-            SetupConfig(
-                significantChanges = this["significantChanges"].nullable { it.boolean() },
-            )
-
-        private fun json(value: SetupConfig): JSONObject =
-            JSONObject()
-                .putOpt("significantChanges", value.significantChanges)
 
         private fun TokamakValue.asUpdateOptions(): UpdateOptions =
             UpdateOptions(

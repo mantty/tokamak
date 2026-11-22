@@ -66,7 +66,7 @@ test("generated clients preserve overloads, recursive private types, brands, and
       #helper() {}
       field = () => 1;
       get local() { return 1; }
-      event(): void {}
+      _onStart(): void {}
     }
   `);
   checkClient(read(), `
@@ -93,8 +93,8 @@ test("generated clients preserve overloads, recursive private types, brands, and
     client.field();
     // @ts-expect-error getters are local
     client.local;
-    // @ts-expect-error events are host-only
-    client.event();
+    // @ts-expect-error methods whose names start with _ are host-only
+    client._onStart();
     // @ts-expect-error fetch belongs to service bindings
     client.fetch("https://app.example");
     // @ts-expect-error promise pipelining is outside the RPC contract
@@ -121,7 +121,7 @@ test("exposes public prototype methods, including inherited concrete signatures"
       field = (callback: () => void) => callback();
       get value() { return () => {}; }
       fetch(request: Request) { return new Response(request.url); }
-      event(payload: unknown) {}
+      _onEvent(payload: unknown) {}
       async position(): Promise<{ latitude: number; longitude: number }> {
         return { latitude: 1, longitude: 2 };
       }
@@ -168,7 +168,7 @@ test("checks every overload and reports the offending argument", (t) => {
 for (const access of ["private", "protected"]) {
   test(`rejects ${access} methods whose JavaScript prototype would expose them`, (t) => {
     const read = project(t, `export default class Native extends WorkerEntrypoint { ${access} secret() { return 1; } }`);
-    assert.throws(read, /secret.*#private/);
+    assert.throws(read, /secret.*prefix its name with _/);
   });
 }
 
@@ -233,13 +233,17 @@ test("keeps class-based platform event handlers outside the RPC contract", (t) =
   assert.deepEqual(read().default.methods, ["echo"]);
 });
 
-test("accepts the Tokamak entrypoint and excludes its host event handler", (t) => {
+test("keeps members whose names start with _ out of the contract and records them as handlers", (t) => {
   const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")));
-  const read = project(t, `import { TokamakEntrypoint } from ${sdk};
+  const read = project(t, `import { TokamakEntrypoint, type StartEvent } from ${sdk};
     export default class Native extends TokamakEntrypoint {
+      _onStart(event: StartEvent): void { void event; }
+      _record(callback: () => void): void { callback(); }
+      #hidden(): void {}
       echo(value: string): string { return value; }
-    }`);
+    }`, {}, readWorkerContract);
   assert.deepEqual(read().methods, ["echo"]);
+  assert.deepEqual(read().handlers, ["_onStart", "_record"]);
 });
 
 test("discovers default and named Worker services while preserving other module exports", (t) => {
@@ -264,5 +268,5 @@ test("validates main and named service signatures using the same RPC contract", 
   }
   assert.throws(project(t, `export default class Main extends WorkerEntrypoint {
     __tokamakRpc(): void {}
-  }`), /__tokamakRpc.*reserved/);
+  }`, {}, readServiceContracts), /__tokamakRpc.*reserved/);
 });

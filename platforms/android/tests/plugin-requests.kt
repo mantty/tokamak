@@ -70,6 +70,7 @@ fun main() {
     }
     testResources()
     testBodies()
+    testMainThreadWait()
     println("Passed off-main calls, replies, terminal streams, cancellation before hook installation, resources and bodies")
 }
 
@@ -118,4 +119,22 @@ fun testBodies() {
     }
     check(replies.poll(2, TimeUnit.SECONDS)?.payload?.contentEquals(byteArrayOf(6)) == true)
     executor.shutdown()
+}
+
+/** While the main thread waits, it runs the work posted to it, until the waited work returns or the timeout passes. */
+fun testMainThreadWait() {
+    val main = Thread.currentThread()
+    var ranOn: Thread? = null
+    TokamakMainThread.runWhile(5_000) {
+        val ran = CountDownLatch(1)
+        TokamakMainThread.execute {
+            ranOn = Thread.currentThread()
+            ran.countDown()
+        }
+        check(ran.await(2, TimeUnit.SECONDS))
+    }
+    check(ranOn === main)
+    val started = System.nanoTime()
+    TokamakMainThread.runWhile(50) { Thread.sleep(2_000) }
+    check(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 1_000)
 }

@@ -222,18 +222,25 @@ test("reports the certificate an HTTPS development server serves, in each form V
 });
 
 /**
- * A Worker project whose `file`, which `src/tokamak.ts` is or imports, replies to `start` with
- * `reply`, an expression of the event and `env`.
+ * A Worker project whose `_onStart` replies with `reply`, an expression of the event and `env`
+ * that `file` holds, which `src/tokamak.ts` is or imports.
  */
-function listeningProject(reply: string, file = "src/tokamak.ts"): App {
-  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
-  const app = project({
+function handlingProject(reply: string, file = "src/tokamak.ts"): App {
+  const replies = `(event, env) => (${reply})`;
+  const imported = file !== "src/tokamak.ts";
+  return project({
     "wrangler.jsonc": JSON.stringify({ name: "app", main: "src/index.ts", compatibility_date: "2026-09-01", vars: { GREETING: "hi" } }),
-    "src/tokamak.ts": `import ${JSON.stringify(`./${path.basename(file)}`)};\n`,
-    [file]: `import { onStart } from ${JSON.stringify(events)};\nonStart((event, env, ctx) => {\n  ctx.waitUntil(Promise.resolve());\n  return ${reply};\n});\n`,
+    ...(imported && { [file]: `export default ${replies};\n` }),
+    "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+${imported ? `import reply from ${JSON.stringify(`./${path.basename(file)}`)};` : `const reply = ${replies};`}
+export default class Native extends WorkerEntrypoint {
+  _onStart(event) {
+    this.ctx.waitUntil(Promise.resolve());
+    return reply(event, this.env);
+  }
+}
+`,
   });
-  fs.appendFileSync(path.join(app.root, "src/tokamak.ts"), NATIVE_WORKER);
-  return app;
 }
 
 /** A dev WebSocket to `port`, open, sending `token` as the device does. */
@@ -273,32 +280,33 @@ async function emit(socket: WebSocket, name: string, event: unknown): Promise<De
 }
 
 /**
- * Makes the listener in `file` reply "second" rather than "first", and returns the reply to
- * `start` once it changes, or after 10 seconds.
+ * Makes `_onStart` reply "second" rather than "first" by editing `file`, and returns its reply
+ * once it changes, or after 10 seconds.
  */
 async function replyAfterEditing(app: App, socket: WebSocket, file: string): Promise<unknown> {
   const source = path.join(app.root, file);
   fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace('"first"', '"second"'));
   const deadline = Date.now() + 10_000;
   let reply: unknown;
-  while ((reply = (await emit(socket, "start", {})).reply) !== "second" && Date.now() < deadline) {
+  while ((reply = (await emit(socket, "_onStart", {})).reply) !== "second" && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return reply;
 }
 
-test("delivers dev socket events to the development Worker's listeners", async () => {
-  const app = listeningProject("{ foreground: event.foreground, greeting: env.GREETING }");
+test("delivers dev socket events to the development Worker's handlers", async () => {
+  const app = handlingProject('event.fail ? Promise.reject(new Error("failed")) : { foreground: event.foreground, greeting: env.GREETING }');
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
       const socket = await openSocket(serverReport(app).socketPort, "token");
       try {
-        assert.deepEqual(await emit(socket, "start", { foreground: true }), {
+        assert.deepEqual(await emit(socket, "_onStart", { foreground: true }), {
           type: "reply",
           id: messages - 1,
           reply: { foreground: true, greeting: "hi" },
         });
-        assert.equal((await emit(socket, "resume", {})).reply, null);
+        assert.equal((await emit(socket, "_onStart", { fail: true })).reply, null);
+        assert.equal((await emit(socket, "_onResume", {})).reply, null);
       } finally {
         socket.close();
       }
@@ -306,8 +314,8 @@ test("delivers dev socket events to the development Worker's listeners", async (
   );
 });
 
-test("host event handlers call the main worker through the checked binding", async () => {
-  const app = listeningProject('env.MAIN.echo(event.foreground ? "main reply" : (() => "callback")).catch(error => error.name)');
+test("handlers call the main worker through the checked binding", async () => {
+  const app = handlingProject('env.MAIN.echo(event.foreground ? "main reply" : (() => "callback")).catch(error => error.name)');
   fs.writeFileSync(path.join(app.root, "src/index.ts"), `import { WorkerEntrypoint } from "cloudflare:workers";
     export default class Main extends WorkerEntrypoint {
       echo(value: string): string { return value; }
@@ -317,8 +325,8 @@ test("host event handlers call the main worker through the checked binding", asy
     serve(app, async () => {
       const socket = await openSocket(serverReport(app).socketPort, "token");
       try {
-        assert.equal((await emit(socket, "start", { foreground: true })).reply, "main reply");
-        assert.equal((await emit(socket, "start", { foreground: false })).reply, "DataCloneError");
+        assert.equal((await emit(socket, "_onStart", { foreground: true })).reply, "main reply");
+        assert.equal((await emit(socket, "_onStart", { foreground: false })).reply, "DataCloneError");
       } finally {
         socket.close();
       }
@@ -326,15 +334,14 @@ test("host event handlers call the main worker through the checked binding", asy
   );
 });
 
-// The first listener's reply wins, so a stale listener would still reply "first".
-for (const file of ["src/tokamak.ts", "src/listeners.ts"]) {
-  test(`replaces the development Worker's listeners when ${file} changes`, async () => {
-    const app = listeningProject('"first"', file);
+for (const file of ["src/tokamak.ts", "src/replies.ts"]) {
+  test(`reloads the development Worker's handlers when ${file} changes`, async () => {
+    const app = handlingProject('"first"', file);
     await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
       serve(app, async () => {
         const socket = await openSocket(serverReport(app).socketPort, "token");
         try {
-          assert.equal((await emit(socket, "start", {})).reply, "first");
+          assert.equal((await emit(socket, "_onStart", {})).reply, "first");
           assert.equal(await replyAfterEditing(app, socket, file), "second");
         } finally {
           socket.close();
@@ -344,9 +351,10 @@ for (const file of ["src/tokamak.ts", "src/listeners.ts"]) {
   });
 }
 
-test("builds a native worker whose event entrypoint runs the listeners", async () => {
-  const app = listeningProject("{ foreground: event.foreground, greeting: env.GREETING }");
+test("builds a native worker whose event entrypoint calls the handlers it reports", async () => {
+  const app = handlingProject("{ foreground: event.foreground, greeting: env.GREETING }");
   await build(app);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(app.output, "worker/handlers.json"), "utf8")), ["_onStart"]);
   const require = createRequire(import.meta.resolve("@cloudflare/vite-plugin"));
   const { Miniflare, convertV4MiniflareOptions } = await import(pathToFileURL(require.resolve("miniflare")).href);
   const miniflare = new Miniflare(
@@ -359,8 +367,8 @@ test("builds a native worker whose event entrypoint runs the listeners", async (
           serviceBindings: { APP: { name: "app", entrypoint: "TokamakEvents" } },
           script: `export default {
             async fetch(_request, env) {
-              const { reply, listened } = await env.APP.dispatch("start", new TextEncoder().encode('{"foreground":true}'));
-              return Response.json({ reply: JSON.parse(new TextDecoder().decode(reply)), listened });
+              const reply = await env.APP.dispatch("_onStart", new TextEncoder().encode('{"foreground":true}'));
+              return new Response(reply);
             },
           };`,
         },
@@ -376,17 +384,20 @@ test("builds a native worker whose event entrypoint runs the listeners", async (
   );
   try {
     const response = await miniflare.dispatchFetch("http://tokamak/");
-    assert.deepEqual(await response.json(), { reply: { foreground: true, greeting: "hi" }, listened: ["start"] });
+    assert.deepEqual(await response.json(), { foreground: true, greeting: "hi" });
   } finally {
     await miniflare.dispose();
   }
 });
 
-test("shares the listener registry with pre-bundled dependencies", async () => {
+test("shares event codecs with pre-bundled dependencies", async () => {
   const app = project({
     "node_modules/events-package/package.json": JSON.stringify({ name: "events-package", type: "module", exports: "./index.js" }),
-    "node_modules/events-package/index.js": `import { defineEvent } from "@tokamakdev/plugin/events";\nexport const onStart = defineEvent("start");\n`,
-    "src/tokamak.ts": `${NATIVE_WORKER}\nimport { onStart } from "events-package";\nonStart(() => "pre-bundled");\n`,
+    "node_modules/events-package/index.js": `import { setEventCodec } from "@tokamakdev/plugin/events";
+setEventCodec("_onStart", { decode: () => "pre-bundled", encode: (reply) => new TextEncoder().encode(JSON.stringify(reply)) });\n`,
+    "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+import "events-package";
+export default class Native extends WorkerEntrypoint { _onStart(event) { return event; } }\n`,
   });
   const core = path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/events"))));
   fs.mkdirSync(path.join(app.root, "node_modules/@tokamakdev"));
@@ -395,7 +406,7 @@ test("shares the listener registry with pre-bundled dependencies", async () => {
     serve(app, async () => {
       const socket = await openSocket(serverReport(app).socketPort, "token");
       try {
-        assert.equal((await emit(socket, "start", {})).reply, "pre-bundled");
+        assert.equal((await emit(socket, "_onStart", {})).reply, "pre-bundled");
       } finally {
         socket.close();
       }
@@ -428,11 +439,9 @@ function answerPluginCalls(socket: WebSocket, answer: (message: DeviceMessage, s
 const result = (id: number | undefined, value: unknown, done = true): DeviceMessage => ({ type: "result", id, result: { value, done } });
 
 test("passes the development Worker's plugin calls to the device and back", async () => {
-  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
     "src/index.ts": `export default { fetch: async (_request, env) => new Response(await env.TOKAMAK.stage()) };`,
-    "src/tokamak.ts": `import { TokamakEntrypoint } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")))};
-      import { getLifecycleStage } from ${JSON.stringify(events)};
+    "src/tokamak.ts": `import { TokamakEntrypoint, getLifecycleStage } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")))};
       export default class Native extends TokamakEntrypoint { stage(): Promise<string> { return getLifecycleStage(this.ctx); } }`,
   });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
@@ -454,19 +463,21 @@ test("passes the development Worker's plugin calls to the device and back", asyn
   );
 });
 
-test("keeps a development Worker's listener after its event until it is removed", async () => {
-  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
+test("keeps a development Worker's subscription after its event until it is removed", async () => {
   const app = project({
     "src/tokamak.ts": `const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
-${NATIVE_WORKER}\nimport { onStart } from ${JSON.stringify(events)};
-onStart((_event, _env, ctx) => {
-  const stop = nativeListen(ctx, "location", "watchPosition", null, (position) => {
-    if (position !== "stop") return void nativeCall(ctx, "test", "received", position);
-    stop();
-    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => nativeCall(ctx, "test", "stopped", null)));
-  }, () => undefined);
-});
+import { WorkerEntrypoint } from "cloudflare:workers";
+export default class Native extends WorkerEntrypoint {
+  _onStart() {
+    const ctx = this.ctx;
+    const stop = nativeListen(ctx, "location", "watchPosition", null, (position) => {
+      if (position !== "stop") return void nativeCall(ctx, "test", "received", position);
+      stop();
+      ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => nativeCall(ctx, "test", "stopped", null)));
+    }, () => undefined);
+  }
+}
 `,
   });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
@@ -484,7 +495,7 @@ onStart((_event, _env, ctx) => {
       });
       try {
         const subscribed = next("subscribe");
-        await emit(socket, "start", { foreground: true });
+        await emit(socket, "_onStart", { foreground: true });
         const { id } = await subscribed;
         await new Promise((resolve) => setTimeout(resolve, 1000));
 

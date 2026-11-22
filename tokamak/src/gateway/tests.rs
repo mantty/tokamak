@@ -1,8 +1,8 @@
 #[cfg(unix)]
 use super::gateway_loop;
 use super::{
-    Delivery, EventJob, Handle, Handler, HandlerError, Job, JobResponse, Listener, Port, Runtime,
-    Shared, close_connections, execute_job, listener_was_lost, probe_gateway, publish_replacement,
+    EventJob, Handle, Handler, HandlerError, Job, JobResponse, Listener, Port, Runtime, Shared,
+    close_connections, execute_job, listener_was_lost, probe_gateway, publish_replacement,
     replace_lost_listener, serve_connection, wait_for_gateway,
 };
 use crate::lifecycle_events::{Event, Events};
@@ -506,10 +506,7 @@ fn keeps_serving_when_its_handler_cancels_the_token_it_was_given()
 
         fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
             stopped.cancel();
-            let _ = event.delivered.send(Ok(Delivery {
-                reply: Vec::new(),
-                listened: None,
-            }));
+            let _ = event.delivered.send(Ok(Vec::new()));
         }
 
         fn start(&self, _: &tokio::runtime::Handle, stopped: &CancellationToken) {

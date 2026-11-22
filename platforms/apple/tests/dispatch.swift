@@ -213,12 +213,12 @@ enum DispatchTests {
     let plugin = TokamakExamplePlugin(host: TokamakHost(app: app, plugin: "example"))
     app.plugins["example"] = plugin
     let region = Region(id: "home", radius: 50, onEntry: nil, tags: [], counts: [:], data: nil)
-    let entered = String(decoding: try! plugin.eventPayload("entered", region), as: UTF8.self)
+    let entered = String(decoding: try! plugin.eventPayload("_onEntered", region), as: UTF8.self)
     precondition(entered.contains(#""id":"home""#) && !entered.contains("onEntry"), entered)
-    let chose = try! plugin.eventPayload("chose", Precision.approximate)
+    let chose = try! plugin.eventPayload("_onChose", Precision.approximate)
     precondition(chose == Data(#""approximate""#.utf8), String(decoding: chose, as: UTF8.self))
     for (name, event, message) in [
-      ("entered", "home" as Any, "event entered takes Region, not String"),
+      ("_onEntered", "home" as Any, "event _onEntered takes Region, not String"),
       ("left", region, "Exports.swift lists no event left"),
     ] {
       do {
@@ -229,8 +229,10 @@ enum DispatchTests {
       }
     }
 
-    /// The listeners' `reply` to the event `name` as a `Reply`, or the failure's message.
-    func answer<Reply>(_ reply: String, as type: Reply.Type, to name: String = "asked") -> String {
+    /// The handler's `reply` to the event `name` as a `Reply`, or the failure's message.
+    func answer<Reply>(
+      _ reply: String, as type: Reply.Type, to name: String = "_onAsked"
+    ) -> String {
       app.reply = Data(reply.utf8)
       var answer = "no completion"
       plugin.host.emit(name, event: region, reply: type, timeout: 1) { result in
@@ -243,17 +245,17 @@ enum DispatchTests {
       return answer
     }
     precondition(answer(#""precise""#, as: Precision.self) == "precise")
-    precondition(app.emitted.last == "example.apple.asked")
+    precondition(app.emitted.last == "_onAsked")
     precondition(
       answer("", as: Precision.self) == "nil" && answer("null", as: Precision.self) == "nil")
     precondition(answer(#""vague""#, as: Precision.self).hasPrefix("reply "))
     let mismatch = answer(#""precise""#, as: String.self)
-    precondition(mismatch == "event asked replies with Precision, not String", mismatch)
-    let unlisted = answer(#""precise""#, as: Precision.self, to: "entered")
-    precondition(unlisted == "Exports.swift lists no reply to event entered", unlisted)
-    // An event without a reply ignores what its listeners return.
+    precondition(mismatch == "event _onAsked replies with Precision, not String", mismatch)
+    let unlisted = answer(#""precise""#, as: Precision.self, to: "_onEntered")
+    precondition(unlisted == "Exports.swift lists no reply to event _onEntered", unlisted)
+    // An event without a reply ignores what its handler returns.
     var delivered = false
-    plugin.host.emit("entered", event: region, timeout: 1) { delivered = (try? $0.get()) != nil }
+    plugin.host.emit("_onEntered", event: region, timeout: 1) { delivered = (try? $0.get()) != nil }
     precondition(delivered)
   }
 
@@ -304,7 +306,7 @@ final class TokamakApp: TokamakHostApp {
   let resources = TokamakResources()
   var isInForeground = true
   var plugins: [String: any TokamakPlugin] = [:]
-  /// The events emitted, by name, which the Worker's listeners answer with `reply`.
+  /// The events emitted, by name, which the Worker's handler answers with `reply`.
   var emitted: [String] = []
   var reply = Data()
   func emit(

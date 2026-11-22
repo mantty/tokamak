@@ -163,7 +163,7 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
     let (subscriptions, subscribed) = flume::unbounded();
     let (removed, cancelled) = flume::unbounded();
     let plugins =
-        crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(subscriptions, removed))), true);
+        crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(subscriptions, removed))));
     let config = RuntimeConfig {
         plugins: Some(Arc::clone(&plugins)),
         ..runtime_config()
@@ -228,10 +228,9 @@ export default {
     )?;
     let (events, received) = flume::unbounded();
     let config = RuntimeConfig {
-        plugins: Some(crate::plugin_calls::PluginCalls::new(
-            Some(Arc::new(Gate(events))),
-            true,
-        )),
+        plugins: Some(crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(
+            events,
+        ))))),
         ..runtime_config()
     };
     let tokio = tokio::runtime::Runtime::new()?;
@@ -311,7 +310,7 @@ export default {
         directory.path(),
     )?;
     let (sent, received) = flume::unbounded();
-    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))));
     let config = RuntimeConfig {
         plugins: Some(Arc::clone(&plugins)),
         environment: [("RETAIN".into(), retained.into())].into(),
@@ -783,7 +782,7 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
         services: None,
         environment: BTreeMap::new(),
         storage: None,
-        plugins: Some(crate::plugin_calls::PluginCalls::new(None, true)),
+        plugins: Some(crate::plugin_calls::PluginCalls::new(None)),
     }
 }
 

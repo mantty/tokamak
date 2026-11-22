@@ -161,7 +161,9 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let workers = graph.compile(&build_dir.join(".tokamak").join("worker"))?;
+    let workers = graph.compile(&build_dir.join(".tokamak").join("worker"), || {
+        plugin.handlers("the build")
+    })?;
     let context = BuildContext {
         project: &project,
         build_dir: &build_dir,

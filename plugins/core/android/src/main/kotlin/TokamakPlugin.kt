@@ -6,6 +6,9 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.Executor
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.reflect.KClass
 import org.json.JSONArray
 import org.json.JSONObject
@@ -113,9 +116,46 @@ internal fun encodePluginValue(value: Any?): ByteArray {
     return json.toByteArray(Charsets.UTF_8)
 }
 
-private val uiExecutor by lazy {
-    val main = Handler(Looper.getMainLooper())
-    Executor { main.post(it) }
+/**
+ * The main thread as an executor. Its looper runs the work, except while the main thread waits in
+ * [runWhile], which then runs it.
+ */
+object TokamakMainThread : Executor {
+    private val looper by lazy { Handler(Looper.getMainLooper()) }
+
+    /** The work posted while the main thread waits, which is null otherwise. */
+    private var waiting: LinkedBlockingQueue<Runnable>? = null
+
+    @Synchronized
+    override fun execute(work: Runnable) {
+        waiting?.add(work) ?: looper.post(work)
+    }
+
+    /**
+     * Blocks the main thread until [work], which runs on another thread, returns or
+     * [timeoutMillis] pass, running the work posted meanwhile.
+     */
+    fun runWhile(timeoutMillis: Long, work: () -> Unit) {
+        val queue = LinkedBlockingQueue<Runnable>()
+        synchronized(this) { waiting = queue }
+        var finished = false
+        thread {
+            try {
+                work()
+            } finally {
+                queue.add(Runnable { finished = true })
+            }
+        }
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        while (!finished) {
+            val posted = queue.poll(deadline - System.nanoTime(), TimeUnit.NANOSECONDS) ?: break
+            posted.run()
+        }
+        synchronized(this) {
+            waiting = null
+            queue.forEach { looper.post(it) }
+        }
+    }
 }
 
 /**
@@ -126,7 +166,7 @@ interface TokamakPlugin {
     val id: String
 
     /** Serial executor for this operation and its cancellation. */
-    fun executor(method: String): Executor = uiExecutor
+    fun executor(method: String): Executor = TokamakMainThread
 
     fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? =
         call(method, decodePluginValue(payload)) { reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), true)) }
@@ -185,23 +225,21 @@ interface TokamakHost {
     suspend fun requestPermissions(permissions: Set<String>): Map<String, Boolean>
 
     /**
-     * Delivers the plugin's event [name], which the Worker's listeners receive as
-     * `<plugin>.android.<name>`, with its encoded [payload], and returns their encoded reply, which
-     * is empty when none replied. Starts the runtime when it is not running. Blocks, so call it off
-     * the main thread; throws unless the listeners return within [timeoutMillis], which includes
-     * runtime startup.
+     * Delivers the plugin's event [name] to the Worker's method of that name, with its encoded
+     * [payload], and returns the method's encoded reply, which is empty when it returns nothing.
+     * Starts the runtime when it is not running. Blocks, so call it off the main thread; throws
+     * unless the method returns within [timeoutMillis], which includes runtime startup.
      */
     fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray
 
     /**
-     * Delivers [event] to the Worker's listeners of the plugin's event [name], which
-     * `Exports.kt` lists. Starts the runtime when it is not running. Blocks, so call it off
-     * the main thread; throws unless the listeners return within [timeoutMillis], which includes
-     * runtime startup.
+     * Delivers [event] to the Worker's method [name], the plugin's event that `Exports.kt` lists.
+     * Starts the runtime when it is not running. Blocks, so call it off the main thread; throws
+     * unless the method returns within [timeoutMillis], which includes runtime startup.
      */
     fun emit(name: String, event: Any, timeoutMillis: Long)
 
-    /** [emit] of an event whose listeners may reply, returning the reply, or null when none replied. */
+    /** [emit] of an event whose handler may reply, returning the reply, or null without one. */
     fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R?
 
     /**

@@ -113,9 +113,8 @@ impl KotlinPlugins {
     }
 }
 
-/// Start the runtime, which delivers `start` with `foreground` and whose Worker
-/// calls `plugins`, a `TokamakRuntime.Plugins`. Return an opaque handle, or
-/// throw on failure.
+/// Start the runtime, whose Worker calls `plugins`, a
+/// `TokamakRuntime.Plugins`. Return an opaque handle, or throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     mut env: JNIEnv,
@@ -124,10 +123,9 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     state_dir: JString,
     storage_dir: JString,
     host: JString,
-    foreground: jboolean,
     plugins: JObject,
 ) -> jlong {
-    let result = shell(&mut env, foreground == JNI_TRUE, &plugins).and_then(|shell| {
+    let result = shell(&mut env, &plugins).and_then(|shell| {
         start(
             &mut env,
             [&packaged_dir, &state_dir, &storage_dir, &host],
@@ -137,9 +135,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     into_handle(&mut env, result, "runtime startup failed")
 }
 
-/// Start the development runtime, which delivers `start` with `foreground` and
-/// whose development Worker calls `plugins`, a `TokamakRuntime.Plugins`.
-/// Return an opaque handle, or throw on failure.
+/// Start the development runtime, whose development Worker calls `plugins`,
+/// a `TokamakRuntime.Plugins`. Return an opaque handle, or throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelopment(
     mut env: JNIEnv,
@@ -148,10 +145,9 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelo
     host: JString,
     endpoint: JString,
     session_token: JString,
-    foreground: jboolean,
     plugins: JObject,
 ) -> jlong {
-    let result = shell(&mut env, foreground == JNI_TRUE, &plugins).and_then(|shell| {
+    let result = shell(&mut env, &plugins).and_then(|shell| {
         start_development(
             &mut env,
             [&state_dir, &host, &endpoint, &session_token],
@@ -161,8 +157,38 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelo
     into_handle(&mut env, result, "development runtime startup failed")
 }
 
+/// Whether the Tokamak worker of the app packaged in `packaged_dir` runs for
+/// the events that call `handler`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeHasHandler(
+    mut env: JNIEnv,
+    _: JClass,
+    packaged_dir: JString,
+    handler: JString,
+) -> jboolean {
+    let app = text(&mut env, &packaged_dir).map(crate::PackageLayout::new);
+    let handler = text(&mut env, &handler);
+    jboolean::from(
+        matches!((app, handler), (Ok(app), Ok(handler)) if crate::has_handler(&app, &handler)),
+    )
+}
+
+/// Record whether the app starts in the `foreground`, and deliver `_onStart`
+/// with it in the background.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeDeliverStart(
+    _: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    foreground: jboolean,
+) {
+    if let Some(runtime) = runtime(handle) {
+        runtime.deliver_start(foreground == JNI_TRUE);
+    }
+}
+
 /// Record whether the app is in the foreground, returning whether that
-/// changed. The shell then emits `resume` or `suspend`.
+/// changed. The shell then emits `_onResume` or `_onSuspend`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeSetForeground(
     _: JNIEnv,
@@ -288,9 +314,9 @@ fn millis(value: jlong) -> Duration {
     Duration::from_millis(u64::try_from(value).unwrap_or(0))
 }
 
-/// Deliver the event `name`, whose JSON is `event`, to the Worker's
-/// listeners, blocking for up to `timeout_millis`. Returns the reply's JSON;
-/// throws when the event fails.
+/// Deliver the event `name`, whose JSON is `event`, to the Worker's method
+/// of that name, blocking for up to `timeout_millis`. Returns the reply's
+/// JSON; throws when the event fails.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeEmit<'local>(
     mut env: JNIEnv<'local>,
@@ -378,13 +404,8 @@ fn start_development(
     )
 }
 
-fn shell(
-    env: &mut JNIEnv,
-    foreground: bool,
-    plugins: &JObject,
-) -> Result<Shell<KotlinPlugins>, String> {
+fn shell(env: &mut JNIEnv, plugins: &JObject) -> Result<Shell<KotlinPlugins>, String> {
     Ok(Shell {
-        foreground,
         plugins: KotlinPlugins::new(env, plugins)?,
         report,
     })

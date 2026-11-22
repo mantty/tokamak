@@ -46,8 +46,8 @@ private const val POST_TIMEOUT_MILLIS = 1_000L
 private const val REGISTER_TIMEOUT_SECONDS = 30L
 
 /**
- * How long the Worker's listeners have for an opened or dismissed notification, within the 10
- * seconds Android allows a broadcast receiver.
+ * How long the Worker has for an opened or dismissed notification, within the 10 seconds Android
+ * allows a broadcast receiver.
  */
 private const val RESPONSE_DEADLINE_MILLIS = 8_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
@@ -247,7 +247,7 @@ class TokamakNotificationsPlugin(
         intent.removeExtra(OPENED_EXTRA)
         intent.removeExtra(FCM_MESSAGE_ID_EXTRA)
         intent.removeExtra(GROUP_EXTRA)
-        deliver(this.opened, "opened", opened) {}
+        deliver(this.opened, "_onNotificationOpened", opened) {}
     }
 
     /** Delivers an action without `foreground`, or a dismissed notification. Call it on the main thread. */
@@ -256,8 +256,8 @@ class TokamakNotificationsPlugin(
         val opened = intent.getStringExtra(OPENED_EXTRA)?.let { opened(intent, it) }
         dismissed?.let { removeSummaryIfEmpty(intent, it.id) }
         when {
-            dismissed != null -> deliver(this.dismissed, "dismissed", dismissed, finish)
-            opened != null -> deliver(this.opened, "opened", opened, finish)
+            dismissed != null -> deliver(this.dismissed, "_onNotificationDismissed", dismissed, finish)
+            opened != null -> deliver(this.opened, "_onNotificationOpened", opened, finish)
             else -> finish()
         }
     }
@@ -274,12 +274,12 @@ class TokamakNotificationsPlugin(
         return opened
     }
 
-    /** Delivers [value] to the page's [listeners] and the Worker's [event] listeners, then calls [finish]. */
+    /** Delivers [value] to the page's [listeners] and the Worker's method [event], then calls [finish]. */
     private fun <T : Any> deliver(listeners: TokamakListeners<T>, event: String, value: T, finish: () -> Unit) {
         listeners.send(value)
         Thread {
             runCatching { host.emit(event, value, RESPONSE_DEADLINE_MILLIS) }
-                .onFailure { Log.w("tokamak", "$event notification failed: ${it.message}") }
+                .onFailure { Log.w("tokamak", "$event failed: ${it.message}") }
             finish()
         }.start()
     }
@@ -293,8 +293,8 @@ class TokamakNotificationsPlugin(
     }
 
     /**
-     * Delivers an FCM message to the page, and a data-only message to the Worker's `onPush`
-     * listeners, showing the notification they reply with. FCM calls this off the main thread.
+     * Delivers an FCM message to the page, and a data-only message to the Worker's `_onPush`,
+     * showing the notification it replies with. FCM calls this off the main thread.
      */
     internal fun onMessageReceived(received: Message, notification: NotificationContent?) {
         val deadline = SystemClock.elapsedRealtime() + PUSH_DEADLINE_MILLIS
@@ -303,12 +303,12 @@ class TokamakNotificationsPlugin(
             presentBeforeReturning(notification, Source.Push, deadline)
             return
         }
-        runCatching { host.emit("push", received, NotificationContent::class, PUSH_DEADLINE_MILLIS) }
+        runCatching { host.emit("_onPush", received, NotificationContent::class, PUSH_DEADLINE_MILLIS) }
             .onSuccess { showReply(it, deadline) }
             .onFailure { Log.w("tokamak", "push notification failed: ${it.message}") }
     }
 
-    /** Shows the notification `onPush` listeners reply with, if any, with the images that load by [deadline]. */
+    /** Shows the notification `_onPush` replies with, if any, with the images that load by [deadline]. */
     private fun showReply(reply: NotificationContent?, deadline: Long) {
         if (reply == null) return
         runCatching {

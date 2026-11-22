@@ -72,12 +72,6 @@ fn assert_publishable_plugin(
     assert_eq!(manifest["schemaVersion"], 2);
     assert_plugin_modules_exist(path, &manifest)?;
     let native = !families.is_empty();
-    assert_eq!(
-        package["exports"]["./events"].as_str(),
-        native.then_some("./src/events.ts"),
-        "{package}"
-    );
-    assert_eq!(path.join("src/events.ts").is_file(), native);
     // Generated files keep LF, as `tok plugin check` compares them byte for byte.
     let attributes = std::fs::read_to_string(path.join(".gitattributes")).unwrap_or_default();
     assert_eq!(attributes.contains("*.generated.* text eol=lf"), native);
@@ -119,18 +113,16 @@ fn scaffolds_each_family_for_the_named_platforms() -> TestResult {
     for family in ["apple", "android"] {
         assert_native_package(&path, &package, &manifest, family)?;
     }
-    // Each family's listeners register on the named platforms only.
-    assert!(
-        std::fs::read_to_string(path.join("src/apple.generated.ts"))?
-            .contains(r#"defineEvent("phone-tools.apple.echoed", { platforms: ["ios"] })"#)
-    );
+    for family in ["apple", "android"] {
+        assert!(
+            std::fs::read_to_string(path.join(format!("src/{family}.generated.ts")))?
+                .contains("_onEchoed?(event: Echo): void | Promise<void>;")
+        );
+    }
     assert!(
         std::fs::read_to_string(path.join("src/index.ts"))?
             .contains("platformApi(ctx, { apple, android })")
     );
-    let events = std::fs::read_to_string(path.join("src/events.ts"))?;
-    assert!(events.contains("apple.onEchoed(listener);"), "{events}");
-    assert!(events.contains("android.onEchoed(listener);"), "{events}");
     Ok(())
 }
 

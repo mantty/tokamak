@@ -374,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn fails_an_event_while_the_development_server_is_unreachable() {
-        let socket = DevSocket::new(PluginCalls::new(None, true));
+        let socket = DevSocket::new(PluginCalls::new(None));
         let deadline = Instant::now() + Duration::from_millis(50);
 
         let error = socket.deliver("example.ping", b"{}", deadline).await.err();

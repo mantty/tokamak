@@ -5206,6 +5206,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tao",
+ "tempfile",
  "tokamak",
  "url",
  "webview2-com",

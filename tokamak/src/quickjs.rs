@@ -1,7 +1,7 @@
 //! `QuickJS` runtime integration for tokamak.
 
 #[cfg(feature = "native")]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "native")]
 use std::sync::Arc;
 
@@ -43,6 +43,8 @@ pub struct WorkerBundle {
     pub(crate) entry: String,
     /// The type of each module, by name.
     pub(crate) module_types: Arc<BTreeMap<String, ModuleType>>,
+    /// The handlers the app's build recorded for the Worker.
+    pub(crate) handlers: Option<Arc<BTreeSet<String>>>,
     /// The packaged app holding the Worker.
     pub(crate) app: PackageLayout,
     /// The read-only `/bundle`, which holds the Text and Data modules.
@@ -57,6 +59,7 @@ impl WorkerBundle {
         Self {
             entry: manifest.entry,
             module_types: Arc::new(manifest.modules),
+            handlers: manifest.handlers.map(Arc::new),
             vfs_bundle: VfsBundle::new(app.bundle()),
             app,
         }

@@ -55,8 +55,10 @@ use wry::{
     WebViewBuilderExtWindows, WebViewExtWindows,
 };
 
-/// How long the Worker has for `resume` and `suspend`.
+/// How long the Worker has for `_onResume` and `_onSuspend`.
 const LIFECYCLE_DEADLINE: Duration = Duration::from_secs(10);
+/// How long the window stays hidden for the Worker's `_beforeStart`.
+const BEFORE_START_DEADLINE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,13 +77,17 @@ pub(crate) fn run() -> Result<()> {
     let root = executable_dir()?;
     let config = read_config(&root)?;
     let state = state_dir(&config.slug)?;
-    let start = spawn_runtime(&config, &root, &state, events.clone())?;
+    let (before_start, before_start_finished) = mpsc::channel();
+    let start = spawn_runtime(&config, &root, &state, events.clone(), before_start)?;
     let window = build_window(&event_loop, &root, &config.name)?;
     let splash = config
         .splash
         .as_ref()
         .map(|splash| Splash::open(&root, splash, &window))
         .transpose()?;
+    if receives_before_start(&config, &root) {
+        let _ = before_start_finished.recv_timeout(BEFORE_START_DEADLINE);
+    }
     window.set_visible(true);
     if let Some(splash) = &splash {
         // Windows sends WM_PAINT only once its message queue is empty, and
@@ -503,8 +509,8 @@ fn build_webview(
     Ok(webview)
 }
 
-/// Delivers `resume` for each `true` the returned sender receives and
-/// `suspend` for each `false`, one at a time, until the sender is dropped.
+/// Delivers `_onResume` for each `true` the returned sender receives and
+/// `_onSuspend` for each `false`, one at a time, until the sender is dropped.
 /// The event loop sends each change it records with `set_foreground`.
 fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, JoinHandle<()>)> {
     let (sender, receiver) = mpsc::channel::<bool>();
@@ -512,7 +518,11 @@ fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, Join
         .name("tokamak-lifecycle".to_owned())
         .spawn(move || {
             for foreground in receiver {
-                let name = if foreground { "resume" } else { "suspend" };
+                let name = if foreground {
+                    "_onResume"
+                } else {
+                    "_onSuspend"
+                };
                 if let Err(error) = runtime.emit(name, b"{}", LIFECYCLE_DEADLINE) {
                     eprintln!("tokamak {name} failed: {error}");
                 }
@@ -522,18 +532,35 @@ fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, Join
     Ok((sender, deliveries))
 }
 
-/// Starts the runtime on a thread, which sends `ShellEvent::Started` with it.
+/// Whether the Worker receives `_beforeStart`: its packaged class has that
+/// method, or it runs in the development server, which receives every event.
+fn receives_before_start(config: &ShellConfig, root: &Path) -> bool {
+    config.dev_endpoint.is_some()
+        || tokamak::has_handler(&PackageLayout::new(root.join("app")), "_beforeStart")
+}
+
+/// Starts the runtime on a thread, which delivers `_beforeStart`, tells
+/// `before_start` once it has returned, delivers `_onStart` in the foreground
+/// and sends `ShellEvent::Started` with the runtime.
 fn spawn_runtime(
     config: &ShellConfig,
     root: &Path,
     state: &Path,
     events: EventLoopProxy<ShellEvent>,
+    before_start: Sender<()>,
 ) -> Result<JoinHandle<()>> {
     let (config, root, state) = (config.clone(), root.to_owned(), state.to_owned());
     thread::Builder::new()
         .name("tokamak-start".to_owned())
         .spawn(move || {
             let runtime = start_runtime(&config, &root, &state, events.clone());
+            if let Ok(runtime) = &runtime {
+                if let Err(error) = runtime.emit("_beforeStart", b"{}", BEFORE_START_DEADLINE) {
+                    eprintln!("tokamak _beforeStart failed: {error}");
+                }
+                let _ = before_start.send(());
+                runtime.deliver_start(true);
+            }
             let _ = events.send_event(ShellEvent::Started(runtime));
         })
         .context("start the runtime")
@@ -562,7 +589,6 @@ fn start_runtime(
                     endpoint: endpoint.to_owned(),
                     session_token: session_token.to_owned(),
                 },
-                foreground: true,
                 plugins: Some(plugins),
             },
             listener,
@@ -573,7 +599,6 @@ fn start_runtime(
                 state_dir: state.join("runtime"),
                 storage_dir: state.join("storage"),
                 host: config.host.clone(),
-                foreground: true,
                 plugins: Some(plugins),
             },
             listener,
@@ -972,9 +997,34 @@ mod tests {
 
     use super::{
         COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
-        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, PermissionPrompt, app_permission_prompt,
-        browser_arguments, is_app_origin,
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, PermissionPrompt, ShellConfig,
+        app_permission_prompt, browser_arguments, is_app_origin, receives_before_start,
     };
+
+    #[test]
+    fn waits_for_before_start_in_development_or_when_the_build_recorded_it() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let worker = root.path().join("app").join("tokamak");
+        std::fs::create_dir_all(&worker)?;
+        let record = |handler: &str| {
+            let manifest =
+                format!(r#"{{"entry":"index.js","modules":{{}},"handlers":["{handler}"]}}"#);
+            std::fs::write(worker.join("worker-manifest.json"), manifest)
+        };
+        let packaged: ShellConfig =
+            serde_json::from_str(r#"{"name":"App","slug":"app","host":"app.tokamak.local"}"#)?;
+        let development = ShellConfig {
+            dev_endpoint: Some("http://127.0.0.1:4321".to_owned()),
+            ..packaged.clone()
+        };
+
+        record("_onStart")?;
+        assert!(!receives_before_start(&packaged, root.path()));
+        assert!(receives_before_start(&development, root.path()));
+        record("_beforeStart")?;
+        assert!(receives_before_start(&packaged, root.path()));
+        Ok(())
+    }
 
     #[test]
     fn routes_only_the_app_host_through_the_local_proxy() -> anyhow::Result<()> {

@@ -12,7 +12,6 @@ import type {
   PositionOptions,
   Region,
   RegionTransition,
-  SetupConfig,
   UpdateOptions,
   Visit,
 } from "./types.js";
@@ -37,11 +36,29 @@ export function location(ctx: TokamakContext) {
     },
 
     /**
-     * Applies long-term location awareness, replacing the previous configuration, which the plugin
-     * keeps and applies again at each start. Rejects on Apple platforms with `NotSupportedError` where
-     * the device cannot monitor significant changes.
+     * Starts delivering moves of 500 metres or more, at most every 5 minutes, to
+     * `_onLocationUpdate`, located from cellular and Wi-Fi rather than GPS, until
+     * `stopSignificantChanges`: Apple's significant-change service, and on Android a low-power
+     * request with the same thresholds, which Android limits to a few an hour off screen. They use
+     * little power and show no indicator. Off screen they need permission at all times, with which
+     * the system launches the app for one. Call it at each launch for as long as the app wants them,
+     * from `_beforeStart` or `_onStart`. Rejects on Android with `NotAllowedError` without in-use
+     * permission, and on Apple platforms with `NotSupportedError` where the device cannot monitor
+     * significant changes.
      */
-    setup: (config: SetupConfig): Promise<void> => native.setup(config),
+    startSignificantChanges: (): Promise<void> => native.startSignificantChanges(),
+
+    stopSignificantChanges: (): Promise<void> => native.stopSignificantChanges(),
+
+    /**
+     * Starts delivering arrivals at and departures from places to `_onVisit`, across launches, until
+     * `stopVisits`. Off screen they need permission at all times.
+     * @platforms ios macos
+     */
+    startVisits: (): Promise<void> => apple(ctx).startVisits(),
+
+    /** @platforms ios macos */
+    stopVisits: (): Promise<void> => apple(ctx).stopVisits(),
 
     /**
      * The device's position, asking for in-use permission where the user has not answered. Rejects
@@ -98,8 +115,8 @@ export function location(ctx: TokamakContext) {
     openSettings: (): Promise<void> => native.openSettings(),
 
     /**
-     * Starts continuous tracking, replacing any running, until `stopUpdates`; `setup` gives long-term
-     * awareness instead. The updates' positions reach `onLocationUpdate`, including after the system
+     * Starts continuous tracking, replacing any running, until `stopUpdates`. Significant changes
+     * suit long-term awareness. The updates' positions reach `_onLocationUpdate`, including after the system
      * ended the app. Rejects with `NotAllowedError` without in-use permission, and on iOS with
      * `NeedsUIError` off screen. Android's `foregroundService` rejects with `NotSupportedError`
      * without the `background-updates` build setting, and with `NeedsUIError` when Android does not
@@ -114,7 +131,7 @@ export function location(ctx: TokamakContext) {
 
     /**
      * Monitors a circular region, replacing one with the same `id`, until `removeRegion`. Its entries
-     * and exits reach `onRegionTransition`, including when the system launches the app for one. A
+     * and exits reach `_onRegionTransition`, including when the system launches the app for one. A
      * region starts outside, so a device already inside reports an entry. Rejects with
      * `NotAllowedError` without precise location, and with `QuotaExceededError` beyond Apple's 20.
      */
@@ -125,19 +142,19 @@ export function location(ctx: TokamakContext) {
 
     removeRegion: (id: string): Promise<void> => native.removeRegion(id),
 
-    /** Receives the updates the Worker's `onLocationUpdate` receives, while the listening page or Worker runs. */
+    /** Receives the updates the Worker's `_onLocationUpdate` receives, while the listening page or Worker runs. */
     onLocationUpdate: (): JsonStream<LocationUpdate> => native.onLocationUpdate(),
 
-    /** Receives the transitions the Worker's `onRegionTransition` receives, while the listening page or Worker runs. */
+    /** Receives the transitions the Worker's `_onRegionTransition` receives, while the listening page or Worker runs. */
     onRegionTransition: (): JsonStream<RegionTransition> => native.onRegionTransition(),
 
     /**
-     * Receives the visits the Worker's `onVisit` receives, while the listening page or Worker runs.
+     * Receives the visits the Worker's `_onVisit` receives, while the listening page or Worker runs.
      * @platforms ios macos
      */
     onVisit: (): JsonStream<Visit> => apple(ctx).onVisit(),
 
-    /** Receives the failures the Worker's `onLocationError` receives, while the listening page or Worker runs. */
+    /** Receives the failures the Worker's `_onLocationError` receives, while the listening page or Worker runs. */
     onLocationError: (): JsonStream<LocationErrorEvent> => native.onLocationError(),
   };
 }

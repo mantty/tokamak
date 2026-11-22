@@ -44,16 +44,17 @@ struct Method {
     platforms: Vec<String>,
 }
 
-/// An event native code emits, which the Worker's listeners receive and may reply to.
+/// An event native code emits, which calls the Worker's handler and may take its reply.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Event {
+    /// The handler: the method of the Tokamak worker's class the event calls.
     name: String,
     #[serde(default)]
     doc: String,
     #[serde(rename = "type")]
     ty: Type,
-    /// What a listener replies with, for an event that takes a reply.
+    /// What the handler replies with, for an event that takes a reply.
     reply: Option<Type>,
     /// The family's platforms that declare the event's type, when only some of them do.
     #[serde(default)]
@@ -343,7 +344,6 @@ const GENERATED: &[&str] = &[
     "NativeReference",
     "TokamakContext",
     "decodeJson",
-    "defineEvent",
     "encodeJson",
 ];
 
@@ -416,11 +416,14 @@ impl Description {
                 .validate(&types)
                 .map_err(|error| error.context(format!("method {}", method.name)))?;
         }
-        let mut listeners = BTreeSet::new();
+        let mut handlers = BTreeSet::new();
         for event in &self.events {
             check_identifier("event", &event.name)?;
-            if !listeners.insert(event.listener()) {
-                bail!("two events register {}", event.listener());
+            if !event.name.starts_with('_') {
+                bail!("event {} names a handler, which starts with _", event.name);
+            }
+            if !handlers.insert(event.name.as_str()) {
+                bail!("two events call {}", event.name);
             }
             event
                 .validate(&types)
@@ -455,15 +458,6 @@ impl Event {
             Some(reply) => check_value(reply, types).context("reply"),
             None => Ok(()),
         }
-    }
-
-    /// The name of the function that registers the event's listeners, such as `onUpdate`.
-    fn listener(&self) -> String {
-        let mut listener = String::from("on");
-        let mut characters = self.name.chars();
-        listener.extend(characters.next().map(|first| first.to_ascii_uppercase()));
-        listener.push_str(characters.as_str());
-        listener
     }
 }
 
@@ -704,8 +698,8 @@ fn check_identifier(kind: &str, name: &str) -> Result<()> {
 }
 
 /// The TypeScript platform API of plugin `id` on the `platforms` of `family` it supports: the
-/// described types, an interface of the methods, the factory that creates it, and the functions
-/// that register listeners of the events.
+/// described types, an interface of the methods, the factory that creates it, and the handlers
+/// the events call.
 pub(crate) fn typescript(
     description: &Description,
     id: &str,
@@ -749,59 +743,32 @@ pub(crate) fn typescript(
     );
     source.push_str("  };\n}\n");
     if !description.events.is_empty() {
-        source.push_str(&events(description, id, family, &namespaces));
+        source.push_str(&handlers(&description.events));
     }
     source
 }
 
-/// The declarations of the events' data and replies, which the Worker's listeners receive as
-/// `<id>.<family>.<name>`, and the functions that register the listeners on the platforms that
-/// emit the events, of the family's `platforms`.
-fn events(description: &Description, id: &str, family: Family, platforms: &[&str]) -> String {
-    let event_type = |event: &Event| format!("{id}.{}.{}", family.name(), event.name);
-    let mut source = "\ndeclare global {\n  // eslint-disable-next-line @typescript-eslint/no-namespace -- events are declared by merging into Tokamak.Events.\n  namespace Tokamak {\n    interface Events {\n".to_owned();
-    for event in &description.events {
+/// The declarations of the handlers `events` call, which type the methods of the Tokamak worker's
+/// class.
+fn handlers(events: &[Event]) -> String {
+    let mut source = "\ndeclare global {\n  // eslint-disable-next-line @typescript-eslint/no-namespace -- handlers are declared by merging into Tokamak.Handlers.\n  namespace Tokamak {\n    interface Handlers {\n".to_owned();
+    for event in events {
+        let reply = event.reply.as_ref().map_or_else(
+            || "void | Promise<void>".to_owned(),
+            |reply| {
+                let reply = typescript_type(reply, false);
+                format!("{reply} | undefined | Promise<{reply} | undefined>")
+            },
+        );
         let _ = writeln!(
             source,
-            "      {:?}: {};",
-            event_type(event),
+            "{}      {}?(event: {}): {reply};",
+            documentation(&event.doc, &event.platforms, "      "),
+            event.name,
             typescript_type(&event.ty, false)
         );
     }
-    source.push_str("    }\n");
-    let replies = description
-        .events
-        .iter()
-        .filter_map(|event| Some((event, event.reply.as_ref()?)))
-        .collect::<Vec<_>>();
-    if !replies.is_empty() {
-        source.push_str("    interface EventReplies {\n");
-        for (event, reply) in replies {
-            let _ = writeln!(
-                source,
-                "      {:?}: {};",
-                event_type(event),
-                typescript_type(reply, false)
-            );
-        }
-        source.push_str("    }\n");
-    }
-    source.push_str("  }\n}\n");
-    for event in &description.events {
-        let emitting = if event.platforms.is_empty() {
-            platforms.to_vec()
-        } else {
-            event.platforms.iter().map(String::as_str).collect()
-        };
-        let _ = write!(
-            source,
-            "\n{}export const {} = defineEvent({:?}, {{ platforms: {emitting:?} }});\n",
-            documentation(&event.doc, &event.platforms, ""),
-            event.listener(),
-            event_type(event)
-        );
-    }
-    source
+    source + "    }\n  }\n}\n"
 }
 
 fn interface_name(family: Family) -> &'static str {
@@ -872,14 +839,10 @@ fn imports(description: &Description) -> String {
         .into_iter()
         .filter_map(|(name, used)| used.then_some(name))
         .collect::<Vec<_>>();
-    let mut imports = format!(
+    format!(
         "import {{ {} }} from \"@tokamakdev/plugin\";\n",
         names.join(", ")
-    );
-    if !description.events.is_empty() {
-        imports.push_str("import { defineEvent } from \"@tokamakdev/plugin/events\";\n");
-    }
-    imports
+    )
 }
 
 /// Whether `ty` is or holds any JSON value.
@@ -1224,32 +1187,32 @@ mod tests {
     fn rejects_events_the_platform_api_cannot_express() -> anyhow::Result<()> {
         assert_rejected(&[
             (
-                r#"{"methods": [], "types": [{"name": "defineEvent", "values": ["a"]}]}"#,
-                "the generated API declares",
-            ),
-            (
-                r#"{"methods": [], "events": [{"name": "on-update", "type": "string"}]}"#,
+                r#"{"methods": [], "events": [{"name": "_on-update", "type": "string"}]}"#,
                 "not a JavaScript identifier",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "update", "type": "string"}, {"name": "Update", "type": "number"}]}"#,
-                "two events register onUpdate",
+                r#"{"methods": [], "events": [{"name": "onUpdate", "type": "string"}]}"#,
+                "names a handler, which starts with _",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "update", "type": "void"}]}"#,
+                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "string"}, {"name": "_onUpdate", "type": "number"}]}"#,
+                "two events call _onUpdate",
+            ),
+            (
+                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "void"}]}"#,
                 "only a call's result",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "update", "type": "string", "reply": "bytes"}]}"#,
-                "event update: reply: bytes",
+                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "string", "reply": "bytes"}]}"#,
+                "event _onUpdate: reply: bytes",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "update", "type": "reference"}]}"#,
-                "event update: a native reference is a parameter",
+                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "reference"}]}"#,
+                "event _onUpdate: a native reference is a parameter",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "update", "type": {"named": "Missing"}}]}"#,
-                "event update: type Missing is not described",
+                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": {"named": "Missing"}}]}"#,
+                "event _onUpdate: type Missing is not described",
             ),
         ])
     }

@@ -28,9 +28,9 @@ struct Registration: Equatable {
 /// An event the registration file lists.
 struct EventRegistration: Equatable {
   let name: String
-  /// The type listeners receive, as the registration spells it, such as `Update`.
+  /// The type the handler receives, as the registration spells it, such as `Update`.
   let type: String
-  /// The type listeners reply with, as the registration spells it.
+  /// The type the handler replies with, as the registration spells it.
   let reply: String?
   let doc: String
 }

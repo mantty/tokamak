@@ -29,8 +29,7 @@ const CALLER = `export default {
     if (new URL(request.url).pathname.startsWith("/_tokamak/")) return env.TOKAMAK.fetch(request);
     const name = request.headers.get("x-tokamak-event");
     try {
-      const { reply } = await env.EVENTS.dispatch(name, new Uint8Array(await request.arrayBuffer()));
-      return new Response(reply);
+      return new Response(await env.EVENTS.dispatch(name, new Uint8Array(await request.arrayBuffer())));
     } catch (error) {
       return new Response(error?.stack ?? String(error), { status: 500 });
     }

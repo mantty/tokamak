@@ -31,7 +31,8 @@ for await (const message of decodeValues<Message>(notifications.onMessage())) {
 
 Subscription methods return byte streams of JSON values. Use `decodeValues<T>`
 to read them and cancel the stream when finished. Stream errors terminate
-the subscription. Background handlers are registered separately via `/events`.
+the subscription. The Tokamak worker receives background events as
+[handlers](../../README.md#events).
 
 ## Permission
 
@@ -97,12 +98,12 @@ everywhere:
 
 ```ts
 // src/tokamak.ts
-import { onStart } from "@tokamakdev/tok/events";
 import { notifications } from "@tokamakdev/plugin-notifications";
+import { TokamakEntrypoint } from "@tokamakdev/tok";
 
-onStart((_event, _env, ctx) => {
-  ctx.waitUntil(
-    notifications(ctx).setup({
+export default class Native extends TokamakEntrypoint {
+  async _beforeStart() {
+    await notifications(this.ctx).setup({
       categories: [
         {
           id: "message",
@@ -117,9 +118,9 @@ onStart((_event, _env, ctx) => {
       showInForeground: { banner: true, list: true },
       defaultChannel: { name: "General" },
       channels: [{ id: "messages", name: "Messages", importance: "high" }],
-    }),
-  );
-});
+    });
+  }
+}
 ```
 
 ```ts
@@ -148,11 +149,11 @@ pass them in the user's language.
 ### Categories and actions
 
 A notification that names a `category` shows the category's actions. Choosing
-one removes the notification and reaches `onNotificationOpened` with the
+one removes the notification and reaches `_onNotificationOpened` with the
 action's `id` as `action`, and the text typed into an action with `input` as
 `input`. An action without `foreground` does not open the app: the Worker's
-listeners receive it, starting the app in the background if it is not running,
-and so do the page's while it is loaded.
+`_onNotificationOpened` receives it, starting the app in the background if it
+is not running, and so do the page's listeners while it is loaded.
 
 | Key | iOS, macOS | Android | Web |
 |---|---|---|---|
@@ -167,7 +168,7 @@ and so do the page's while it is loaded.
 Push notifications name a category in their payload: `aps.category` for APNs
 and `category` for Web Push. FCM notification messages have none; to give a
 push notification actions on Android, send a data-only message and return the
-notification, with its `category`, from `onPush`.
+notification, with its `category`, from `_onPush`.
 
 ### While the app is on screen
 
@@ -386,7 +387,7 @@ await notifications.show({
 In native builds the plugin loads them before it shows the notification, and
 `show` resolves once it shows. One that does not load within 10 seconds, 8 on
 Android, or that the platform cannot use is left out, and the notification
-shows without it. A notification the Worker returns from `onPush` has what
+shows without it. A notification the Worker returns from `_onPush` has what
 remains of the time the platform allows for the message. A `remove` while the
 images load keeps the notification from showing, and a later `show` with the
 same `id` replaces it.
@@ -423,13 +424,15 @@ not the app starts on screen:
 
 ```ts
 // src/tokamak.ts
-import { onStart } from "@tokamakdev/tok/events";
 import { notifications } from "@tokamakdev/plugin-notifications";
+import { TokamakEntrypoint } from "@tokamakdev/tok";
 
-onStart(async (_event, _env, ctx) => {
-  const subscription = await notifications(ctx).subscribe();
-  await fetch("https://api.example.com/push-tokens", { method: "POST", body: JSON.stringify(subscription) });
-});
+export default class Native extends TokamakEntrypoint {
+  async _onStart() {
+    const subscription = await notifications(this.ctx).subscribe();
+    await fetch("https://api.example.com/push-tokens", { method: "POST", body: JSON.stringify(subscription) });
+  }
+}
 ```
 
 | Platform | Subscription | Push service |
@@ -506,29 +509,30 @@ FCM notification messages carry Android's badge as
 
 ### Data-only messages
 
-In native builds, the Worker's `onPush` listeners receive each message without
+In native builds, the Tokamak worker's `_onPush` receives each message without
 a title or body, whether the app is in the foreground, in the background, or
-started by the message. Register them in `src/tokamak.ts`, the module the
-tokamak Vite plugin runs only on the device:
+started by the message:
 
 ```ts
 // src/tokamak.ts
-import { onPush } from "@tokamakdev/plugin-notifications/events";
+import type { Message } from "@tokamakdev/plugin-notifications";
+import { TokamakEntrypoint } from "@tokamakdev/tok";
 
-onPush(async (message) => {
-  const item = await fetch(`https://api.example.com/items/${String(message.data.itemId)}`);
-  // Return a notification to show it, or return nothing.
-  return { id: `item-${String(message.data.itemId)}`, title: "New item", body: (await item.json()).summary };
-});
+export default class Native extends TokamakEntrypoint {
+  async _onPush(message: Message) {
+    const item = await fetch(`https://api.example.com/items/${String(message.data.itemId)}`);
+    // Return a notification to show it, or return nothing.
+    return { id: `item-${String(message.data.itemId)}`, title: "New item", body: (await item.json()).summary };
+  }
+}
 ```
 
-`message` is the `Message`, whose `data` is `Record<string, unknown>`; FCM
-delivers every `data` value as a string. The first notification a listener
-returns is shown as `show` shows one. The page also receives the message
-through `onMessage` while it is loaded. Builds for Cloudflare and the web
-include no listeners.
+`message.data` is `Record<string, unknown>`; FCM delivers every `data` value
+as a string. The notification `_onPush` returns is shown as `show` shows one.
+The page also receives the message through `onMessage` while it is loaded.
+Builds for Cloudflare and the web include no Tokamak worker.
 
-The listeners have until the plugin's time for the message runs out, which
+`_onPush` has until the plugin's time for the message runs out, which
 includes starting the app. The plugin logs a message it could not deliver to
 the device log as `push notification failed: <reason>`.
 
@@ -559,20 +563,22 @@ in the same way. Apple platforms report only notifications whose category has
 removed, and does not report notifications FCM showed. The web reports only
 notifications its service worker showed.
 
-In native builds, the Worker's `onNotificationOpened` and
-`onNotificationDismissed` listeners, from
-`@tokamakdev/plugin-notifications/events`, also receive each notification,
-whether or not the app is on screen:
+In native builds, the Tokamak worker's `_onNotificationOpened` and
+`_onNotificationDismissed` also receive each notification, whether or not the
+app is on screen:
 
 ```ts
 // src/tokamak.ts
-import { onNotificationOpened } from "@tokamakdev/plugin-notifications/events";
+import type { OpenedNotification } from "@tokamakdev/plugin-notifications";
+import { TokamakEntrypoint } from "@tokamakdev/tok";
 
-onNotificationOpened((opened, env, ctx) => {
-  if (opened.action === "reply" && opened.input !== undefined) {
-    ctx.waitUntil(env.REPLIES.put(opened.id, opened.input));
+export default class Native extends TokamakEntrypoint {
+  async _onNotificationOpened(opened: OpenedNotification) {
+    if (opened.action === "reply" && opened.input !== undefined) {
+      await this.env.REPLIES.put(opened.id, opened.input);
+    }
   }
-});
+}
 ```
 
 ## Web

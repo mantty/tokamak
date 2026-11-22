@@ -17,8 +17,8 @@ private const val DEFAULT_INTERVAL_MILLIS = 10_000L
 /**
  * Location updates of one kind, [name]: `startUpdates`' or significant changes'. `LocationManager`
  * sends them to [TokamakLocationReceiver] through a `PendingIntent`, starting the app's process when
- * it has ended. Their options persist until [stop], and [restore] requests them where they are not
- * running. Use it on the main thread.
+ * it has ended. The options [start] is given persist until [stop], and [restore] requests them
+ * where they are not running. Use it on the main thread.
  */
 internal class LocationUpdates(private val host: TokamakHost, private val name: String) {
     private val context = host.context
@@ -29,23 +29,23 @@ internal class LocationUpdates(private val host: TokamakHost, private val name: 
     val options: UpdateOptions?
         get() = preferences.getString(name, null)?.let { host.fromJson(JSONObject(it), UpdateOptions::class) }
 
-    /** Keeps [options], which [restore] requests. */
-    fun keep(options: UpdateOptions) {
-        preferences.edit().putString(name, host.json(options).toString()).apply()
-    }
-
     /**
      * Keeps [options] and requests updates with them, replacing others; the same options running
      * change nothing. Throws `SecurityException` without permission.
      */
     fun start(options: UpdateOptions) {
         if (options == this.options && isRequested()) return
-        keep(options)
+        preferences.edit().putString(name, host.json(options).toString()).apply()
         request(options)
     }
 
     fun stop() {
         preferences.edit().remove(name).apply()
+        cancel()
+    }
+
+    /** Removes the request for updates. */
+    fun cancel() {
         pendingIntent(PendingIntent.FLAG_NO_CREATE)?.let {
             manager.removeUpdates(it)
             it.cancel()
@@ -71,7 +71,8 @@ internal class LocationUpdates(private val host: TokamakHost, private val name: 
             .firstOrNull()
             ?.reason == ApplicationExitInfo.REASON_USER_REQUESTED
 
-    private fun request(options: UpdateOptions) {
+    /** Requests updates with [options], replacing others. Throws `SecurityException` without permission. */
+    fun request(options: UpdateOptions) {
         val accuracy = options.accuracy ?: Accuracy.High
         val request =
             LocationRequest.Builder(options.interval ?: DEFAULT_INTERVAL_MILLIS)
@@ -109,7 +110,7 @@ internal class LocationUpdates(private val host: TokamakHost, private val name: 
         /** `startUpdates`' updates. */
         const val UPDATES = "updates"
 
-        /** Significant changes, as `setup` starts them. */
+        /** Significant changes, which the plugin requests without keeping their options. */
         const val SIGNIFICANT_CHANGES = "significantChanges"
     }
 }

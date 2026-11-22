@@ -24,7 +24,7 @@ class {{class}}Dispatch(host: TokamakHost) : TokamakDispatch<{{class}}>({{class}
     companion object : TokamakCodec {
         override fun eventPayload(name: String, event: Any): ByteArray =
             when (name) {
-                "echoed" -> encodeEvent(name, event, {{class}}.Echo::class) { json(it) }
+                "_onEchoed" -> encodeEvent(name, event, {{class}}.Echo::class) { json(it) }
                 else -> super.eventPayload(name, event)
             }
 

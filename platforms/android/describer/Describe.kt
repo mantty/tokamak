@@ -55,7 +55,7 @@ internal class Export(
     val suspends: Boolean,
 )
 
-/** An event as the registration lists it, with the types its listeners receive and reply with. */
+/** An event as the registration lists it, with the types its handler receives and replies with. */
 internal class Event(val name: String, val doc: String, val type: KType, val reply: KType?)
 
 /** The one object in [classes] that implements [TokamakExports]. */

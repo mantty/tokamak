@@ -49,7 +49,10 @@ class TokamakExporter<P : TokamakPlugin> {
     /** The events listed, in order. */
     val events: List<Event> get() = listedEvents
 
-    /** Lists the event [name], whose listeners receive a [type] and may reply with a [reply]. */
+    /**
+     * Lists the event [name]: the Worker's method [name], which starts with `_`, receives a [type]
+     * and may reply with a [reply].
+     */
     fun event(name: String, type: KClass<*>, reply: KClass<*>? = null, doc: String = "") {
         listedEvents += Event(name, type, reply, doc)
     }
@@ -125,10 +128,10 @@ interface TokamakCodec {
     /** [event] as the JSON payload of the event [name], which `Exports.kt` lists. */
     fun eventPayload(name: String, event: Any): ByteArray = throw TokamakPluginError.unlistedEvent(name)
 
-    /** The listeners' [reply] to the event [name], which `Exports.kt` lists with a reply, as its type. */
+    /** The handler's [reply] to the event [name], which `Exports.kt` lists with a reply, as its type. */
     fun eventReply(name: String, reply: TokamakValue): Any = throw TokamakPluginError.unlistedReply(name)
 
-    /** The listeners' encoded [payload] in reply to the event [name] as a [type], or null when none replied. */
+    /** The handler's encoded [payload] in reply to the event [name] as a [type], or null without a reply. */
     fun <R : Any> reply(name: String, payload: ByteArray, type: KClass<R>): R? {
         if (payload.isEmpty()) return null
         val json = decodePluginValue(payload).takeUnless { it == JSONObject.NULL } ?: return null
@@ -138,7 +141,7 @@ interface TokamakCodec {
     }
 
     /**
-     * [event] as the payload of the event [name], whose listeners receive a [type] as [encode]
+     * [event] as the payload of the event [name], whose handler receives a [type] as [encode]
      * encodes it, for the generated [eventPayload].
      */
     fun <T : Any> encodeEvent(name: String, event: Any, type: KClass<T>, encode: (T) -> Any?): ByteArray {

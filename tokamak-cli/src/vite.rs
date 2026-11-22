@@ -1,6 +1,7 @@
 //! The tokamak Vite plugin as `tok` runs it: `tok` activates it in the
 //! project's build or development command and reads what it reports.
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -110,6 +111,14 @@ impl VitePlugin {
     pub(crate) fn config(&self, command: &str) -> Result<ConfigReport> {
         self.report("config.json")?.with_context(|| {
             format!("{command} did not report its tokamak configuration; {PLUGIN_HINT}")
+        })
+    }
+
+    /// The handlers the Tokamak worker's class defines, as `command`, which
+    /// ran the plugin, reported them.
+    pub(crate) fn handlers(&self, command: &str) -> Result<BTreeSet<String>> {
+        self.report("worker/handlers.json")?.with_context(|| {
+            format!("{command} did not report the Tokamak worker's handlers; {PLUGIN_HINT}")
         })
     }
 

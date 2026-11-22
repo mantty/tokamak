@@ -41,7 +41,7 @@ impl PluginHandler for Shell {
 }
 fn with_shell() -> (Arc<Shell>, Arc<PluginCalls>) {
     let shell = Arc::new(Shell::default());
-    let calls = PluginCalls::new(Some(Arc::clone(&shell) as Arc<dyn PluginHandler>), true);
+    let calls = PluginCalls::new(Some(Arc::clone(&shell) as Arc<dyn PluginHandler>));
     (shell, calls)
 }
 fn value(payload: &[u8], done: bool) -> PluginReply {
@@ -146,6 +146,7 @@ async fn overflowing_a_subscription_reports_failure_and_cancels_native_work() ->
 #[tokio::test]
 async fn runtime_endpoints_encode_their_own_values_and_errors() -> TestResult {
     let (shell, calls) = with_shell();
+    assert!(calls.set_foreground(true));
     assert_eq!(
         calls
             .call("tokamak", "lifecycleStage", b"null")
@@ -163,9 +164,7 @@ async fn runtime_endpoints_encode_their_own_values_and_errors() -> TestResult {
         br#""background""#
     );
     assert!(shell.requests().is_empty());
-    let error = PluginCalls::new(None, false)
-        .call("tokamak", "unknown", &[])
-        .await;
+    let error = PluginCalls::new(None).call("tokamak", "unknown", &[]).await;
     assert!(error.failed && error.done);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&error.payload)?["name"],
@@ -176,7 +175,7 @@ async fn runtime_endpoints_encode_their_own_values_and_errors() -> TestResult {
 
 #[tokio::test]
 async fn missing_native_handler_fails_calls_and_subscriptions() -> TestResult {
-    let calls = PluginCalls::new(None, false);
+    let calls = PluginCalls::new(None);
     let result = calls.call("location", "getCurrentPosition", &[]).await;
     assert!(result.failed && result.done);
     let error = serde_json::from_slice::<serde_json::Value>(&result.payload)?;
@@ -197,7 +196,7 @@ async fn rejects_what_the_shell_does_not_implement_without_passing_it_on() -> Te
         only: Some("binary"),
         ..Shell::default()
     });
-    let calls = PluginCalls::new(Some(Arc::clone(&shell) as Arc<dyn PluginHandler>), true);
+    let calls = PluginCalls::new(Some(Arc::clone(&shell) as Arc<dyn PluginHandler>));
     let result = calls.call("location", "getCurrentPosition", &[]).await;
     assert!(result.failed && result.done);
     assert_eq!(

@@ -44,8 +44,6 @@ data class LocationPermission(val inUse: Permission, val backgroundAlways: Permi
 
 data class PermissionRequest(val backgroundAlways: Boolean?, val precision: Precision?)
 
-data class SetupConfig(val significantChanges: Boolean?)
-
 /** The request's quality, precision traded against battery use, as `LocationRequest.QUALITY_*` [quality] gives it. */
 enum class Accuracy(val quality: Int) {
     High(LocationRequest.QUALITY_HIGH_ACCURACY),

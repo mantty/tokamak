@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createNativeContext } from "../src/context.js";
-import { dispatch } from "../src/registry.js";
 import { decodeValues } from "../src/streams.js";
-import { connectNative, setPlatform } from "../src/testing.js";
-import { apple, onAsked, onEntered, onVisited } from "./fixtures/apple.generated.js";
+import { connectNative } from "../src/testing.js";
+import { TokamakEntrypoint } from "../src/worker.js";
+import { apple, type Precision, type Region } from "./fixtures/apple.generated.js";
 
 // The fixture is what `tok plugin generate` writes for fixtures/description.json.
 
@@ -75,19 +75,16 @@ void test("a generated API rejects off its family's platforms", async () => {
   assert.deepEqual(native.sent, []);
 });
 
-void test("generated listeners receive their family's events and reply", async () => {
-  const ctx = createNativeContext({ waitUntil: () => undefined });
-  const region = { id: "home", radius: 50, tags: [], counts: {} };
-  const entered: unknown[] = [];
-  setPlatform("macos");
-  onEntered((event) => void entered.push(event));
-  onAsked((event) => (event.id === "home" ? "precise" : undefined));
-  onVisited(() => undefined);
-  setPlatform(undefined);
-
-  await dispatch("example.apple.entered", region, {}, ctx);
-  assert.deepEqual(entered, [region]);
-  const { reply, listened } = await dispatch("example.apple.asked", region, {}, ctx);
-  assert.equal(reply, "precise");
-  assert.ok(!listened.includes("example.apple.visited"), "visits are an iOS event");
+void test("generated handlers type the worker's methods with the events' data and replies", () => {
+  class Native extends TokamakEntrypoint {
+    _onAsked(region: Region): Precision | undefined {
+      return region.id === "home" ? "precise" : undefined;
+    }
+    // @ts-expect-error -- the event is a `Region`.
+    _onEntered(region: string) {
+      return void region;
+    }
+  }
+  const worker = new Native(createNativeContext({ waitUntil: () => undefined }), {});
+  assert.equal(worker._onAsked({ id: "home", radius: 50, tags: [], counts: {} }), "precise");
 });

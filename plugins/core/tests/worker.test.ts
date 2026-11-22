@@ -1,37 +1,46 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { defineEvent } from "../src/events.js";
 import type { NativeConnection } from "../src/context.js";
-import { capabilitiesModule, createNativeContext, nativeConnection, TokamakEntrypoint, type TokamakEvent } from "../src/worker.js";
+import { capabilitiesModule, createNativeContext, nativeConnection, TokamakEntrypoint, type StartEvent } from "../src/worker.js";
 import { connectNative } from "../src/testing.js";
 
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace -- test events merge into Tokamak.Events.
+  // eslint-disable-next-line @typescript-eslint/no-namespace -- the test's handler merges into Tokamak.Handlers.
   namespace Tokamak {
-    interface Events {
-      "worker.reply": string;
-    }
-    interface EventReplies {
-      "worker.reply": string;
+    interface Handlers {
+      _onProbed?(event: { id: string }): string | undefined | Promise<string | undefined>;
     }
   }
 }
 
-void test("entrypoint listeners receive the invocation context and receiving bindings", async () => {
-  const tasks: Promise<unknown>[] = [];
-  const ctx = createNativeContext({ waitUntil: (task) => tasks.push(task) });
-  const env = { label: "receiving worker" };
-  const task = Promise.resolve();
-  defineEvent("worker.reply")((value, bindings, context) => {
-    assert.equal(bindings, env);
-    assert.equal(context, ctx);
-    context.waitUntil(task);
-    return value.toUpperCase();
-  });
-  const worker = new TokamakEntrypoint(ctx, env);
-  assert.equal(await worker.event({ type: "worker.reply", data: "payload" }), "PAYLOAD");
-  assert.deepEqual(tasks, [task]);
+void test("a worker's handlers are typed as Tokamak.Handlers declares them", () => {
+  class Native extends TokamakEntrypoint<{ label: string }> {
+    _onStart({ foreground }: StartEvent) {
+      this.ctx.waitUntil(Promise.resolve(foreground));
+    }
+    _onProbed(event: { id: string }) {
+      return `${this.env.label}:${event.id}`;
+    }
+    _own(count: number) {
+      return count + 1;
+    }
+  }
+  const worker = new Native(createNativeContext({ waitUntil: () => undefined }), { label: "device" });
+  assert.equal(worker._onProbed({ id: "home" }), "device:home");
+  assert.equal(worker._own(1), 2);
+
+  class Mistyped extends TokamakEntrypoint {
+    // @ts-expect-error -- `_onStart` receives `{ foreground: boolean }`.
+    _onStart(event: { foreground: string }) {
+      return void event;
+    }
+    // @ts-expect-error -- `_onProbed` replies with a string.
+    _onProbed() {
+      return 1;
+    }
+  }
+  assert.equal(new Mistyped(createNativeContext({ waitUntil: () => undefined }), {})._onProbed(), 1);
 });
 
 void test("a native context uses the connection the host attached to the execution context", async () => {
@@ -54,20 +63,6 @@ void test("a native context uses the connection the host attached to the executi
   const attached = createNativeContext({ waitUntil: () => undefined, [nativeConnection]: connection });
   assert.equal(attached[nativeConnection], connection);
   assert.deepEqual(await attached[nativeConnection].call("example", "run", new Uint8Array()), new Uint8Array([42]));
-});
-
-void test("an event override receives typed events and can reply synchronously", () => {
-  class Native extends TokamakEntrypoint<{ label: string }> {
-    override event(event: TokamakEvent): string {
-      if (event.type === "start") return `${this.env.label}:${String(event.data.foreground)}`;
-      return `${this.env.label}:${event.type}`;
-    }
-  }
-  const worker = new Native(createNativeContext({ waitUntil: () => undefined }), { label: "device" });
-  assert.equal(worker.event({ type: "start", data: { foreground: true } }), "device:true");
-  assert.equal(worker.event({ type: "resume", data: {} }), "device:resume");
-  // @ts-expect-error -- events have declared types.
-  worker.event({ type: "push", data: {} });
 });
 
 void test("the capabilities module reports each plugin operation on the context's platform", async () => {

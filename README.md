@@ -669,37 +669,43 @@ Worker's plugin calls on the device. Apps built with `tok build` leave it out.
 
 ## Events
 
-The Worker reacts to native events with listeners it registers at the top
-level of `src/tokamak.ts` or the modules it imports:
+The Tokamak worker receives native events as handlers: methods of its class
+that tokamak calls, each with an event's data. tokamak declares the app's
+handlers, and each plugin declares its own:
 
 ```ts
 // src/tokamak.ts
-import { TokamakEntrypoint } from "@tokamakdev/tok";
-import { onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
-import { onPush } from "@tokamakdev/plugin-notifications/events";
+import { TokamakEntrypoint, type StartEvent } from "@tokamakdev/tok";
+import { notifications, type Message } from "@tokamakdev/plugin-notifications";
 
-export default class Native extends TokamakEntrypoint {}
+export default class Native extends TokamakEntrypoint {
+  async _beforeStart() {
+    await notifications(this.ctx).setup({ showInForeground: true });
+  }
 
-onStart((event, env, ctx) => {
-  ctx.waitUntil(env.DB.prepare("INSERT INTO launches (foreground) VALUES (?)").bind(event.foreground).run());
-});
+  _onStart({ foreground }: StartEvent) {
+    this.ctx.waitUntil(this.env.DB.prepare("INSERT INTO launches (foreground) VALUES (?)").bind(foreground).run());
+  }
 
-onPush(async (message, env) => ({ id: message.id, title: "New item", body: await env.ITEMS.get(message.id) }));
+  async _onPush(message: Message) {
+    return { id: message.id, title: "New item", body: await this.env.ITEMS.get(message.id) };
+  }
+}
 ```
 
-A listener receives `(event, env, ctx)`, as Cloudflare's `scheduled` and
-`queue` handlers do. `event` is plain data, `env` is the Worker's environment,
-typed as `Tokamak.Env`, `ctx.waitUntil` keeps the event running until a
-promise settles, and `ctx` is the invocation's `TokamakContext`, which
-[plugins](#calling-plugins) take.
-`@tokamakdev/tok/events` exports the app's events, and each plugin exports its
-own from its `/events` entry.
+A handler receives the event's plain data. `this.env` is the Worker's
+environment, typed as `Tokamak.Env`, and `this.ctx` is the invocation's
+`TokamakContext`, which [plugins](#calling-plugins) take and whose `waitUntil`
+keeps the event running until a promise settles. Give the handler's parameter
+its type: TypeScript checks it, and what the handler returns, against the
+handler's declaration.
 
-| Event | Fires | `event` |
+| Handler | Called | Data |
 |---|---|---|
-| `onStart` | Once per runtime start, including when the system starts the app in the background | `{ foreground: boolean }` |
-| `onResume` | Each time the app moves into the foreground, but not when it starts there | `{}` |
-| `onSuspend` | Each time the app moves out of the foreground | `{}` |
+| `_beforeStart` | Once per runtime start, [inside the platform's launch](#_beforestart) | None |
+| `_onStart` | Once per runtime start, including when the system starts the app in the background | `{ foreground: boolean }` |
+| `_onResume` | Each time the app moves into the foreground, but not when it starts there | None |
+| `_onSuspend` | Each time the app moves out of the foreground | None |
 
 | Platform | Resume | Suspend |
 |---|---|---|
@@ -711,26 +717,55 @@ own from its `/events` entry.
 Other desktop actions, such as covering the window or switching Spaces, fire
 no event.
 
-- **Replies:** an event's reply is the first value, in registration order, that
-  a listener returns other than `undefined`. Plugins use it, as
-  `onPush` shows the notification its listeners return.
-- **Timing:** every event waits for `onStart`'s listeners, and `onResume` and
-  `onSuspend` run one at a time, in order. An event completes when its
-  listeners and their `waitUntil` promises settle, or at its deadline: 10
-  seconds, or 25 seconds for `onSuspend` on iOS, where the app holds a
-  background task while it runs. An event whose listeners have not all
-  returned by the deadline fails.
-- **Failures:** a listener that throws is reported with `reportError`, and the
-  others still run. Events are not retried.
+- **Names:** a method whose name starts with `_` is not an RPC method: pages
+  and the app's Worker cannot call it. An event calls the one method it names,
+  and the class can have `_` methods of its own.
+- **Replies:** an event's reply is what its handler returns. Plugins use it,
+  as `_onPush` shows the notification it returns.
+- **Timing:** every event after `_beforeStart` waits for `_onStart`, and
+  `_onResume` and `_onSuspend` run one at a time, in order. An event completes
+  when its handler and its `waitUntil` promises settle, or at its deadline: 10
+  seconds, 25 seconds for `_onSuspend` on iOS, where the app holds a
+  background task while it runs, or 1 second for `_beforeStart`. An event
+  whose handler has not returned by the deadline fails.
+- **Failures:** a handler that throws is reported with `reportError`. Events
+  are not retried.
 - **State:** each event runs in a fresh Worker invocation, as each request
   does, so module state does not carry from one event to the next. Keep state
   in a KV, D1 or R2 binding.
-- **Cost:** a packaged app runs no Worker for an event without listeners,
-  apart from `onStart`.
+- **Cost:** a packaged app runs no Worker for an event whose handler the class
+  does not define.
 
-Under `tok dev`, events reach the listeners in the development server's
-Worker, through Cloudflare's dev registry, and every event is delivered.
-Editing `src/tokamak.ts`, or a module it imports, replaces its listeners. The
+### `_beforeStart`
+
+`_beforeStart` runs inside the platform's launch, which waits until it returns
+or 1 second passes. Use it for what the platform expects before launch
+finishes, such as setting up notifications, or starting again the location
+services the system relaunched the app for.
+
+| Platform | Launch |
+|---|---|
+| iOS | `application(_:didFinishLaunchingWithOptions:)` |
+| macOS | `applicationDidFinishLaunching(_:)` |
+| Android | `Application.onCreate` |
+| Windows | Before the window shows |
+
+- The app's stage reads `background` while `_beforeStart` runs. `_onStart`
+  reports whether the app started in the foreground.
+- The main thread waits for `_beforeStart`, and runs the plugin calls it makes.
+  A plugin method that needs the main thread again after it returns does not
+  complete until launch has finished: on Apple platforms, an `async` method
+  that uses the main actor, such as one that asks for a permission. On
+  Windows, `ctx.webview` waits for the window.
+- Past the deadline, `_beforeStart` fails as other events do, and launch
+  proceeds.
+- When the class has no `_beforeStart`, launch does not wait.
+
+Under `tok dev`, events reach the handlers in the development server's
+Worker, through Cloudflare's dev registry, and every event is delivered, so
+launch always waits for `_beforeStart`: for the whole second while the
+development server cannot be reached.
+Editing `src/tokamak.ts`, or a module it imports, reloads its handlers. The
 dev registry holds one Worker of each name: a second development server of the
 same Worker does not receive events, and after a development server is killed,
 the next one receives them only once its registration expires, 90 seconds
@@ -760,9 +795,8 @@ A plugin with native code also exports each platform family's API, generated
 from that code, as `/apple` and `/android`. Tokamak worker code that needs a
 platform's own method calls it there, such as `apple(ctx).onVisit()` from
 `@tokamakdev/plugin-location/apple`; off the family's platforms its methods
-reject with `NotSupportedError`. Each family's events are there too, as
-functions that register listeners of that family's events alone, which the
-plugin's `/events` entry combines.
+reject with `NotSupportedError`. Each family's module also declares the types
+of the plugin's [handlers](#events).
 
 Plugins' native code can depend on Swift packages and Maven artifacts. A build
 resolves them, as Swift Package Manager or Gradle resolves any project's
@@ -775,9 +809,9 @@ Android. `tok build <platform> --update-lock` resolves the
 platform family's dependencies afresh and records the new versions.
 
 A plugin can also run Worker code through [events](#events), such as
-`onPush` from `@tokamakdev/plugin-notifications/events` for a data-only push
-notification, or `onLocationUpdate` and `onRegionTransition` from
-`@tokamakdev/plugin-location/events` for locations that arrive off screen.
+`_onPush` of `@tokamakdev/plugin-notifications` for a data-only push
+notification, or `_onLocationUpdate` and `_onRegionTransition` of
+`@tokamakdev/plugin-location` for locations that arrive off screen.
 
 `tok build android` produces a release APK, which R8 shrinks by removing
 unused code; it keeps every class and member name. The keystore settings sign
@@ -810,8 +844,9 @@ export default class Native extends TokamakEntrypoint {
 ```
 
 The Tokamak worker's public methods are RPC methods, as a `WorkerEntrypoint`'s
-are. The app's Worker calls them through `env.TOKAMAK`, and pages through the
-generated client `virtual:tokamak/client`:
+are, apart from those whose names start with `_`. The app's Worker calls them
+through `env.TOKAMAK`, and pages through the generated client
+`virtual:tokamak/client`:
 
 ```ts
 // page code
@@ -840,10 +875,10 @@ class or a plugin: the development server sets up the services when it starts.
   without a native host, such as on Cloudflare.
 - **The page:** `ctx.webview` reads the page's URL, null without a page,
   navigates the WebView to an app URL, and posts the page a message.
-- **`getLifecycleStage(ctx)`**, from `@tokamakdev/tok/events`, resolves to
+- **`getLifecycleStage(ctx)`**, from `@tokamakdev/tok`, resolves to
   `"foreground"` or `"background"`: the app's stage now. Events report what
   happened, in order, and the stage what is true now, so the two can differ:
-  an `onSuspend` listener that runs late reads `"foreground"` once the user has
+  an `_onSuspend` that runs late reads `"foreground"` once the user has
   returned.
 - **`NeedsUIError`:** a call that would show UI while the app cannot present it
   rejects at once with a `DOMException` named `NeedsUIError`. iOS and Android
@@ -853,7 +888,7 @@ class or a plugin: the development server sets up the services when it starts.
   value saved with `authentication`. A decided permission answers without UI,
   so `getCurrentPosition()` with permission granted works in the background.
   Unlike `NotAllowedError`, which means the user refused or cancelled, it means
-  the app can ask again, for example from `onResume`. A prompt already on
+  the app can ask again, for example from `_onResume`. A prompt already on
   screen when the app leaves it stays up.
 - **Under `tok dev`,** the development Tokamak worker's calls reach the
   device's plugins through the dev WebSocket. A call waits up to 10 seconds for
@@ -883,7 +918,7 @@ refused request rejects with `NotAllowedError`.
 
 [The Astro example](examples/astro) exercises server rendering, static assets,
 navigation, WebSockets, lifecycle events recorded in KV, and every first-party
-plugin, from the page and from the Tokamak worker's listeners. It installs
+plugin, from the page and from the Tokamak worker's handlers. It installs
 `@tokamakdev/tok` from this repository; its README lists the setup.
 
 ```sh

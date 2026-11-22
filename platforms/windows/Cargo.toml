@@ -22,5 +22,8 @@ windows.workspace = true
 wry.workspace = true
 url.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

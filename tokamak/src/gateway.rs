@@ -1,5 +1,4 @@
 use flume::{Receiver, Sender};
-use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -104,22 +103,14 @@ pub(super) trait Handler: Send + Sync {
     fn start(&self, _tokio: &tokio::runtime::Handle, _stopped: &CancellationToken) {}
 }
 
-/// An event for the Worker's listeners.
+/// An event for the Worker, named by the handler it calls.
 pub(crate) struct EventJob {
     pub(crate) name: String,
     /// The encoded event payload.
     pub(crate) event: Vec<u8>,
     pub(crate) deadline: Instant,
-    /// Receives what the Worker did with the event, or why it failed.
-    pub(crate) delivered: Sender<Result<Delivery, HandlerError>>,
-}
-
-/// What the Worker did with an event.
-pub(crate) struct Delivery {
-    /// The encoded reply payload.
-    pub(crate) reply: Vec<u8>,
-    /// The events that have listeners, when the Worker reports them.
-    pub(crate) listened: Option<BTreeSet<String>>,
+    /// Receives the handler's encoded reply, or why the event failed.
+    pub(crate) delivered: Sender<Result<Vec<u8>, HandlerError>>,
 }
 
 pub(super) struct Job {
@@ -257,7 +248,7 @@ impl Handle {
         name: &str,
         event: &[u8],
         deadline: Instant,
-    ) -> Result<Delivery, String> {
+    ) -> Result<Vec<u8>, String> {
         let (delivered, result) = flume::bounded(1);
         let job = EventJob {
             name: name.to_owned(),
@@ -272,7 +263,7 @@ impl Handle {
             }
         }));
         match result.recv() {
-            Ok(delivery) => delivery.map_err(|error| error.to_string()),
+            Ok(reply) => reply.map_err(|error| error.to_string()),
             Err(_) => Err(format!("the runtime stopped before {name} was delivered")),
         }
     }

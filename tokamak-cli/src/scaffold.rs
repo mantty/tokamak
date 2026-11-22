@@ -33,13 +33,11 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
         .iter()
         .map(|(family, _)| family.name())
         .collect::<Vec<_>>();
-    let imports = lines(&names, |name| {
-        format!("import {{ {name} }} from \"./{name}.generated.js\";")
-    });
-    let namespaces = lines(&names, |name| {
-        format!("import * as {name} from \"./{name}.generated.js\";")
-    });
-    let listeners = lines(&names, |name| format!("  {name}.onEchoed(listener);"));
+    let imports = names
+        .iter()
+        .map(|name| format!("import {{ {name} }} from \"./{name}.generated.js\";"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let template = |source: &str| {
         source
             .replace("{{id}}", id)
@@ -47,11 +45,8 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
             .replace("{{class}}", &class)
             .replace("{{module}}", &module)
             .replace("{{package}}", &package)
-            .replace("{{family}}", names.first().copied().unwrap_or_default())
             .replace("{{families}}", &names.join(", "))
             .replace("{{imports}}", &imports)
-            .replace("{{namespaces}}", &namespaces)
-            .replace("{{listeners}}", &listeners)
             .replace(
                 "{{operation}}",
                 if native {
@@ -120,16 +115,7 @@ fn families(platforms: &[Platform]) -> Result<Vec<(Family, Vec<Platform>)>> {
     Ok(families.filter(|(_, named)| !named.is_empty()).collect())
 }
 
-/// `line` for each of the family `names`, one per line.
-fn lines(names: &[&str], line: impl Fn(&str) -> String) -> String {
-    names
-        .iter()
-        .map(|name| line(name))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Writes the plugin's API, its `/events` entry when it has `native` code, and its browser
+/// Writes the plugin's API, which calls `native` code when it has some, and its browser
 /// implementation.
 fn write_typescript(
     directory: &Path,
@@ -143,10 +129,6 @@ fn write_typescript(
             (
                 "src/index.ts",
                 include_str!("../templates/plugin/native.ts"),
-            ),
-            (
-                "src/events.ts",
-                include_str!("../templates/plugin/events.ts"),
             ),
             (
                 "web/index.ts",
@@ -267,8 +249,8 @@ fn plugin_id(directory: &Path) -> Result<&str> {
     Ok(id)
 }
 
-/// The npm package, exporting `/events` and the platform API of each of the native `families`,
-/// whose scripts generate and check them.
+/// The npm package, exporting the platform API of each of the native `families`, whose scripts
+/// generate and check them.
 fn write_package(
     directory: &Path,
     id: &str,
@@ -278,7 +260,6 @@ fn write_package(
     let mut scripts = json!({ "check": "tsc --noEmit", "prepack": "npm run check" });
     let mut dev_dependencies = json!({ "@tokamakdev/plugin": "^0.1.0", "typescript": "^5.9.3" });
     if families.len() > 0 {
-        exports["./events"] = json!("./src/events.ts");
         scripts["check"] = json!("tsc --noEmit && tok plugin check");
         dev_dependencies["@tokamakdev/tok"] = json!(format!("^{}", env!("CARGO_PKG_VERSION")));
     }

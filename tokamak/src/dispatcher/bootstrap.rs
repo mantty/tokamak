@@ -28,7 +28,7 @@ pub(crate) struct Bootstrap<'js> {
     /// The parts of the Worker's response that the host sends.
     pub(crate) host_response: JsFunction<'js, (Value<'js>,), ResponseParts<'js>>,
     /// Delivers an event's encoded data to the `TokamakEvents` the Worker's
-    /// entry module exports, resolving to its `DispatchedEvent`.
+    /// entry module exports, resolving to the handler's encoded reply.
     pub(crate) dispatch_event:
         JsFunction<'js, (Object<'js>, String, TypedArray<'js, u8>), JsPromise<'js, Value<'js>>>,
     /// Binds the app's assets in the Worker's environment by name.
@@ -210,14 +210,6 @@ impl SocketNotifier {
     pub(super) fn new(changed: Arc<tokio::sync::Notify>) -> Self {
         Self { changed }
     }
-}
-
-/// What a dispatched event's listeners did: their encoded reply, and the
-/// names of the events that have listeners.
-#[derive(FromJs)]
-pub(crate) struct DispatchedEvent<'js> {
-    pub(super) reply: TypedArray<'js, u8>,
-    pub(super) listened: Option<Vec<String>>,
 }
 
 /// The app's assets, which the Worker's assets binding fetches from.

@@ -37,13 +37,11 @@ The root SDK runs only with a Tokamak context. Everything else is optional:
 - `web/index.ts`, which the manifest's `web` references, implements operations
   in the browser for the generated client in a web deployment. Remove it, and
   the manifest entry, if the plugin is native-only.
-- `src/events.ts`, exported as `tokamak-plugin-{{id}}/events`, exports the
-  functions that register listeners of the native events. A plugin for more
-  families registers each listener there on every family's event.
 - `apple/`, a Swift package, and `android/`, an Android library module, hold
   native code and declare its dependencies. It builds for the manifest's
   `platforms`. `Exports.swift` or `Exports.kt` lists the methods the Worker
-  calls and the events native code emits.
+  calls and the events native code emits. Each event calls the method of the
+  Tokamak worker's class it names, such as `_onEchoed`.
 - `src/apple.generated.ts` and `src/android.generated.ts` are each family's
   TypeScript API, which `npm run generate:apple` or `npm run generate:android`
   writes from the registration file, with the family's native dispatch.

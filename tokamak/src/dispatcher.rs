@@ -18,7 +18,7 @@ use crate::fs::{
     PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME, install, read_bundle_file,
 };
 use crate::gateway::{
-    Delivery, EventJob, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
+    EventJob, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
     WebSocketOutbound, WebSocketOutgoing,
 };
 use crate::globals::ResponseEncoder;
@@ -88,13 +88,14 @@ impl Handler for Dispatcher {
         execute_request(&self.worker, &self.config, job, stopped).map_err(Into::into)
     }
 
-    /// Delivers `event` to the Tokamak worker. Without one, nothing listens.
+    /// Delivers `event` to the Tokamak worker when its build recorded the
+    /// event's handler. No Worker runs for another event, or without one.
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
-        let Some(native) = &self.native else {
-            let _ = event.delivered.send(Ok(Delivery {
-                reply: Vec::new(),
-                listened: Some(std::collections::BTreeSet::new()),
-            }));
+        let native = self.native.as_ref().filter(|native| {
+            crate::packaging::handles(native.worker.handlers.as_deref(), &event.name)
+        });
+        let Some(native) = native else {
+            let _ = event.delivered.send(Ok(Vec::new()));
             return;
         };
         match tokio::runtime::Handle::try_current() {
@@ -218,10 +219,10 @@ async fn execute_request_async(
     }
 }
 
-/// Runs the Worker's listeners of `event` in a fresh `QuickJS` runtime, as a
-/// request runs, interrupting them at `event.deadline`, and sends what they
-/// did to `event.delivered`. The reply stands once they return, whether or not
-/// their `waitUntil` promises settle before the deadline.
+/// Runs the Worker's handler of `event` in a fresh `QuickJS` runtime, as a
+/// request runs, interrupting it at `event.deadline`, and sends its reply to
+/// `event.delivered`. The reply stands once the handler returns, whether or
+/// not its `waitUntil` promises settle before the deadline.
 pub(super) async fn execute_event(
     worker: &WorkerBundle,
     config: &RuntimeConfig,
@@ -249,7 +250,7 @@ pub(super) async fn execute_event(
         }
     };
     let awaited = crate::event_loop::AwaitedPromise::default();
-    let dispatch = context.async_with(async |ctx| -> Result<Delivery, Error> {
+    let dispatch = context.async_with(async |ctx| -> Result<Vec<u8>, Error> {
         let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services, &owner)?;
         let exports = load_worker_exports(&ctx, worker).await?;
         let event = TypedArray::new(ctx.clone(), event)
@@ -258,17 +259,13 @@ pub(super) async fn execute_event(
             .dispatch_event
             .call((exports, name.clone(), event))
             .map_err(|error| js_exception(&ctx, &name, error))?;
-        let dispatched = finish_promise(&ctx, pending, "event").await?;
-        let bootstrap::DispatchedEvent { reply, listened } =
-            rquickjs::FromJs::from_js(&ctx, dispatched)
-                .map_err(|error| js_exception(&ctx, "event", error))?;
-        Ok(Delivery {
-            reply: reply
-                .as_bytes()
-                .ok_or_else(|| js_error("event", "detached reply buffer"))?
-                .to_vec(),
-            listened: listened.map(|names| names.into_iter().collect()),
-        })
+        let reply = finish_promise(&ctx, pending, "event").await?;
+        let reply: TypedArray<u8> = rquickjs::FromJs::from_js(&ctx, reply)
+            .map_err(|error| js_exception(&ctx, "event", error))?;
+        Ok(reply
+            .as_bytes()
+            .ok_or_else(|| js_error("event", "detached reply buffer"))?
+            .to_vec())
     });
     let deadline = tokio::time::Instant::from_std(deadline);
     let delivery = tokio::select! {
