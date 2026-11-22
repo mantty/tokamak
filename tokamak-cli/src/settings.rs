@@ -1423,6 +1423,34 @@ mod tests {
     }
 
     #[test]
+    fn names_a_plugins_options_and_variables_by_the_words_of_its_id() -> Result<()> {
+        let plugins: Vec<Plugin> = vec![serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "id": "deviceKit",
+            "settings": {
+                "label": { "kind": "string", "description": "Label" },
+                "volume": { "kind": "integer", "description": "Volume" },
+            },
+            "build": "build.mjs",
+        }))?];
+        let mut fixture = Fixture::new();
+        fixture.config = configured(&json!({ "deviceKit": { "label": "configured" } }))?;
+        fixture.environment.extend([
+            ("TOKAMAK_DEVICE_KIT_LABEL".to_owned(), "env".to_owned()),
+            ("TOKAMAK_DEVICE_KIT_IOS_VOLUME".to_owned(), "1".to_owned()),
+        ]);
+        fixture.options = parsed_options(&["--device-kit-volume", "2"], &plugins)?;
+
+        let mut resolved =
+            fixture.with(|sources| resolve_plugins(sources, Platform::Android, &plugins))?;
+        assert_eq!(
+            Value::Object(resolved.remove("deviceKit").unwrap_or_default()),
+            json!({ "label": "env", "volume": 2 })
+        );
+        Ok(())
+    }
+
+    #[test]
     fn plugin_options_take_precedence_over_platform_environment_variables() -> Result<()> {
         let mut fixture = Fixture::new();
         fixture
