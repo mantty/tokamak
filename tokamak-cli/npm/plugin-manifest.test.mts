@@ -20,12 +20,25 @@ test("workspace plugin packages resolve without publishing or exporting their ma
 
 test("plugin IDs obey the native packager's reserved option namespaces", t => {
   const { root, dependency } = project(t);
-  for (const id of ["ios-location", "session-store", "name", "platform-camera", "update-widgets"]) {
+  for (const id of ["iosLocation", "sessionStore", "name", "platformCamera", "updateWidgets"]) {
     fs.writeFileSync(path.join(dependency, "tokamak-plugin.json"), JSON.stringify({
       schemaVersion: 2, id, api: { module: "./src/index.ts", export: "widgets" },
     }));
     assert.throws(() => discoverPlugins(root), /plugin id must not start with/);
   }
+});
+
+test("plugin IDs are camel-case identifiers, whose words name the plugin's service binding", t => {
+  const { root, dependency } = project(t);
+  const manifest = (id: string) => fs.writeFileSync(path.join(dependency, "tokamak-plugin.json"), JSON.stringify({
+    schemaVersion: 2, id, api: { module: "./src/index.ts", export: "widgets" },
+  }));
+  for (const id of ["device-tools", "DeviceTools", "2tools", "device_tools"]) {
+    manifest(id);
+    assert.throws(() => discoverPlugins(root), /plugin id must start with a lowercase letter/);
+  }
+  manifest("deviceTools");
+  assert.equal(discoverPlugins(root)[0].binding, "TOKAMAK_DEVICE_TOOLS");
 });
 
 test("duplicate plugin identifiers fail with a useful package diagnostic", t => {

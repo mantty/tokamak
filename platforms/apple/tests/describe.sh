@@ -76,8 +76,8 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml")
 printf '{"tokamakVersion": "%s", "target": "%s", "variables": {}, "pluginKeys": {}}\n' "$version" "$target" \
   > "$pack/platform-pack.json"
 # A new plugin starts with the files the pack generates, as do first-party ones.
-"$root/target/debug/tok" plugin new "$temporary/device-tools" --platforms ios,macos > /dev/null
-for plugin in "$temporary/device-tools" "$root"/plugins/*/; do
+"$root/target/debug/tok" plugin new "$temporary/deviceTools" --platforms ios,macos > /dev/null
+for plugin in "$temporary/deviceTools" "$root"/plugins/*/; do
   [[ -f "$plugin/tokamak-plugin.json" && -d "$plugin/apple" ]] || continue
   checked=$(cd "$plugin" && TOKAMAK_PLATFORM_PACK_PATH=$packs "$root/target/debug/tok" plugin check 2>&1) ||
     { echo "$checked" >&2; exit 1; }

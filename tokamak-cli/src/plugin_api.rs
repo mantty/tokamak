@@ -48,7 +48,8 @@ struct Method {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Event {
-    /// The handler: the method of the Tokamak worker's class the event calls.
+    /// The name of the handler the event calls, in the plugin's property of the Tokamak worker's
+    /// class.
     name: String,
     #[serde(default)]
     doc: String,
@@ -419,11 +420,8 @@ impl Description {
         let mut handlers = BTreeSet::new();
         for event in &self.events {
             check_identifier("event", &event.name)?;
-            if !event.name.starts_with('_') {
-                bail!("event {} names a handler, which starts with _", event.name);
-            }
             if !handlers.insert(event.name.as_str()) {
-                bail!("two events call {}", event.name);
+                bail!("two events are named {}", event.name);
             }
             event
                 .validate(&types)
@@ -743,15 +741,20 @@ pub(crate) fn typescript(
     );
     source.push_str("  };\n}\n");
     if !description.events.is_empty() {
-        source.push_str(&handlers(&description.events));
+        source.push_str(&handlers(id, &description.events));
     }
     source
 }
 
-/// The declarations of the handlers `events` call, which type the methods of the Tokamak worker's
-/// class.
-fn handlers(events: &[Event]) -> String {
-    let mut source = "\ndeclare global {\n  // eslint-disable-next-line @typescript-eslint/no-namespace -- handlers are declared by merging into Tokamak.Handlers.\n  namespace Tokamak {\n    interface Handlers {\n".to_owned();
+/// The declarations of the handlers plugin `id`'s `events` call: the functions the Tokamak
+/// worker's class holds in its `_<id>` property, in an interface each platform family of the
+/// plugin merges its events into.
+fn handlers(id: &str, events: &[Event]) -> String {
+    let (first, rest) = id.split_at(1);
+    let interface = format!("{}{rest}Handlers", first.to_uppercase());
+    let mut source = format!(
+        "\ndeclare global {{\n  // eslint-disable-next-line @typescript-eslint/no-namespace -- handlers are declared by merging into Tokamak.Handlers.\n  namespace Tokamak {{\n    /** The handlers of the {id} plugin's events, which the Tokamak worker's class holds as `_{id}`. */\n    interface {interface} {{\n"
+    );
     for event in events {
         let reply = event.reply.as_ref().map_or_else(
             || "void | Promise<void>".to_owned(),
@@ -768,7 +771,11 @@ fn handlers(events: &[Event]) -> String {
             typescript_type(&event.ty, false)
         );
     }
-    source + "    }\n  }\n}\n"
+    let _ = write!(
+        source,
+        "    }}\n    interface Handlers {{\n      _{id}?: {interface};\n    }}\n  }}\n}}\n"
+    );
+    source
 }
 
 fn interface_name(family: Family) -> &'static str {
@@ -1187,32 +1194,28 @@ mod tests {
     fn rejects_events_the_platform_api_cannot_express() -> anyhow::Result<()> {
         assert_rejected(&[
             (
-                r#"{"methods": [], "events": [{"name": "_on-update", "type": "string"}]}"#,
+                r#"{"methods": [], "events": [{"name": "on-update", "type": "string"}]}"#,
                 "not a JavaScript identifier",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "onUpdate", "type": "string"}]}"#,
-                "names a handler, which starts with _",
+                r#"{"methods": [], "events": [{"name": "onUpdate", "type": "string"}, {"name": "onUpdate", "type": "number"}]}"#,
+                "two events are named onUpdate",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "string"}, {"name": "_onUpdate", "type": "number"}]}"#,
-                "two events call _onUpdate",
-            ),
-            (
-                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "void"}]}"#,
+                r#"{"methods": [], "events": [{"name": "onUpdate", "type": "void"}]}"#,
                 "only a call's result",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "string", "reply": "bytes"}]}"#,
-                "event _onUpdate: reply: bytes",
+                r#"{"methods": [], "events": [{"name": "onUpdate", "type": "string", "reply": "bytes"}]}"#,
+                "event onUpdate: reply: bytes",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": "reference"}]}"#,
-                "event _onUpdate: a native reference is a parameter",
+                r#"{"methods": [], "events": [{"name": "onUpdate", "type": "reference"}]}"#,
+                "event onUpdate: a native reference is a parameter",
             ),
             (
-                r#"{"methods": [], "events": [{"name": "_onUpdate", "type": {"named": "Missing"}}]}"#,
-                "event _onUpdate: type Missing is not described",
+                r#"{"methods": [], "events": [{"name": "onUpdate", "type": {"named": "Missing"}}]}"#,
+                "event onUpdate: type Missing is not described",
             ),
         ])
     }

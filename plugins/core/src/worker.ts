@@ -12,8 +12,8 @@ export type { StartEvent } from "./events.js";
 const Handlers: new () => Tokamak.Handlers = Object;
 
 /**
- * The application's native worker entrypoint. The native host calls its `Tokamak.Handlers`
- * methods, and pages and the app's Worker call its other methods whose names do not start with `_`.
+ * The application's native worker entrypoint. The native host calls its `Tokamak.Handlers`, and
+ * pages and the app's Worker call its methods whose names do not start with `_`.
  */
 export class TokamakEntrypoint<Env = Tokamak.Env> extends Handlers {
   constructor(

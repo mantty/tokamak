@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "secure-storage",
+  "id": "secureStorage",
   "platforms": {
     "macos": {
       "class": "TokamakSecureStorage.TokamakSecureStoragePlugin"

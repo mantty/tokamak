@@ -412,7 +412,7 @@ plugins {
 }
 
 android {
-  namespace 'tokamak.generated.${plugin_id//-/_}'
+  namespace 'tokamak.generated.${plugin_id}'
   compileSdk 35
   defaultConfig {
     minSdk $min_sdk

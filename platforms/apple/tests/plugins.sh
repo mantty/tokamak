@@ -40,7 +40,7 @@ registrations=
 conditions=
 for plugin in "$root"/plugins/*/; do
   [[ -f "$plugin/tokamak-plugin.json" && -d "$plugin/apple" ]] || continue
-  id=$(basename "$plugin")
+  id=$(plutil -extract id raw -o - "$plugin/tokamak-plugin.json")
   class=$(plutil -extract platforms.ios.class raw -o - "$plugin/tokamak-plugin.json")
   module=${class%%.*}
   rsync -a --exclude .build --exclude .swiftpm "$plugin/apple/" "$packages/$id/"
@@ -49,8 +49,8 @@ for plugin in "$root"/plugins/*/; do
   imports+="import $module"$'\n'
   registrations+="    $class(host: TokamakHost(app: app, plugin: \"$id\")),"$'\n'
   # The pack's build accepts only conditions that start with the plugin's id
-  # in capitals and contain only letters, digits and underscores.
-  prefix=$(printf '%s' "$id" | tr 'a-z-' 'A-Z_')_
+  # as words in capitals and contain only letters, digits and underscores.
+  prefix=$(printf '%s' "$id" | sed 's/[A-Z]/_&/g' | tr 'a-z' 'A-Z')_
   for condition in $(grep -rohwE "${prefix}[A-Za-z0-9_]+" "$plugin/apple" --include '*.swift' | sort -u); do
     conditions+=" $condition"
   done

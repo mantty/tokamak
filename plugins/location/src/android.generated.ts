@@ -110,11 +110,11 @@ export interface Android {
   /** The monitored regions. */
   getRegions(): Promise<MonitoredRegion[]>;
   removeRegion(id: string): Promise<void>;
-  /** The updates the Worker's `_onLocationUpdate` receives. */
+  /** The updates the Worker's `_location.onUpdate` receives. */
   onLocationUpdate(): JsonStream<LocationUpdate>;
-  /** The transitions the Worker's `_onRegionTransition` receives. */
+  /** The transitions the Worker's `_location.onRegionTransition` receives. */
   onRegionTransition(): JsonStream<RegionTransition>;
-  /** The failures the Worker's `_onLocationError` receives. */
+  /** The failures the Worker's `_location.onError` receives. */
   onLocationError(): JsonStream<LocationErrorEvent>;
 }
 
@@ -149,13 +149,17 @@ export function android(ctx: TokamakContext, signal?: AbortSignal): Android {
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- handlers are declared by merging into Tokamak.Handlers.
   namespace Tokamak {
-    interface Handlers {
+    /** The handlers of the location plugin's events, which the Tokamak worker's class holds as `_location`. */
+    interface LocationHandlers {
       /** Receives continuous updates and significant changes, including those that start the app. */
-      _onLocationUpdate?(event: LocationUpdate): void | Promise<void>;
+      onUpdate?(event: LocationUpdate): void | Promise<void>;
       /** Receives each region entry or exit, including one that starts the app. */
-      _onRegionTransition?(event: RegionTransition): void | Promise<void>;
+      onRegionTransition?(event: RegionTransition): void | Promise<void>;
       /** Receives failures of background services, such as a region Android cannot monitor. */
-      _onLocationError?(event: LocationErrorEvent): void | Promise<void>;
+      onError?(event: LocationErrorEvent): void | Promise<void>;
+    }
+    interface Handlers {
+      _location?: LocationHandlers;
     }
   }
 }

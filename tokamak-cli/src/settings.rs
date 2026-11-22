@@ -30,7 +30,9 @@ use tokamak_cli::{
     Platform, PlatformPackManifest, SHARED_PLATFORM_KEYS, VariableKind, is_valid_key,
 };
 
-use super::plugin_settings::{Kind, Setting, option_name, option_namespaces, option_text};
+use super::plugin_settings::{
+    Kind, Setting, hyphenated, option_name, option_namespaces, option_text,
+};
 use super::plugins::Plugin;
 use super::splash;
 use super::tokamak_config::{TokamakConfig, app_name_problem, valid};
@@ -483,10 +485,11 @@ fn resolve_setting(
     if let Some(value) = option {
         return Ok(in_current_dir(value.clone()));
     }
-    let platform_namespace = format!("{id}-{namespace}");
+    let words = hyphenated(id);
+    let platform_namespace = format!("{words}-{namespace}");
     for name in [
         environment_name(Some(&platform_namespace), key),
-        environment_name(Some(id), key),
+        environment_name(Some(&words), key),
     ] {
         if let Some(text) = (sources.environment)(&name)? {
             let value = setting
@@ -600,7 +603,7 @@ pub(crate) fn plugin_arguments(plugins: &[Plugin]) -> Vec<Arg> {
             let help = format!(
                 "{}{default} [`{}`, `{id}.{key}`]",
                 setting.description,
-                environment_name(Some(id), key)
+                environment_name(Some(&hyphenated(id)), key)
             );
             option_namespaces().map(move |namespace| {
                 let argument = setting.kind.argument(option_name(id, namespace, key));
@@ -1416,6 +1419,34 @@ mod tests {
             Platform::Android,
             &with_defaults(json!({ "sounds": path("/work", "env"), "volume": 3 })),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn names_a_plugins_options_and_variables_by_the_words_of_its_id() -> Result<()> {
+        let plugins: Vec<Plugin> = vec![serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "id": "deviceKit",
+            "settings": {
+                "label": { "kind": "string", "description": "Label" },
+                "volume": { "kind": "integer", "description": "Volume" },
+            },
+            "build": "build.mjs",
+        }))?];
+        let mut fixture = Fixture::new();
+        fixture.config = configured(&json!({ "deviceKit": { "label": "configured" } }))?;
+        fixture.environment.extend([
+            ("TOKAMAK_DEVICE_KIT_LABEL".to_owned(), "env".to_owned()),
+            ("TOKAMAK_DEVICE_KIT_IOS_VOLUME".to_owned(), "1".to_owned()),
+        ]);
+        fixture.options = parsed_options(&["--device-kit-volume", "2"], &plugins)?;
+
+        let mut resolved =
+            fixture.with(|sources| resolve_plugins(sources, Platform::Android, &plugins))?;
+        assert_eq!(
+            Value::Object(resolved.remove("deviceKit").unwrap_or_default()),
+            json!({ "label": "env", "volume": 2 })
+        );
         Ok(())
     }
 

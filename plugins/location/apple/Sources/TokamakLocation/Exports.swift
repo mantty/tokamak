@@ -29,26 +29,27 @@ extension TokamakLocationPlugin: TokamakExports {
     e.call(removeRegion)
     e.stream(
       onLocationUpdate, overflow: .dropOldest,
-      doc: "The updates the Worker's `_onLocationUpdate` receives.")
+      doc: "The updates the Worker's `_location.onUpdate` receives.")
     e.stream(
-      onRegionTransition, doc: "The transitions the Worker's `_onRegionTransition` receives.")
-    e.stream(onVisit, doc: "The visits the Worker's `_onVisit` receives.")
-    e.stream(onLocationError, doc: "The failures the Worker's `_onLocationError` receives.")
+      onRegionTransition,
+      doc: "The transitions the Worker's `_location.onRegionTransition` receives.")
+    e.stream(onVisit, doc: "The visits the Worker's `_location.onVisit` receives.")
+    e.stream(onLocationError, doc: "The failures the Worker's `_location.onError` receives.")
     e.event(
-      "_onLocationUpdate", LocationUpdate.self,
+      "onUpdate", LocationUpdate.self,
       doc:
         "Receives continuous updates and significant changes, including those that launch the app."
     )
     e.event(
-      "_onRegionTransition", RegionTransition.self,
+      "onRegionTransition", RegionTransition.self,
       doc: "Receives each region entry or exit, including one that launches the app.")
     e.event(
-      "_onVisit", Visit.self,
+      "onVisit", Visit.self,
       doc:
         "Receives each arrival at or departure from a place, including one that launches the app."
     )
     e.event(
-      "_onLocationError", LocationErrorEvent.self,
+      "onError", LocationErrorEvent.self,
       doc:
         "Receives failures of background services, such as a region Core Location cannot monitor."
     )

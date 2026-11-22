@@ -21,7 +21,7 @@ export interface StoreOptions {
   readonly keychainGroup?: string;
 }
 
-/** The secure-storage plugin's native methods on Android. */
+/** The secureStorage plugin's native methods on Android. */
 export interface Android {
   /** Stores a new value; rejects with `DuplicateItemError` when `name` has one. */
   create(name: string, value: string, options: StoreOptions): Promise<void>;
@@ -38,11 +38,11 @@ export interface Android {
 }
 
 /**
- * The secure-storage plugin's native methods. Off Android they reject with `NotSupportedError`.
+ * The secureStorage plugin's native methods. Off Android they reject with `NotSupportedError`.
  * Aborting `signal` cancels their calls, streams and resource acquisitions.
  */
 export function android(ctx: TokamakContext, signal?: AbortSignal): Android {
-  const endpoint = new NativeEndpoint(ctx, "secure-storage", ["android"], signal);
+  const endpoint = new NativeEndpoint(ctx, "secureStorage", ["android"], signal);
   return {
     create: (name, value, options) => endpoint.call("create", { name, value, options }),
     replace: (name, value, options) => endpoint.call("replace", { name, value, options }),

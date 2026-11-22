@@ -24,7 +24,7 @@ void test("stores, creates and replaces a value with its options", async () => {
     const stored = secureStorage[method]("identity", "c2VjcmV0", options);
     assert.deepEqual(native.lastRequest(), {
       type: "call",
-      plugin: "secure-storage",
+      plugin: "secureStorage",
       method,
       arguments: { name: "identity", value: "c2VjcmV0", options: { ...options, thisDeviceOnly: true } },
     });
@@ -49,7 +49,7 @@ void test("reads a value with and without options", async () => {
   const prompted = secureStorage.get("identity", { prompt: "Confirm it's you" });
   assert.deepEqual(native.lastRequest(), {
     type: "call",
-    plugin: "secure-storage",
+    plugin: "secureStorage",
     method: "get",
     arguments: { name: "identity", options: { prompt: "Confirm it's you" } },
   });
@@ -69,7 +69,7 @@ void test("deletes a value and clears a keychain group", async () => {
   const deleted = secureStorage.delete("identity");
   assert.deepEqual(native.lastRequest(), {
     type: "call",
-    plugin: "secure-storage",
+    plugin: "secureStorage",
     method: "delete",
     arguments: { name: "identity" },
   });

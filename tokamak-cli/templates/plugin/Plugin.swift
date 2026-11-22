@@ -14,9 +14,9 @@ public final class {{class}}: TokamakPlugin {
     self.host = host
   }
 
-  /// Returns `message`, which the Worker's `_onEchoed` also receives.
+  /// Returns `message`, which the Worker's `_{{id}}.onEchoed` also receives.
   func echo(_ message: String) -> String {
-    host.emit("_onEchoed", event: Echo(message: message), timeout: 10) { _ in }
+    host.emit("onEchoed", event: Echo(message: message), timeout: 10) { _ in }
     return message
   }
 }

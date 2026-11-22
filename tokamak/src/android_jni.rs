@@ -314,7 +314,7 @@ fn millis(value: jlong) -> Duration {
     Duration::from_millis(u64::try_from(value).unwrap_or(0))
 }
 
-/// Deliver the event `name`, whose JSON is `event`, to the Worker's method
+/// Deliver the event `name`, whose JSON is `event`, to the Worker's handler
 /// of that name, blocking for up to `timeout_millis`. Returns the reply's
 /// JSON; throws when the event fails.
 #[unsafe(no_mangle)]

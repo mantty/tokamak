@@ -5,7 +5,7 @@ export type Authentication = "biometricsOrPasscode" | "biometrics";
 
 export type Status = "available" | "notEnrolled" | "unavailable";
 
-/** The local-authentication plugin's native methods on iOS and macOS. */
+/** The localAuthentication plugin's native methods on iOS and macOS. */
 export interface Apple {
   /** Whether the device can perform `authentication` now. */
   status(authentication: Authentication): Promise<Status>;
@@ -14,11 +14,11 @@ export interface Apple {
 }
 
 /**
- * The local-authentication plugin's native methods. Off iOS and macOS they reject with `NotSupportedError`.
+ * The localAuthentication plugin's native methods. Off iOS and macOS they reject with `NotSupportedError`.
  * Aborting `signal` cancels their calls, streams and resource acquisitions.
  */
 export function apple(ctx: TokamakContext, signal?: AbortSignal): Apple {
-  const endpoint = new NativeEndpoint(ctx, "local-authentication", ["ios", "macos"], signal);
+  const endpoint = new NativeEndpoint(ctx, "localAuthentication", ["ios", "macos"], signal);
   return {
     status: (authentication) => endpoint.call("status", { authentication }),
     authenticate: (authentication, prompt) => endpoint.call("authenticate", { authentication, prompt }),

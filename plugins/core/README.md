@@ -91,26 +91,28 @@ so only calls that would show UI fail:
 
 A plugin's native code delivers events to the app's Tokamak worker, even when
 no page is loaded, such as when the system starts the app in the background.
-Each event calls one method of the worker's class, its handler, whose name
-starts with `_`.
+Each event calls one handler: the function of the event's name in the
+property of the worker's class for the plugin, `_` followed by the plugin's
+id, such as `_alarms.onRing`. Plugin ids are unique in an app, so two plugins'
+events never reach the same handler.
 
-A native plugin lists each event in its registration file, by its handler's
-name, with the type of its data and of any reply. `tok plugin generate` writes
-the handler's declaration into the family's platform API, which types the
-method an app defines (see [GUIDELINES.md](../GUIDELINES.md)).
+A native plugin lists each event in its registration file, by its name, with
+the type of its data and of any reply. `tok plugin generate` writes the
+handlers' declarations into the family's platform API, which type the property
+an app defines (see [GUIDELINES.md](../GUIDELINES.md)).
 
 Native code emits the event's data through the host the plugin is created with.
 The generated dispatch encodes it, and decodes the reply:
 
 ```swift
-host.emit("_onRing", event: alarm, reply: Int.self, timeout: 10) { result in
+host.emit("onRing", event: alarm, reply: Int.self, timeout: 10) { result in
   // `result` is the reply, or nil without one.
 }
 ```
 
 ```kotlin
 // Blocks, so call it off the main thread.
-val reply = host.emit("_onRing", alarm, Int::class, 10_000)
+val reply = host.emit("onRing", alarm, Int::class, 10_000)
 // `reply` is the reply, or null without one.
 ```
 
@@ -118,8 +120,8 @@ The reply is what the handler returns, when that is not `undefined`.
 
 An event's data and reply travel as JSON. For an event that carries other
 bytes, which native code emits with `host.emitBytes`, the plugin's API module
-calls `setEventCodec(handler, { decode, encode })`, and declares the handler in
-`Tokamak.Handlers` itself.
+calls `setEventCodec("<plugin id>.<event>", { decode, encode })`, and declares
+the handler itself, as the generated code declares its handlers.
 
 `timeout` includes starting the runtime when the app is not running. `emit`
 fails when the Worker cannot run, or when the handler has not returned by the

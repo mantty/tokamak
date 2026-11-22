@@ -37,7 +37,7 @@ export function location(ctx: TokamakContext) {
 
     /**
      * Starts delivering moves of 500 metres or more, at most every 5 minutes, to
-     * `_onLocationUpdate`, located from cellular and Wi-Fi rather than GPS, until
+     * `_location.onUpdate`, located from cellular and Wi-Fi rather than GPS, until
      * `stopSignificantChanges`: Apple's significant-change service, and on Android a low-power
      * request with the same thresholds, which Android limits to a few an hour off screen. They use
      * little power and show no indicator. Off screen they need permission at all times, with which
@@ -51,7 +51,7 @@ export function location(ctx: TokamakContext) {
     stopSignificantChanges: (): Promise<void> => native.stopSignificantChanges(),
 
     /**
-     * Starts delivering arrivals at and departures from places to `_onVisit`, across launches, until
+     * Starts delivering arrivals at and departures from places to `_location.onVisit`, across launches, until
      * `stopVisits`. Off screen they need permission at all times.
      * @platforms ios macos
      */
@@ -116,7 +116,7 @@ export function location(ctx: TokamakContext) {
 
     /**
      * Starts continuous tracking, replacing any running, until `stopUpdates`. Significant changes
-     * suit long-term awareness. The updates' positions reach `_onLocationUpdate`, including after the system
+     * suit long-term awareness. The updates' positions reach `_location.onUpdate`, including after the system
      * ended the app. Rejects with `NotAllowedError` without in-use permission, and on iOS with
      * `NeedsUIError` off screen. Android's `foregroundService` rejects with `NotSupportedError`
      * without the `background-updates` build setting, and with `NeedsUIError` when Android does not
@@ -131,7 +131,7 @@ export function location(ctx: TokamakContext) {
 
     /**
      * Monitors a circular region, replacing one with the same `id`, until `removeRegion`. Its entries
-     * and exits reach `_onRegionTransition`, including when the system launches the app for one. A
+     * and exits reach `_location.onRegionTransition`, including when the system launches the app for one. A
      * region starts outside, so a device already inside reports an entry. Rejects with
      * `NotAllowedError` without precise location, and with `QuotaExceededError` beyond Apple's 20.
      */
@@ -142,19 +142,19 @@ export function location(ctx: TokamakContext) {
 
     removeRegion: (id: string): Promise<void> => native.removeRegion(id),
 
-    /** Receives the updates the Worker's `_onLocationUpdate` receives, while the listening page or Worker runs. */
+    /** Receives the updates the Worker's `_location.onUpdate` receives, while the listening page or Worker runs. */
     onLocationUpdate: (): JsonStream<LocationUpdate> => native.onLocationUpdate(),
 
-    /** Receives the transitions the Worker's `_onRegionTransition` receives, while the listening page or Worker runs. */
+    /** Receives the transitions the Worker's `_location.onRegionTransition` receives, while the listening page or Worker runs. */
     onRegionTransition: (): JsonStream<RegionTransition> => native.onRegionTransition(),
 
     /**
-     * Receives the visits the Worker's `_onVisit` receives, while the listening page or Worker runs.
+     * Receives the visits the Worker's `_location.onVisit` receives, while the listening page or Worker runs.
      * @platforms ios macos
      */
     onVisit: (): JsonStream<Visit> => apple(ctx).onVisit(),
 
-    /** Receives the failures the Worker's `_onLocationError` receives, while the listening page or Worker runs. */
+    /** Receives the failures the Worker's `_location.onError` receives, while the listening page or Worker runs. */
     onLocationError: (): JsonStream<LocationErrorEvent> => native.onLocationError(),
   };
 }

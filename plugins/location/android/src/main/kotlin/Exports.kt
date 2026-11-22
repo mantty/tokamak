@@ -21,11 +21,11 @@ object LocationExports : TokamakExports<TokamakLocationPlugin> {
         e.call(TokamakLocationPlugin::addRegion, doc = "Monitors a circular region, replacing one with the same `id`.")
         e.call(TokamakLocationPlugin::getRegions, doc = "The monitored regions.")
         e.call(TokamakLocationPlugin::removeRegion)
-        e.stream(TokamakLocationPlugin::onLocationUpdate, overflow = TokamakOverflow.DROP_OLDEST, doc = "The updates the Worker's `_onLocationUpdate` receives.")
-        e.stream(TokamakLocationPlugin::onRegionTransition, doc = "The transitions the Worker's `_onRegionTransition` receives.")
-        e.stream(TokamakLocationPlugin::onLocationError, doc = "The failures the Worker's `_onLocationError` receives.")
-        e.event("_onLocationUpdate", LocationUpdate::class, doc = "Receives continuous updates and significant changes, including those that start the app.")
-        e.event("_onRegionTransition", RegionTransition::class, doc = "Receives each region entry or exit, including one that starts the app.")
-        e.event("_onLocationError", LocationErrorEvent::class, doc = "Receives failures of background services, such as a region Android cannot monitor.")
+        e.stream(TokamakLocationPlugin::onLocationUpdate, overflow = TokamakOverflow.DROP_OLDEST, doc = "The updates the Worker's `_location.onUpdate` receives.")
+        e.stream(TokamakLocationPlugin::onRegionTransition, doc = "The transitions the Worker's `_location.onRegionTransition` receives.")
+        e.stream(TokamakLocationPlugin::onLocationError, doc = "The failures the Worker's `_location.onError` receives.")
+        e.event("onUpdate", LocationUpdate::class, doc = "Receives continuous updates and significant changes, including those that start the app.")
+        e.event("onRegionTransition", RegionTransition::class, doc = "Receives each region entry or exit, including one that starts the app.")
+        e.event("onError", LocationErrorEvent::class, doc = "Receives failures of background services, such as a region Android cannot monitor.")
     }
 }

@@ -37,7 +37,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
     /**
-     * Delivers the event [name] with its encoded [payload] to the Worker's method of that name,
+     * Delivers the event [name] with its encoded [payload] to the Worker's handler of that name,
      * blocking until it returns or [timeoutMillis] passes, and returns its encoded reply, which is
      * empty when it returns nothing.
      */

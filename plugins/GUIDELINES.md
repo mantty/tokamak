@@ -7,10 +7,16 @@ The app uses the same project, dependencies and build commands.
 ## Start a package
 
 ```sh
-tok plugin new page-tools
+tok plugin new pageTools
 # Or start with a small native implementation on the platforms it runs on:
-tok plugin new device-tools --platforms ios,macos,android
+tok plugin new deviceTools --platforms ios,macos,android
 ```
+
+The directory's name is the plugin's ID: a camel-case identifier, such as
+`deviceTools`. It names the plugin's handlers in an app's Tokamak worker
+(`_deviceTools`), and its words name its npm package
+(`tokamak-plugin-device-tools`) and its settings' options
+(`--device-tools-<key>`).
 
 The default scaffold composes `ctx.webview` in TypeScript. A native scaffold
 adds one small method that emits an event, and the registration file that lists
@@ -21,7 +27,7 @@ Rust, a custom protocol, or a separately maintained frontend router.
 The directory must be new.
 
 Install dependencies in the package and run `npm run check`. Add it to your
-app with `npm install ../page-tools`, a pnpm workspace dependency, or Yarn's
+app with `npm install ../pageTools`, a pnpm workspace dependency, or Yarn's
 equivalent. Run the app's usual `tok dev` command. Vite reloads TypeScript;
 native changes require rebuilding the app.
 
@@ -44,7 +50,7 @@ Reference the factory in `tokamak-plugin.json`:
 ```json
 {
   "schemaVersion": 2,
-  "id": "page-tools",
+  "id": "pageTools",
   "api": { "module": "src/index.ts", "export": "pageTools" }
 }
 ```
@@ -119,7 +125,7 @@ extension TokamakAlarmsPlugin: TokamakExports {
   public static func exports(_ e: inout TokamakExporter<TokamakAlarmsPlugin>) {
     e.call(set, doc: "Sets an alarm, replacing one with the same `id`.")
     e.stream(rings, doc: "Alarms as they ring.")
-    e.event("_onAlarmRang", Alarm.self, doc: "Receives each alarm that rang, even in the background.")
+    e.event("onRang", Alarm.self, doc: "Receives each alarm that rang, even in the background.")
   }
 }
 ```
@@ -130,7 +136,7 @@ object AlarmsExports : TokamakExports<TokamakAlarmsPlugin> {
     override fun exports(e: TokamakExporter<TokamakAlarmsPlugin>) {
         e.call(TokamakAlarmsPlugin::set, doc = "Sets an alarm, replacing one with the same `id`.")
         e.stream(TokamakAlarmsPlugin::rings, doc = "Alarms as they ring.")
-        e.event("_onAlarmRang", Alarm::class, doc = "Receives each alarm that rang, even in the background.")
+        e.event("onRang", Alarm::class, doc = "Receives each alarm that rang, even in the background.")
     }
 }
 ```
@@ -138,10 +144,10 @@ object AlarmsExports : TokamakExports<TokamakAlarmsPlugin> {
 `call` registers a method that returns once; `stream` one that returns values
 until the Worker cancels, with `overflow` for a slow reader; `resource` one
 that returns a native object as a `NativeReference`; `event` an event, by the
-name of the method of the Tokamak worker's class it calls, its handler, with
-the type the handler receives and, as `reply`, the type it may reply with. A
-handler's name starts with `_`. Write options as literal values: the Swift tooling reads the file without
-running it. Register an overloaded Swift method with its labels, such as
+name of the handler it calls in the plugin's property of the Tokamak worker's
+class, with the type the handler receives and, as `reply`, the type it may
+reply with. Write options as literal values: the Swift tooling reads the file
+without running it. Register an overloaded Swift method with its labels, such as
 `e.call(set(_:))`.
 
 `tok plugin generate apple` or `tok plugin generate android`, which the
@@ -152,7 +158,7 @@ types:
 - `src/apple.generated.ts` or `src/android.generated.ts`: the family's
   TypeScript API, a factory `apple(ctx, signal?)` or `android(ctx, signal?)`
   whose methods reject with `NotSupportedError` off the family's platforms, and
-  the declaration of each event's handler, such as `_onAlarmRang`. Aborting
+  the declaration of each event's handler, such as `onRang`. Aborting
   `signal` cancels the methods' calls, streams and resource acquisitions, which
   fail with its reason.
 - `Exports.generated.swift` or `Exports.generated.kt`, beside the registration
@@ -320,16 +326,16 @@ this way.
 
 Native code emits a registered event with a value of its type. The generated
 dispatch encodes it, and decodes the reply of an event registered with one, such
-as `e.event("_onAlarmDue", Alarm.self, reply: Snooze.self)`:
+as `e.event("onDue", Alarm.self, reply: Snooze.self)`:
 
 ```swift
-host.emit("_onAlarmRang", event: alarm, timeout: 10) { result in … }
-host.emit("_onAlarmDue", event: alarm, reply: Snooze.self, timeout: 10) { result in … }
+host.emit("onRang", event: alarm, timeout: 10) { result in … }
+host.emit("onDue", event: alarm, reply: Snooze.self, timeout: 10) { result in … }
 ```
 
 ```kotlin
-host.emit("_onAlarmRang", alarm, 10_000) // blocks until the handler returns
-val snooze = host.emit("_onAlarmDue", alarm, Snooze::class, 10_000)
+host.emit("onRang", alarm, 10_000) // blocks until the handler returns
+val snooze = host.emit("onDue", alarm, Snooze::class, 10_000)
 ```
 
 Emitting an event the registration does not list, a value of another type, or
@@ -338,29 +344,39 @@ null when the handler returned none, and the timeout includes starting the
 runtime. An event is on the platforms that declare its type. Synchronous OS
 callbacks use native configuration; they cannot wait for JavaScript.
 
-Each family's native code emits an event by the same name, so one handler
-receives it on every platform. The generated code declares the handler in
-`Tokamak.Handlers`, with the family's types, and an app defines it as a method
-of its Tokamak worker's class:
+The host delivers an event to the handler of its name in the Tokamak worker's
+property for the plugin: `_` followed by the plugin's id, so `_alarms` for the
+plugin `alarms`. Plugin ids are unique in an app, so two plugins' events never
+reach the same handler. Each family's native code emits an event by the same
+name, so one handler receives it on every platform. The generated code
+declares the handlers in `Tokamak.AlarmsHandlers`, with the family's types,
+and the property in `Tokamak.Handlers`. Export the handlers' type from the
+plugin's API module, as the scaffold does, and an app types the property with
+it:
 
 ```ts
 // src/tokamak.ts
+import type { AlarmsHandlers } from "tokamak-plugin-alarms";
+
 export default class Native extends TokamakEntrypoint {
-  async _onAlarmRang(alarm: Alarm) {
-    await this.env.ALARMS.put(alarm.id, "rang");
-  }
+  _alarms: AlarmsHandlers = {
+    onRang: async (alarm) => {
+      await this.env.ALARMS.put(alarm.id, "rang");
+    },
+  };
 }
 ```
 
 A handler receives the event's data, may call another plugin with `this.ctx`,
-and may return a typed reply. Keep an event's data and reply the same in every
-family, as a handler receives each family's. List each handler in the plugin's
-README, with its type.
+and may return a typed reply. Where the families' types of an event differ, a
+handler's parameter is either family's: export a handlers' type written with
+the plugin's own types instead, as `@tokamakdev/plugin-location` does. List
+each handler in the plugin's README, with its type.
 
 Events travel as JSON. For other bytes, emit with `host.emitBytes`, call
-`setEventCodec(handler, { decode, encode })` from `@tokamakdev/plugin/events`
-in the plugin's API module, and declare the handler in `Tokamak.Handlers` by
-hand, as the generated code declares its handlers.
+`setEventCodec("<plugin id>.<event>", { decode, encode })` from
+`@tokamakdev/plugin/events` in the plugin's API module, and declare the handler
+by hand, as the generated code declares its handlers.
 
 A browser implementation is optional. Put it in a separate module and reference
 its exported object with `web: { module, export }` in the manifest. Each method

@@ -18,7 +18,7 @@ void test("reports whether an authentication is available", async () => {
   const status = localAuthentication.status("biometricsOrPasscode");
   assert.deepEqual(native.lastRequest(), {
     type: "call",
-    plugin: "local-authentication",
+    plugin: "localAuthentication",
     method: "status",
     arguments: { authentication: "biometricsOrPasscode" },
   });
@@ -36,7 +36,7 @@ void test("authenticates the device owner with a prompt", async () => {
   });
   assert.deepEqual(native.lastRequest(), {
     type: "call",
-    plugin: "local-authentication",
+    plugin: "localAuthentication",
     method: "authenticate",
     arguments: { authentication: "biometrics", prompt: "Confirm it's you" },
   });

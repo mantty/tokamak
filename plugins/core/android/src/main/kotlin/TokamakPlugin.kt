@@ -225,17 +225,18 @@ interface TokamakHost {
     suspend fun requestPermissions(permissions: Set<String>): Map<String, Boolean>
 
     /**
-     * Delivers the plugin's event [name] to the Worker's method of that name, with its encoded
-     * [payload], and returns the method's encoded reply, which is empty when it returns nothing.
-     * Starts the runtime when it is not running. Blocks, so call it off the main thread; throws
-     * unless the method returns within [timeoutMillis], which includes runtime startup.
+     * Delivers the plugin's event [name] to the Worker's handler of that name, in its property
+     * for the plugin, with its encoded [payload], and returns the handler's encoded reply, which is
+     * empty when it returns nothing. Starts the runtime when it is not running. Blocks, so call it
+     * off the main thread; throws unless the handler returns within [timeoutMillis], which includes
+     * runtime startup.
      */
     fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray
 
     /**
-     * Delivers [event] to the Worker's method [name], the plugin's event that `Exports.kt` lists.
+     * Delivers [event] to the Worker's handler [name], the plugin's event that `Exports.kt` lists.
      * Starts the runtime when it is not running. Blocks, so call it off the main thread; throws
-     * unless the method returns within [timeoutMillis], which includes runtime startup.
+     * unless the handler returns within [timeoutMillis], which includes runtime startup.
      */
     fun emit(name: String, event: Any, timeoutMillis: Long)
 

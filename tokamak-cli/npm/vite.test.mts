@@ -222,8 +222,9 @@ test("reports the certificate an HTTPS development server serves, in each form V
 });
 
 /**
- * A Worker project whose `_onStart` replies with `reply`, an expression of the event and `env`
- * that `file` holds, which `src/tokamak.ts` is or imports.
+ * A Worker project whose `_onStart`, and whose `onAdded` for the plugin `example`, reply with
+ * `reply`, an expression of the event and `env` that `file` holds, which `src/tokamak.ts` is or
+ * imports.
  */
 function handlingProject(reply: string, file = "src/tokamak.ts"): App {
   const replies = `(event, env) => (${reply})`;
@@ -234,10 +235,11 @@ function handlingProject(reply: string, file = "src/tokamak.ts"): App {
     "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
 ${imported ? `import reply from ${JSON.stringify(`./${path.basename(file)}`)};` : `const reply = ${replies};`}
 export default class Native extends WorkerEntrypoint {
-  _onStart(event) {
+  _onStart = (event) => {
     this.ctx.waitUntil(Promise.resolve());
     return reply(event, this.env);
-  }
+  };
+  _example = { onAdded: (event) => reply(event, this.env) };
 }
 `,
   });
@@ -305,8 +307,11 @@ test("delivers dev socket events to the development Worker's handlers", async ()
           id: messages - 1,
           reply: { foreground: true, greeting: "hi" },
         });
+        assert.deepEqual((await emit(socket, "example.onAdded", { foreground: false })).reply, { foreground: false, greeting: "hi" });
         assert.equal((await emit(socket, "_onStart", { fail: true })).reply, null);
-        assert.equal((await emit(socket, "_onResume", {})).reply, null);
+        for (const unhandled of ["_onResume", "example.onRemoved", "other.onAdded"]) {
+          assert.equal((await emit(socket, unhandled, {})).reply, null);
+        }
       } finally {
         socket.close();
       }
@@ -354,7 +359,7 @@ for (const file of ["src/tokamak.ts", "src/replies.ts"]) {
 test("builds a native worker whose event entrypoint calls the handlers it reports", async () => {
   const app = handlingProject("{ foreground: event.foreground, greeting: env.GREETING }");
   await build(app);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(app.output, "worker/handlers.json"), "utf8")), ["_onStart"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(app.output, "worker/handlers.json"), "utf8")), ["_onStart", "example.onAdded"]);
   const require = createRequire(import.meta.resolve("@cloudflare/vite-plugin"));
   const { Miniflare, convertV4MiniflareOptions } = await import(pathToFileURL(require.resolve("miniflare")).href);
   const miniflare = new Miniflare(
@@ -367,7 +372,7 @@ test("builds a native worker whose event entrypoint calls the handlers it report
           serviceBindings: { APP: { name: "app", entrypoint: "TokamakEvents" } },
           script: `export default {
             async fetch(_request, env) {
-              const reply = await env.APP.dispatch("_onStart", new TextEncoder().encode('{"foreground":true}'));
+              const reply = await env.APP.dispatch("example.onAdded", new TextEncoder().encode('{"foreground":true}'));
               return new Response(reply);
             },
           };`,
@@ -394,10 +399,10 @@ test("shares event codecs with pre-bundled dependencies", async () => {
   const app = project({
     "node_modules/events-package/package.json": JSON.stringify({ name: "events-package", type: "module", exports: "./index.js" }),
     "node_modules/events-package/index.js": `import { setEventCodec } from "@tokamakdev/plugin/events";
-setEventCodec("_onStart", { decode: () => "pre-bundled", encode: (reply) => new TextEncoder().encode(JSON.stringify(reply)) });\n`,
+setEventCodec("example.onAdded", { decode: () => "pre-bundled", encode: (reply) => new TextEncoder().encode(JSON.stringify(reply)) });\n`,
     "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
 import "events-package";
-export default class Native extends WorkerEntrypoint { _onStart(event) { return event; } }\n`,
+export default class Native extends WorkerEntrypoint { _example = { onAdded: (event) => event }; }\n`,
   });
   const core = path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/events"))));
   fs.mkdirSync(path.join(app.root, "node_modules/@tokamakdev"));
@@ -406,7 +411,7 @@ export default class Native extends WorkerEntrypoint { _onStart(event) { return 
     serve(app, async () => {
       const socket = await openSocket(serverReport(app).socketPort, "token");
       try {
-        assert.equal((await emit(socket, "_onStart", {})).reply, "pre-bundled");
+        assert.equal((await emit(socket, "example.onAdded", {})).reply, "pre-bundled");
       } finally {
         socket.close();
       }
@@ -469,7 +474,7 @@ test("keeps a development Worker's subscription after its event until it is remo
 const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
 import { WorkerEntrypoint } from "cloudflare:workers";
 export default class Native extends WorkerEntrypoint {
-  _onStart() {
+  _onStart = () => {
     const ctx = this.ctx;
     const stop = nativeListen(ctx, "location", "watchPosition", null, (position) => {
       if (position !== "stop") return void nativeCall(ctx, "test", "received", position);

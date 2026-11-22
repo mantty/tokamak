@@ -128,13 +128,13 @@ extension TokamakLocationPlugin {
 
   public func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data {
     switch name {
-    case "_onLocationUpdate":
+    case "onUpdate":
       return try tokamakEvent(name, event, as: LocationUpdate.self)
-    case "_onRegionTransition":
+    case "onRegionTransition":
       return try tokamakEvent(name, event, as: RegionTransition.self)
-    case "_onVisit":
+    case "onVisit":
       return try tokamakEvent(name, event, as: Visit.self)
-    case "_onLocationError":
+    case "onError":
       return try tokamakEvent(name, event, as: LocationErrorEvent.self)
     default:
       throw .unlistedEvent(name)

@@ -228,7 +228,7 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     finishRegistering(.failure(Self.registrationError(error)))
   }
 
-  /// Delivers a data-only message to the Worker's `_onPush`, showing the
+  /// Delivers a data-only message to the Worker's `_notifications.onPush`, showing the
   /// notification it replies with.
   public func didReceiveRemoteNotification(
     _ userInfo: [AnyHashable: Any],
@@ -246,7 +246,7 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       await self.show(reply: reply, attachmentTimeout: deadline.timeIntervalSinceNow)
       completion(.newData)
     }
-    host.emit("_onPush", event: message, reply: NotificationContent.self, timeout: pushDeadline) {
+    host.emit("onPush", event: message, reply: NotificationContent.self, timeout: pushDeadline) {
       result in
       switch result {
       case .success(let reply):
@@ -291,14 +291,14 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
         let dismissed = fields.dismissed
         self.dismissed.send(dismissed)
         self.host.emit(
-          "_onNotificationDismissed", event: dismissed, timeout: responseDeadline,
+          "onDismissed", event: dismissed, timeout: responseDeadline,
           completion: delivered)
       } else {
         let opened = fields.opened(
           action: action == UNNotificationDefaultActionIdentifier ? nil : action, input: input)
         self.opened.send(opened)
         self.host.emit(
-          "_onNotificationOpened", event: opened, timeout: responseDeadline, completion: delivered)
+          "onOpened", event: opened, timeout: responseDeadline, completion: delivered)
       }
     }
   }
@@ -453,7 +453,7 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     for attachment in attachments { try? FileManager.default.removeItem(at: attachment.url) }
   }
 
-  /// Shows the notification `_onPush` replies with, if any, with the attachments that load
+  /// Shows the notification `_notifications.onPush` replies with, if any, with the attachments that load
   /// within `timeout`.
   @MainActor
   private func show(

@@ -22,7 +22,7 @@ export interface StoreOptions {
   readonly prompt?: string;
 }
 
-/** The secure-storage plugin's native methods on iOS and macOS. */
+/** The secureStorage plugin's native methods on iOS and macOS. */
 export interface Apple {
   /** Stores a new value; rejects with `DuplicateItemError` when `name` has one. */
   create(name: string, value: string, options: StoreOptions): Promise<void>;
@@ -39,11 +39,11 @@ export interface Apple {
 }
 
 /**
- * The secure-storage plugin's native methods. Off iOS and macOS they reject with `NotSupportedError`.
+ * The secureStorage plugin's native methods. Off iOS and macOS they reject with `NotSupportedError`.
  * Aborting `signal` cancels their calls, streams and resource acquisitions.
  */
 export function apple(ctx: TokamakContext, signal?: AbortSignal): Apple {
-  const endpoint = new NativeEndpoint(ctx, "secure-storage", ["ios", "macos"], signal);
+  const endpoint = new NativeEndpoint(ctx, "secureStorage", ["ios", "macos"], signal);
   return {
     create: (name, value, options) => endpoint.call("create", { name, value, options }),
     replace: (name, value, options) => endpoint.call("replace", { name, value, options }),

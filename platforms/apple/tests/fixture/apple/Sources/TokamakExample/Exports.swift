@@ -19,11 +19,11 @@ extension TokamakExamplePlugin: TokamakExports {
     e.call(alert)
     e.call(zone)
     e.call(mark)
-    e.event("_onEntered", Region.self, doc: "Each region the device enters.")
-    e.event("_onAsked", Region.self, reply: Precision.self)
-    e.event("_onChose", Precision.self)
+    e.event("onEntered", Region.self, doc: "Each region the device enters.")
+    e.event("onAsked", Region.self, reply: Precision.self)
+    e.event("onChose", Precision.self)
     #if os(iOS)
-      e.event("_onVisited", Visit.self)
+      e.event("onVisited", Visit.self)
     #endif
   }
 }

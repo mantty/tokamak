@@ -142,14 +142,14 @@ extension TokamakExamplePlugin {
 
   public func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data {
     switch name {
-    case "_onEntered":
+    case "onEntered":
       return try tokamakEvent(name, event, as: Region.self)
-    case "_onAsked":
+    case "onAsked":
       return try tokamakEvent(name, event, as: Region.self)
-    case "_onChose":
+    case "onChose":
       return try tokamakEvent(name, event, as: Precision.self)
     #if os(iOS)
-      case "_onVisited":
+      case "onVisited":
         return try tokamakEvent(name, event, as: Visit.self)
     #endif
     default:
@@ -159,7 +159,7 @@ extension TokamakExamplePlugin {
 
   public func eventReply(_ name: String, _ reply: Data) throws(TokamakPluginError) -> Any? {
     switch name {
-    case "_onAsked":
+    case "onAsked":
       return try tokamakDecode(Precision?.self, from: reply, in: "reply")
     default:
       throw .unlistedReply(name)

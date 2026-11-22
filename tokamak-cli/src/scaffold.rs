@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 use tokamak_cli::Platform;
 
 use super::plugin_api::{self, Family};
+use super::plugin_settings::hyphenated;
 use super::plugins;
 
 /// The description the native template's registration file gives, which `tok plugin generate`
@@ -18,14 +19,10 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
     let id = plugin_id(directory)?;
     let families = families(platforms)?;
     let native = !families.is_empty();
-    let class = id
-        .split('-')
-        .map(|word| {
-            let (first, rest) = word.split_at(1);
-            first.to_uppercase() + rest
-        })
-        .collect::<String>();
+    let (first, rest) = id.split_at(1);
+    let class = first.to_uppercase() + rest;
     let factory = format!("create{class}");
+    let handlers = format!("{class}Handlers");
     let module = format!("Tokamak{class}");
     let class = format!("{module}Plugin");
     let package = android_package(id);
@@ -41,7 +38,9 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
     let template = |source: &str| {
         source
             .replace("{{id}}", id)
+            .replace("{{name}}", &package_name(id))
             .replace("{{factory}}", &factory)
+            .replace("{{handlers}}", &handlers)
             .replace("{{class}}", &class)
             .replace("{{module}}", &module)
             .replace("{{package}}", &package)
@@ -231,9 +230,15 @@ fn write_native(
 }
 
 /// The Kotlin package and Android namespace of the plugin `id`, such as
-/// `tokamak.plugins.devicetools` for `device-tools`.
+/// `tokamak.plugins.devicetools` for `deviceTools`.
 fn android_package(id: &str) -> String {
-    format!("tokamak.plugins.{}", id.replace('-', ""))
+    format!("tokamak.plugins.{}", id.to_lowercase())
+}
+
+/// The npm package of the plugin `id`, such as `tokamak-plugin-device-tools`
+/// for `deviceTools`: npm names have no capitals.
+fn package_name(id: &str) -> String {
+    format!("tokamak-plugin-{}", hyphenated(id))
 }
 
 fn plugin_id(directory: &Path) -> Result<&str> {
@@ -243,7 +248,7 @@ fn plugin_id(directory: &Path) -> Result<&str> {
         .context("The directory must name the plugin")?;
     if !plugins::valid_plugin_id(id) || plugins::reserved_prefix(id).is_some() {
         bail!(
-            "Use a plugin directory name of lowercase words joined by single hyphens, without a reserved Tokamak prefix"
+            "Use a plugin directory name of letters and digits that starts with a lowercase letter, such as deviceTools, without a reserved Tokamak prefix"
         );
     }
     Ok(id)
@@ -272,7 +277,7 @@ fn write_package(
         directory,
         "package.json",
         &json!({
-            "name": format!("tokamak-plugin-{id}"), "version": "0.1.0", "type": "module",
+            "name": package_name(id), "version": "0.1.0", "type": "module",
             "exports": exports,
             "files": ["src", "web", "apple", "android", "tokamak-plugin.json", "README.md"],
             "scripts": scripts,

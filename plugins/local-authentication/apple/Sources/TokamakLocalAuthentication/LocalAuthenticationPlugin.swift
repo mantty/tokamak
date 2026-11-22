@@ -25,7 +25,7 @@ extension TokamakLocalAuthenticationPlugin {
 }
 
 public final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
-  public let id = "local-authentication"
+  public let id = "localAuthentication"
   public let host: TokamakHost
 
   public init(host: TokamakHost) {

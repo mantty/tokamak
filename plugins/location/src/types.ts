@@ -116,7 +116,7 @@ export interface Region {
   readonly longitude: number;
   /** In metres. */
   readonly radius: number;
-  /** Whether entering the region reaches `_onRegionTransition`; true by default. */
+  /** Whether entering the region reaches `_location.onRegionTransition`; true by default. */
   readonly onEntry?: boolean;
   /** Whether leaving it does; true by default. */
   readonly onExit?: boolean;
@@ -155,6 +155,21 @@ export interface LocationErrorEvent {
   readonly message: string;
   /** The region's id, when the failure concerns one. */
   readonly id?: string;
+}
+
+/**
+ * The handlers of the plugin's events, which the Tokamak worker's class holds as `_location`. Each
+ * is an arrow function, whose `this` is the worker.
+ */
+export interface LocationHandlers {
+  /** Receives continuous updates and significant changes, including those that start the app. */
+  onUpdate?(update: LocationUpdate): void | Promise<void>;
+  /** Receives each region entry or exit, including one that starts the app. */
+  onRegionTransition?(transition: RegionTransition): void | Promise<void>;
+  /** Apple only: receives each arrival at or departure from a place, including one that launches the app. */
+  onVisit?(visit: Visit): void | Promise<void>;
+  /** Receives failures of background services, such as a region the system cannot monitor. */
+  onError?(error: LocationErrorEvent): void | Promise<void>;
 }
 
 export type Listener<T> = (event: T) => void;

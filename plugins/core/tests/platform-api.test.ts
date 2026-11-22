@@ -4,7 +4,7 @@ import { createNativeContext } from "../src/context.js";
 import { decodeValues } from "../src/streams.js";
 import { connectNative } from "../src/testing.js";
 import { TokamakEntrypoint } from "../src/worker.js";
-import { apple, type Precision, type Region } from "./fixtures/apple.generated.js";
+import { apple } from "./fixtures/apple.generated.js";
 
 // The fixture is what `tok plugin generate` writes for fixtures/description.json.
 
@@ -75,16 +75,22 @@ void test("a generated API rejects off its family's platforms", async () => {
   assert.deepEqual(native.sent, []);
 });
 
-void test("generated handlers type the worker's methods with the events' data and replies", () => {
-  class Native extends TokamakEntrypoint {
-    _onAsked(region: Region): Precision | undefined {
-      return region.id === "home" ? "precise" : undefined;
-    }
-    // @ts-expect-error -- the event is a `Region`.
-    _onEntered(region: string) {
-      return void region;
-    }
+void test("generated handlers type the worker's property for the plugin with the events' data and replies", () => {
+  class Native extends TokamakEntrypoint<{ home: string }> {
+    _example: Tokamak.ExampleHandlers = {
+      onAsked: (region) => (region.id === this.env.home ? "precise" : undefined),
+      onChose: (precision) => void precision.length,
+    };
   }
-  const worker = new Native(createNativeContext({ waitUntil: () => undefined }), {});
-  assert.equal(worker._onAsked({ id: "home", radius: 50, tags: [], counts: {} }), "precise");
+  class Mistyped extends TokamakEntrypoint {
+    _example: Tokamak.ExampleHandlers = {
+      // @ts-expect-error -- the event is a `Region`.
+      onEntered: (region: string) => void region,
+      // @ts-expect-error -- the reply is a `Precision`.
+      onAsked: () => 1,
+    };
+  }
+  const worker = new Native(createNativeContext({ waitUntil: () => undefined }), { home: "home" });
+  assert.equal(worker._example.onAsked?.({ id: "home", radius: 50, tags: [], counts: {} }), "precise");
+  assert.ok(Mistyped.prototype instanceof TokamakEntrypoint);
 });

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "local-authentication",
+  "id": "localAuthentication",
   "platforms": {
     "macos": {
       "class": "TokamakLocalAuthentication.TokamakLocalAuthenticationPlugin"

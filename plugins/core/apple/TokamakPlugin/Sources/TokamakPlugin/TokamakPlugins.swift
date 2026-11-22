@@ -125,7 +125,7 @@ public protocol TokamakHostApp: AnyObject {
   #endif
 
   /// Delivers the event `name`, whose encoded data is `payload`, to the
-  /// Worker's method of that name, and calls `completion` on the main thread
+  /// Worker's handler of that name, and calls `completion` on the main thread
   /// with its encoded reply, which is empty when it returns nothing. Fails
   /// unless it returns within `timeout`, which includes runtime startup.
   func emit(
@@ -183,23 +183,23 @@ public final class TokamakHost {
     }
   #endif
 
-  /// Delivers the plugin's event `name` to the Worker's method of that name,
-  /// with its encoded `payload`, and calls `completion` on the main thread
-  /// with the method's encoded reply, which is empty when it returns nothing.
-  /// Fails unless it returns within `timeout`, which includes runtime
-  /// startup. Call it on the main thread.
+  /// Delivers the plugin's event `name` to the Worker's handler of that name,
+  /// in its property for the plugin, with its encoded `payload`, and calls
+  /// `completion` on the main thread with the handler's encoded reply, which
+  /// is empty when it returns nothing. Fails unless it returns within
+  /// `timeout`, which includes runtime startup. Call it on the main thread.
   public func emitBytes(
     _ name: String,
     payload: Data,
     timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
-    app.emit(name, payload: payload, timeout: timeout, completion: completion)
+    app.emit("\(plugin).\(name)", payload: payload, timeout: timeout, completion: completion)
   }
 
-  /// Delivers `event` to the Worker's method `name`, the plugin's event that
+  /// Delivers `event` to the Worker's handler `name`, the plugin's event that
   /// `Exports.swift` lists, then calls `completion` on the main thread. Fails
-  /// unless the method returns within `timeout`, which includes runtime
+  /// unless the handler returns within `timeout`, which includes runtime
   /// startup. Call it on the main thread.
   public func emit(
     _ name: String,

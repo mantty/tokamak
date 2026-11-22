@@ -20,7 +20,7 @@ enum class Status { Available, NotEnrolled, Unavailable }
 class TokamakLocalAuthenticationPlugin(
     private val host: TokamakHost,
 ) : TokamakPlugin {
-    override val id = "local-authentication"
+    override val id = "localAuthentication"
 
     private val biometrics = host.context.getSystemService(BiometricManager::class.java)
 
