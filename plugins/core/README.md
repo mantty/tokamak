@@ -6,8 +6,8 @@ Native plugin APIs, endpoint codecs, event contracts and test fixtures.
 | --- | --- |
 | `@tokamakdev/plugin` | `platformApi`, `NativeEndpoint`, `TokamakContext`, `platform`, JSON codec and value types |
 | `@tokamakdev/plugin/streams` | Bounded push streams and typed JSON stream decoding |
-| `@tokamakdev/plugin/events` | `defineEvent` |
-| `@tokamakdev/plugin/testing` | Invocation fixture, event dispatch and `setPlatform` |
+| `@tokamakdev/plugin/events` | `setEventCodec` |
+| `@tokamakdev/plugin/testing` | Invocation fixture |
 
 Plugin packages declare this package as a peer dependency. Native APIs require
 the receiving Tokamak worker invocation's context. `tok plugin generate` writes
@@ -89,60 +89,43 @@ so only calls that would show UI fail:
 
 ## Worker events
 
-A plugin's native code delivers events to the app's Tokamak worker, whose listeners
-register in `src/tokamak.ts` and run even when no page is loaded, such as when
-the system starts the app in the background.
+A plugin's native code delivers events to the app's Tokamak worker, even when
+no page is loaded, such as when the system starts the app in the background.
+Each event calls one method of the worker's class, its handler, whose name
+starts with `_`.
 
-A native plugin registers each event in its registration file, with the type of
-its data and of any reply, and `tok plugin generate` writes the function that
-registers its listeners into the family's platform API. The plugin's `/events`
-entry, which apps import, curates the families' functions into its own (see
-[GUIDELINES.md](../GUIDELINES.md)).
+A native plugin lists each event in its registration file, by its handler's
+name, with the type of its data and of any reply. `tok plugin generate` writes
+the handler's declaration into the family's platform API, which types the
+method an app defines (see [GUIDELINES.md](../GUIDELINES.md)).
 
 Native code emits the event's data through the host the plugin is created with.
 The generated dispatch encodes it, and decodes the reply:
 
 ```swift
-host.emit("ring", event: alarm, reply: Int.self, timeout: 10) { result in
-  // `result` is the reply, or nil when no listener replies.
+host.emit("_onRing", event: alarm, reply: Int.self, timeout: 10) { result in
+  // `result` is the reply, or nil without one.
 }
 ```
 
 ```kotlin
 // Blocks, so call it off the main thread.
-val reply = host.emit("ring", alarm, Int::class, 10_000)
-// `reply` is the reply, or null when no listener replies.
+val reply = host.emit("_onRing", alarm, Int::class, 10_000)
+// `reply` is the reply, or null without one.
 ```
 
-Listeners receive each family's event under the plugin's ID, the family and the
-event's name, joined by `.`, such as `alarms.apple.ring`. The reply is the first
-value, in registration order, that a listener returns other than `undefined`.
+The reply is what the handler returns, when that is not `undefined`.
 
-`defineEvent(name, { codec, platforms })` returns the function that registers
-listeners of the event `name`, typed with the data and reply that
-`Tokamak.Events` and `Tokamak.EventReplies` declare for it. Off `platforms`,
-and without a native host, that function registers nothing. The generated API
-uses it with its family's platforms. A plugin uses it directly, with a codec,
-for an event that carries other bytes than JSON, which native code emits with
-`host.emitBytes`.
+An event's data and reply travel as JSON. For an event that carries other
+bytes, which native code emits with `host.emitBytes`, the plugin's API module
+calls `setEventCodec(handler, { decode, encode })`, and declares the handler in
+`Tokamak.Handlers` itself.
 
 `timeout` includes starting the runtime when the app is not running. `emit`
-fails when the Worker cannot run, or when a listener has not returned by the
-timeout; it is not retried. The runtime starts no Worker for an event without
-listeners, so emit each event the plugin registers whether or not the app
-listens. Plugin IDs contain no `.`.
-
-Test listeners with `dispatch` from `@tokamakdev/plugin/testing`, which runs
-them as the runtime does and returns what they threw. `setPlatform` names the
-platform under test, on which listeners then register:
-
-```ts
-import { dispatch, setPlatform } from "@tokamakdev/plugin/testing";
-
-setPlatform("ios");
-onRing(() => 5);
-const { reply, reported } = await dispatch("alarms.apple.ring", { id: "a1" }, env);
-```
+fails when the Worker cannot run, or when the handler has not returned by the
+timeout; it is not retried. A packaged app starts no Worker for an event whose
+handler the app's class does not define, so emit each event the plugin lists
+whether or not the app handles it.
 
 ## WebView controls
 

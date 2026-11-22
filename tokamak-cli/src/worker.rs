@@ -1,6 +1,6 @@
 //! Worker package preparation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,10 +24,17 @@ struct WorkerCache {
     outputs: String,
 }
 
-/// The Worker `wrangler` describes, compiled into a package directory under
-/// `cache_dir`; an earlier compilation is reused while its inputs are unchanged.
-pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<PathBuf> {
-    let (root, manifest) = collect_modules(wrangler)?;
+/// The Worker `wrangler` describes, which runs only for the events that call
+/// its `handlers` when it has a record of them, compiled into a package
+/// directory under `cache_dir`; an earlier compilation is reused while its
+/// inputs are unchanged.
+pub(crate) fn compile(
+    cache_dir: &Path,
+    wrangler: &WranglerConfig,
+    handlers: Option<BTreeSet<String>>,
+) -> Result<PathBuf> {
+    let (root, mut manifest) = collect_modules(wrangler)?;
+    manifest.handlers = handlers;
     let mut files = manifest
         .modules
         .keys()
@@ -135,7 +142,12 @@ fn collect_modules(wrangler: &WranglerConfig) -> Result<(&Path, WorkerManifest)>
         let module_type = module_type(&name, rule_type)?;
         modules.entry(name).or_insert(module_type);
     }
-    Ok((root, WorkerManifest { entry, modules }))
+    let manifest = WorkerManifest {
+        entry,
+        modules,
+        handlers: None,
+    };
+    Ok((root, manifest))
 }
 
 /// The type of the first of `wrangler`'s rules with a glob that matches `name`.
@@ -221,6 +233,7 @@ mod tests {
                     ("chunks/page.mjs".to_owned(), ModuleType::EsModule),
                     ("index.js".to_owned(), ModuleType::EsModule),
                 ]),
+                handlers: None,
             }
         );
         Ok(())
@@ -260,7 +273,7 @@ mod tests {
         let root = directory.path();
         write(root, &["index.js"])?;
         let wrangler = worker(root, "[]")?;
-        let compiled = compile(&root.join("cache"), &wrangler)?;
+        let compiled = compile(&root.join("cache"), &wrangler, None)?;
         let app = PackageLayout::new(root.join("app")).tokamak_worker();
 
         package(app.root(), &compiled, &wrangler, BTreeMap::new())?;

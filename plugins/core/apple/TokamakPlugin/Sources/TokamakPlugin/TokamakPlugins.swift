@@ -125,9 +125,9 @@ public protocol TokamakHostApp: AnyObject {
   #endif
 
   /// Delivers the event `name`, whose encoded data is `payload`, to the
-  /// Worker's listeners, and calls `completion` on the main thread with their
-  /// encoded reply, which is empty when none replied. Fails unless they return
-  /// within `timeout`, which includes runtime startup.
+  /// Worker's method of that name, and calls `completion` on the main thread
+  /// with its encoded reply, which is empty when it returns nothing. Fails
+  /// unless it returns within `timeout`, which includes runtime startup.
   func emit(
     _ name: String, payload: Data, timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void)
@@ -183,23 +183,23 @@ public final class TokamakHost {
     }
   #endif
 
-  /// Delivers the plugin's event `name`, which the Worker's listeners
-  /// receive as `<plugin>.apple.<name>`, with its encoded `payload`, and calls
-  /// `completion` on the main thread with their encoded reply, which is empty
-  /// when none replied. Fails unless they return within `timeout`, which
-  /// includes runtime startup. Call it on the main thread.
+  /// Delivers the plugin's event `name` to the Worker's method of that name,
+  /// with its encoded `payload`, and calls `completion` on the main thread
+  /// with the method's encoded reply, which is empty when it returns nothing.
+  /// Fails unless it returns within `timeout`, which includes runtime
+  /// startup. Call it on the main thread.
   public func emitBytes(
     _ name: String,
     payload: Data,
     timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
-    app.emit("\(plugin).apple.\(name)", payload: payload, timeout: timeout, completion: completion)
+    app.emit(name, payload: payload, timeout: timeout, completion: completion)
   }
 
-  /// Delivers `event` to the Worker's listeners of the plugin's event `name`,
-  /// which `Exports.swift` lists, then calls `completion` on the main
-  /// thread. Fails unless they return within `timeout`, which includes runtime
+  /// Delivers `event` to the Worker's method `name`, the plugin's event that
+  /// `Exports.swift` lists, then calls `completion` on the main thread. Fails
+  /// unless the method returns within `timeout`, which includes runtime
   /// startup. Call it on the main thread.
   public func emit(
     _ name: String,
@@ -210,9 +210,9 @@ public final class TokamakHost {
     send(name, event, timeout: timeout) { completion($0.map { _ in }) }
   }
 
-  /// `emit` of an event whose listeners may reply, calling `completion` with
+  /// `emit` of an event whose handler may reply, calling `completion` with
   /// the reply as the plugin's generated dispatch decodes it, which is a
-  /// `Reply`, or nil when none replied.
+  /// `Reply`, or nil without one.
   public func emit<Reply>(
     _ name: String,
     event: some Encodable,
@@ -242,7 +242,7 @@ public final class TokamakHost {
     emitBytes(name, payload: payload, timeout: timeout, completion: completion)
   }
 
-  /// The listeners' `reply` to the event `name` as a `Reply`, or nil when none replied.
+  /// The handler's `reply` to the event `name` as a `Reply`, or nil without one.
   private func decoded<Reply>(
     _ reply: Data, to name: String, as type: Reply.Type
   ) throws(TokamakPluginError) -> Reply? {
@@ -426,6 +426,57 @@ public enum TokamakPluginRequest {
   case call, callWithBody, subscribe
 }
 
+/// Work for the main thread. Its queue runs the work, except while the main
+/// thread waits in `run`, which then runs it.
+public enum TokamakMainThread {
+  private static let condition = NSCondition()
+  /// The work posted while the main thread waits, which is nil otherwise.
+  private static var waiting: [() -> Void]?
+  private static var finished = false
+
+  public static func post(_ work: @escaping () -> Void) {
+    let taken = condition.withLock {
+      waiting?.append(work)
+      condition.signal()
+      return waiting != nil
+    }
+    if !taken { DispatchQueue.main.async(execute: work) }
+  }
+
+  /// Blocks the main thread until `work`, which runs on another thread,
+  /// returns or `deadline` passes, running the work posted meanwhile.
+  public static func run(until deadline: Date, work: @escaping () -> Void) {
+    condition.withLock {
+      waiting = []
+      finished = false
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+      work()
+      condition.withLock {
+        finished = true
+        condition.signal()
+      }
+    }
+    condition.lock()
+    while !finished {
+      if let posted = waiting?.first {
+        waiting?.removeFirst()
+        condition.unlock()
+        posted()
+        condition.lock()
+      } else if !condition.wait(until: deadline) {
+        break
+      }
+    }
+    let rest = waiting ?? []
+    waiting = nil
+    condition.unlock()
+    for posted in rest {
+      DispatchQueue.main.async(execute: posted)
+    }
+  }
+}
+
 /// Runs the Worker's requests on the executor each plugin chooses, and passes
 /// replies straight to the runtime.
 public final class TokamakPluginRequests<Key: Hashable> {
@@ -477,7 +528,7 @@ public final class TokamakPluginRequests<Key: Hashable> {
       send(key, result)
       if subscribe && result.done { cancel(request) }
     }
-    request.queue.async { [self] in
+    let start = { [self] in
       guard isPending(key, request) else { return }
       do throws(TokamakPluginError) {
         if subscribe {
@@ -493,6 +544,11 @@ public final class TokamakPluginRequests<Key: Hashable> {
       } catch {
         if remove(key, request) { send(key, TokamakPluginResult(.failure(error), done: true)) }
       }
+    }
+    if request.queue === DispatchQueue.main {
+      TokamakMainThread.post(start)
+    } else {
+      request.queue.async(execute: start)
     }
   }
 

@@ -1,25 +1,26 @@
 import { capabilitiesFor } from "./capabilities.js";
 import { nativeAvailability, type TokamakContext } from "./context.js";
-import type { TokamakEvent } from "./events.js";
-import { dispatch } from "./registry.js";
 
 export { capabilitiesFor } from "./capabilities.js";
 export { createNativeContext, nativeAvailability, nativeConnection, platform } from "./context.js";
 export type { Availability, NativePlatform } from "./capabilities.js";
 export type { TokamakContext } from "./context.js";
 export type { WebView } from "./webview.js";
-export type { EventReply, EventType, TokamakEvent } from "./events.js";
+export type { StartEvent } from "./events.js";
 
-/** The application's native worker entrypoint. */
-export class TokamakEntrypoint<Env = Tokamak.Env> {
+/** `Object`, typed with the handlers a Tokamak worker's class may define, as `Tokamak.Handlers` declares them. */
+const Handlers: new () => Tokamak.Handlers = Object;
+
+/**
+ * The application's native worker entrypoint. The native host calls its `Tokamak.Handlers`
+ * methods, and pages and the app's Worker call its other methods whose names do not start with `_`.
+ */
+export class TokamakEntrypoint<Env = Tokamak.Env> extends Handlers {
   constructor(
     protected readonly ctx: TokamakContext,
     protected readonly env: Env,
-  ) {}
-
-  /** Runs the listeners registered for this event and resolves to their reply. */
-  event(event: TokamakEvent): unknown {
-    return dispatch(event.type, event.data, this.env, this.ctx).then(({ reply }) => reply);
+  ) {
+    super();
   }
 }
 

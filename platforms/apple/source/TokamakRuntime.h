@@ -39,14 +39,15 @@ typedef struct {
 
 void *tokamak_runtime_start(const char *packaged_dir, const char *state_dir,
                             const char *storage_dir, const char *host,
-                            bool foreground, TokamakPluginHandler plugins,
-                            char *error, size_t error_len);
+                            TokamakPluginHandler plugins, char *error,
+                            size_t error_len);
 void *tokamak_runtime_start_development(const char *state_dir, const char *host,
                                      const char *endpoint,
                                      const char *session_token,
-                                     bool foreground,
                                      TokamakPluginHandler plugins,
                                      char *error, size_t error_len);
+bool tokamak_has_handler(const char *packaged_dir, const char *handler);
+void tokamak_runtime_deliver_start(const void *runtime, bool foreground);
 uint16_t tokamak_runtime_port(const void *runtime);
 uint16_t tokamak_runtime_await_port_change(const void *runtime, uint16_t known,
                                         uint64_t timeout_ms);

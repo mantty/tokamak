@@ -366,7 +366,7 @@ jobs:
             "../artifacts/tokamakdev-platform-android-arm64-$PACKAGE_VERSION.tgz"
           ./node_modules/.bin/tok targets | grep -Fx macos-arm64
           node --input-type=module -e "import { tokamak } from '@tokamakdev/tok/vite'"
-          node --input-type=module -e "import.meta.resolve('@tokamakdev/tok/events'); import.meta.resolve('@tokamakdev/plugin/events')"
+          node --input-type=module -e "import.meta.resolve('@tokamakdev/tok'); import.meta.resolve('@tokamakdev/plugin/events')"
           test -f node_modules/@tokamakdev/platform-android-arm64/android-arm64/platform-pack.json
 
       - name: Upload CLI packages

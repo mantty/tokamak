@@ -1,6 +1,6 @@
 //! Packaged directory layout and the formats of the files in it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -137,6 +137,11 @@ pub struct WorkerManifest {
     pub entry: String,
     /// Every module, by name, with its type.
     pub modules: BTreeMap<String, ModuleType>,
+    /// The handlers the Tokamak worker's class defines, as the app's build
+    /// recorded them: the Worker runs for no other event. Without a record it
+    /// runs for every event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handlers: Option<BTreeSet<String>>,
 }
 
 #[cfg(all(test, feature = "native"))]
@@ -149,6 +154,7 @@ impl WorkerManifest {
                 .chain(others)
                 .map(|name| ((*name).to_owned(), ModuleType::EsModule))
                 .collect(),
+            handlers: None,
         }
     }
 }
@@ -235,6 +241,20 @@ pub fn write_worker(layout: &PackageLayout, root: &Path, manifest: &WorkerManife
 /// Returns an error when the manifest cannot be read or decoded.
 pub fn read_worker_manifest(layout: &PackageLayout) -> Result<WorkerManifest> {
     read_json(&layout.worker_manifest())
+}
+
+/// Whether a Worker whose build recorded `handlers` runs for the events that
+/// call `handler`.
+pub(crate) fn handles(handlers: Option<&BTreeSet<String>>, handler: &str) -> bool {
+    handlers.is_none_or(|handlers| handlers.contains(handler))
+}
+
+/// Whether the Tokamak worker packaged in `app` runs for the events that call
+/// `handler`, which a shell reads before it starts the runtime.
+#[must_use]
+pub fn has_handler(app: &PackageLayout, handler: &str) -> bool {
+    read_worker_manifest(&app.tokamak_worker())
+        .is_ok_and(|manifest| handles(manifest.handlers.as_ref(), handler))
 }
 
 /// The bytecode of the packaged ES module `name`.
@@ -359,6 +379,7 @@ mod tests {
                 ("assets/large.js".to_owned(), ModuleType::EsModule),
                 ("assets/page.html".to_owned(), ModuleType::Text),
             ]),
+            handlers: None,
         };
         let layout = PackageLayout::new(directory.path().join("app"));
 
@@ -390,6 +411,7 @@ mod tests {
         let manifest = WorkerManifest {
             entry: "entry.js".to_owned(),
             modules: BTreeMap::from([("entry.js".to_owned(), ModuleType::EsModule)]),
+            handlers: None,
         };
 
         let error = write_worker(

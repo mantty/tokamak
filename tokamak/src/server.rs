@@ -32,8 +32,6 @@ pub struct Config {
     pub storage_dir: PathBuf,
     /// Stable HTTPS host the shell's `WebView` loads.
     pub host: String,
-    /// Whether the app is in the foreground as the runtime starts.
-    pub foreground: bool,
     /// The shell's plugins, which the Worker calls; without them, the Worker's
     /// plugin calls fail with `NotSupportedError`.
     pub plugins: Option<Arc<dyn PluginHandler>>,
@@ -57,8 +55,6 @@ pub struct DevelopmentConfig {
     pub host: String,
     /// Host development-server connection.
     pub proxy: DevProxyConfig,
-    /// Whether the app is in the foreground as the runtime starts.
-    pub foreground: bool,
     /// The shell's plugins, which the development Worker calls.
     pub plugins: Option<Arc<dyn PluginHandler>>,
 }
@@ -77,8 +73,8 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Start the gateway and JavaScript runtime for a packaged app, and
-    /// deliver the `start` event in the background.
+    /// Start the gateway and JavaScript runtime for a packaged app, whose
+    /// stage is `background` until [`Runtime::deliver_start`].
     ///
     /// Blocks until the gateway is listening. `listener` receives every
     /// [`Event`], including those raised from background threads, so it must
@@ -95,16 +91,9 @@ impl Runtime {
             config.state_dir.clone(),
             config.host.clone(),
         )?);
-        let plugins = PluginCalls::new(config.plugins.clone(), config.foreground);
+        let plugins = PluginCalls::new(config.plugins.clone());
         let handler = services::load(&config, &plugins)?;
-        finish_start(
-            events,
-            config.host,
-            config.foreground,
-            certificates,
-            handler,
-            plugins,
-        )
+        finish_start(events, config.host, certificates, handler, plugins)
     }
 
     /// Start a runtime that forwards requests to a host development server.
@@ -128,16 +117,9 @@ impl Runtime {
         let events = Events::new(listener);
         events.emit(Event::Starting);
         let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
-        let plugins = PluginCalls::new(config.plugins, config.foreground);
+        let plugins = PluginCalls::new(config.plugins);
         let handler = (development.handler)(&config.proxy, Arc::clone(&plugins))?;
-        finish_start(
-            events,
-            config.host,
-            config.foreground,
-            certificates,
-            handler,
-            plugins,
-        )
+        finish_start(events, config.host, certificates, handler, plugins)
     }
 
     /// The host the `WebView` loads.
@@ -170,21 +152,30 @@ impl Runtime {
         self.gateway.wait_for_port_change(known, timeout)
     }
 
-    /// Deliver the event `name`, whose encoded data is `event`, to the Tokamak
-    /// worker's listeners and return the encoded reply: the first value a
-    /// listener returns other than `undefined`, or nothing.
+    /// Record whether the app starts in the `foreground`, and deliver
+    /// `_onStart` with it in the background. A shell calls it once, after the
+    /// platform's launch.
+    pub fn deliver_start(&self, foreground: bool) {
+        self.plugins.set_foreground(foreground);
+        self.events.start(foreground);
+    }
+
+    /// Deliver an event to the Tokamak worker's method `name`, with the
+    /// event's encoded data, and return the method's encoded reply, which is
+    /// empty when it returns nothing.
     ///
-    /// Blocks until the listeners and their `waitUntil` promises settle, or
-    /// `timeout` passes. Events wait for `start`. `resume` and `suspend` are
-    /// delivered one at a time, so a shell emits them from one thread to keep
-    /// their order, each after [`Runtime::set_foreground`] reports a change.
-    /// No Worker runs for an event without listeners, or in an app without a
-    /// Tokamak worker.
+    /// Blocks until the method and its `waitUntil` promises settle, or
+    /// `timeout` passes. Events wait for `_onStart`, apart from `_beforeStart`,
+    /// which a shell emits inside the platform's launch. `_onResume` and
+    /// `_onSuspend` are delivered one at a time, so a shell emits them from
+    /// one thread to keep their order, each after [`Runtime::set_foreground`]
+    /// reports a change. No Worker runs for a method the app's build did not
+    /// record, or in an app without a Tokamak worker.
     ///
     /// # Errors
     ///
-    /// Returns an error when `name` is `start`, the Worker cannot run, or
-    /// `timeout` passes before every listener returns.
+    /// Returns an error when `name` is `_onStart`, the Worker cannot run, or
+    /// `timeout` passes before the method returns.
     pub fn emit(&self, name: &str, event: &[u8], timeout: Duration) -> Result<Vec<u8>> {
         self.events
             .emit(name, event, timeout)
@@ -210,7 +201,7 @@ impl Runtime {
     /// Record whether the app is in the foreground, which the Worker's
     /// `getLifecycleStage()` reports from then on, and return whether that
     /// changed. A shell calls it as the platform reports each change, and
-    /// emits `resume` or `suspend` when it returns true.
+    /// emits `_onResume` or `_onSuspend` when it returns true.
     pub fn set_foreground(&self, foreground: bool) -> bool {
         self.plugins.set_foreground(foreground)
     }
@@ -248,7 +239,6 @@ impl Runtime {
 fn finish_start(
     events: Events,
     host: String,
-    foreground: bool,
     certificates: Arc<Certificates>,
     handler: Arc<dyn gateway::Handler>,
     plugins: Arc<PluginCalls>,
@@ -264,7 +254,7 @@ fn finish_start(
         host,
         certificates,
         _renewal: renewal,
-        events: WorkerEvents::start(gateway.handle(), foreground),
+        events: WorkerEvents::new(gateway.handle()),
         plugins,
         gateway,
     })
@@ -357,7 +347,6 @@ mod tests {
             state_dir: root.join("state"),
             storage_dir: root.join("storage"),
             host: "example.tokamak.local".to_owned(),
-            foreground: true,
             plugins: None,
         }
     }
@@ -368,7 +357,7 @@ mod tests {
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     fn plugins() -> std::sync::Arc<crate::plugin_calls::PluginCalls> {
-        crate::plugin_calls::PluginCalls::new(None, true)
+        crate::plugin_calls::PluginCalls::new(None)
     }
 
     #[test]
@@ -488,7 +477,6 @@ mod tests {
                     endpoint: "http://127.0.0.1:1".to_owned(),
                     session_token: "token".to_owned(),
                 },
-                foreground: true,
                 plugins: None,
             },
             |_| {},

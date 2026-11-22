@@ -100,7 +100,7 @@ pub use env_vars::{
 pub use lifecycle_events::Event;
 pub use packaging::{
     AssetManifest, Error as BundleError, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout,
-    WorkerManifest, read_asset_manifest, read_worker_manifest, read_worker_module,
+    WorkerManifest, has_handler, read_asset_manifest, read_worker_manifest, read_worker_module,
     write_asset_manifest, write_worker,
 };
 #[cfg(feature = "native")]

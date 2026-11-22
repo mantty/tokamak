@@ -13,7 +13,7 @@ public protocol TokamakExports: TokamakPlugin {
   /// `event` as the JSON data of the event `name`, which the registration lists.
   func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data
 
-  /// The listeners' JSON `reply` to the event `name`, which the registration
+  /// The handler's JSON `reply` to the event `name`, which the registration
   /// lists with a reply, as its type, or nil for null.
   func eventReply(_ name: String, _ reply: Data) throws(TokamakPluginError) -> Any?
 }
@@ -40,10 +40,11 @@ public enum TokamakOverflow {
 /// replies are `Decodable`, method results and events `Encodable`, and options
 /// literal values.
 public struct TokamakExporter<Plugin> {
-  /// Lists the event `name`, whose listeners receive an `E`.
+  /// Lists the event `name`: the Worker's method `name`, which starts with
+  /// `_`, receives an `E`.
   public mutating func event<E: Encodable>(_ name: String, _ type: E.Type, doc: String = "") {}
 
-  /// Lists the event `name`, whose listeners receive an `E` and may reply with an `R`.
+  /// Lists the event `name`, whose handler receives an `E` and may reply with an `R`.
   public mutating func event<E: Encodable, R: Decodable>(
     _ name: String, _ type: E.Type, reply: R.Type, doc: String = ""
   ) {}
@@ -333,7 +334,7 @@ public func tokamakEncode<T: Encodable>(
   }
 }
 
-/// `event` as the JSON data of the event `name`, whose listeners receive a `T`.
+/// `event` as the JSON data of the event `name`, whose handler receives a `T`.
 public func tokamakEvent<T: Encodable>(
   _ name: String, _ event: Any, as type: T.Type
 ) throws(TokamakPluginError) -> Data {

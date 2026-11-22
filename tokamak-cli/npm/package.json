@@ -12,10 +12,6 @@
       "types": "./dist/index.d.mts",
       "default": "./dist/index.mjs"
     },
-    "./events": {
-      "types": "./dist/events.d.mts",
-      "default": "./dist/events.mjs"
-    },
     "./vite": {
       "types": "./dist/vite.d.mts",
       "default": "./dist/vite.mjs"

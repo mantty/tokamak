@@ -874,6 +874,12 @@ fn configure_worker_graph(project: &Path) -> TestResult {
         "auxiliaryWorkers": [{ "configPath": "../../dist/device/wrangler.json" }]
     }"#,
     )?;
+    // The handlers the tokamak Vite plugin reports for the Tokamak worker.
+    fs::create_dir_all(project.join("build/.tokamak/vite/worker"))?;
+    fs::write(
+        project.join("build/.tokamak/vite/worker/handlers.json"),
+        r#"["_onStart"]"#,
+    )?;
 
     Ok(())
 }
@@ -890,7 +896,10 @@ fn packages_both_workers_with_their_own_bindings_and_migrations() -> TestResult 
     let output = project.join("build/macos/demo-app.app");
     let main = PackageLayout::new(output.join("app"));
     let native = main.tokamak_worker();
-    assert_eq!(read_worker_manifest(&native)?.entry, "index.js");
+    let manifest = read_worker_manifest(&native)?;
+    assert_eq!(manifest.entry, "index.js");
+    assert_eq!(manifest.handlers, Some(["_onStart".to_owned()].into()));
+    assert_eq!(read_worker_manifest(&main)?.handlers, None);
     let assert_environment = |layout: &PackageLayout,
                               vars: serde_json::Value,
                               services: serde_json::Value|

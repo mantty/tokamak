@@ -23,12 +23,12 @@ fn rejects_malformed_utf8_at_the_json_event_endpoint() -> TestResult {
         .events
         .emit("echo", &[b'"', 255, b'"'], Duration::from_secs(5));
     assert!(result.is_err(), "invalid UTF-8 was accepted: {result:?}");
-    assert_eq!(started.logged(), [r#"start {"foreground":true}"#]);
+    assert_eq!(started.logged(), [r#"_onStart {"foreground":true}"#]);
     Ok(())
 }
 
 /// Logs each event to `env.LOG` as it begins; waits `event.wait`, or
-/// `env.START_DELAY` for `start`, then logs that it is done; and lingers in
+/// `env.START_DELAY` for `_onStart`, then logs that it is done; and lingers in
 /// `waitUntil` for `event.linger`.
 const EVENT_WORKER: &[u8] = br#"
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -42,14 +42,14 @@ export class TokamakEvents extends WorkerEntrypoint {
     const event = decode(payload);
     const log = (entry) => fetch(`${this.env.LOG}/?entry=${encodeURIComponent(entry)}`);
     await log(`${name} ${JSON.stringify(event)}`);
-    if (name === "broken") throw new Error("listener exploded");
-    const wait = name === "start" ? this.env.START_DELAY : event.wait;
+    if (name === "broken") throw new Error("handler exploded");
+    const wait = name === "_onStart" ? this.env.START_DELAY : event?.wait;
     if (wait) {
       await sleep(wait);
       await log(`${name} done`);
     }
-    if (event.linger) this.ctx.waitUntil(sleep(event.linger).then(() => log(`${name} lingered`)));
-    return { reply: encode({ name, event }), listened: ["start", "resume", "suspend", "echo", "broken"] };
+    if (event?.linger) this.ctx.waitUntil(sleep(event.linger).then(() => log(`${name} lingered`)));
+    return encode({ name, event });
   }
 }
 
@@ -69,15 +69,25 @@ struct Started {
 }
 
 impl Started {
-    /// The events of the Tokamak worker `source`, with `start` delivered with
-    /// `foreground` and taking `start_delay` milliseconds.
+    /// The events of the Tokamak worker `source`, with `_onStart` delivered
+    /// with `foreground` and taking `start_delay` milliseconds.
     fn new(source: &[u8], foreground: bool, start_delay: u64) -> TestResult<Self> {
+        let started = Self::unstarted(source, None, start_delay)?;
+        started.events.start(foreground);
+        Ok(started)
+    }
+
+    /// The events of the Tokamak worker `source`, whose build recorded
+    /// `handlers`, before `_onStart`.
+    fn unstarted(source: &[u8], handlers: Option<&[&str]>, start_delay: u64) -> TestResult<Self> {
         let (url, log) = log_server()?;
         let directory = tempfile::tempdir()?;
         let main_directory = directory.path().join("main");
         std::fs::create_dir(&main_directory)?;
         let main = WorkerBundle::of_source(MAIN_WORKER, &main_directory)?;
-        let worker = WorkerBundle::of_source(source, directory.path())?;
+        let mut worker = WorkerBundle::of_source(source, directory.path())?;
+        worker.handlers =
+            handlers.map(|handlers| Arc::new(handlers.iter().map(ToString::to_string).collect()));
         let mut config = runtime_config();
         config.environment = BTreeMap::from([
             ("LOG".to_owned(), json!(url)),
@@ -94,7 +104,7 @@ impl Started {
                 }
             }),
         )?;
-        let events = WorkerEvents::start(gateway.handle(), foreground);
+        let events = WorkerEvents::new(gateway.handle());
         Ok(Self {
             events,
             log,
@@ -151,8 +161,8 @@ fn delivers_start_first_and_queues_events_behind_it() -> TestResult {
     assert_eq!(
         started.logged(),
         [
-            r#"start {"foreground":false}"#,
-            "start done",
+            r#"_onStart {"foreground":false}"#,
+            "_onStart done",
             r#"echo {"n":1}"#
         ]
     );
@@ -160,16 +170,33 @@ fn delivers_start_first_and_queues_events_behind_it() -> TestResult {
 }
 
 #[test]
-fn starts_no_worker_for_an_event_without_listeners() -> TestResult {
-    let started = Started::new(EVENT_WORKER, true, 0)?;
+fn delivers_before_start_without_waiting_for_start() -> TestResult {
+    let started = Started::unstarted(EVENT_WORKER, None, 0)?;
 
-    assert_eq!(started.emit("unlistened", "{}")?, "");
+    started.emit("_beforeStart", "null")?;
+    started.events.start(true);
     started.emit("echo", "{}")?;
 
     assert_eq!(
         started.logged(),
-        [r#"start {"foreground":true}"#, "echo {}"]
+        [
+            "_beforeStart null",
+            r#"_onStart {"foreground":true}"#,
+            "echo {}"
+        ]
     );
+    Ok(())
+}
+
+#[test]
+fn runs_no_worker_for_an_event_whose_handler_the_build_did_not_record() -> TestResult {
+    let started = Started::unstarted(EVENT_WORKER, Some(&["echo"]), 0)?;
+    started.events.start(true);
+
+    assert_eq!(started.emit("unrecorded", "{}")?, "");
+    started.emit("echo", "{}")?;
+
+    assert_eq!(started.logged(), ["echo {}"]);
     Ok(())
 }
 
@@ -178,24 +205,24 @@ fn delivers_lifecycle_events_one_at_a_time() -> TestResult {
     let started = Arc::new(Started::new(EVENT_WORKER, false, 0)?);
     started.emit("echo", "{}")?;
     let resuming = Arc::clone(&started);
-    let resume = thread::spawn(move || resuming.emit("resume", r#"{"wait":300}"#));
+    let resume = thread::spawn(move || resuming.emit("_onResume", r#"{"wait":300}"#));
     let mut logged = Vec::new();
-    while logged.last().map(String::as_str) != Some(r#"resume {"wait":300}"#) {
+    while logged.last().map(String::as_str) != Some(r#"_onResume {"wait":300}"#) {
         logged.push(started.log.recv_timeout(Duration::from_secs(5))?);
     }
 
-    started.emit("suspend", "{}")?;
+    started.emit("_onSuspend", "{}")?;
     resume.join().map_err(|_| "resume panicked")??;
 
     logged.extend(started.logged());
     assert_eq!(
         logged,
         [
-            r#"start {"foreground":false}"#,
+            r#"_onStart {"foreground":false}"#,
             "echo {}",
-            r#"resume {"wait":300}"#,
-            "resume done",
-            "suspend {}"
+            r#"_onResume {"wait":300}"#,
+            "_onResume done",
+            "_onSuspend {}"
         ]
     );
     Ok(())
@@ -210,7 +237,7 @@ fn completes_once_wait_until_promises_settle() -> TestResult {
     assert_eq!(
         started.logged(),
         [
-            r#"start {"foreground":true}"#,
+            r#"_onStart {"foreground":true}"#,
             r#"echo {"linger":100}"#,
             "echo lingered"
         ]
@@ -235,7 +262,7 @@ fn replies_at_the_deadline_while_wait_until_promises_are_pending() -> TestResult
 }
 
 #[test]
-fn fails_an_event_whose_listeners_outlast_the_deadline() -> TestResult {
+fn fails_an_event_whose_handler_outlasts_the_deadline() -> TestResult {
     let started = Started::new(EVENT_WORKER, true, 0)?;
     started.emit("echo", "{}")?;
     let begun = Instant::now();
@@ -260,7 +287,7 @@ fn fails_an_event_the_worker_throws_in() -> TestResult {
         .err()
         .ok_or("the event completed")?;
 
-    assert!(error.contains("listener exploded"), "{error}");
+    assert!(error.contains("handler exploded"), "{error}");
     Ok(())
 }
 
@@ -268,32 +295,8 @@ fn fails_an_event_the_worker_throws_in() -> TestResult {
 fn refuses_to_emit_start() -> TestResult {
     let started = Started::new(EVENT_WORKER, true, 0)?;
 
-    assert!(started.emit("start", "{}").is_err());
+    assert!(started.emit("_onStart", "{}").is_err());
     assert!(started.emit("", "{}").is_err());
-    Ok(())
-}
-
-#[test]
-fn custom_event_handlers_receive_events_without_a_registered_listener_list() -> TestResult {
-    let started = Started::new(
-        br"
-import { WorkerEntrypoint } from 'cloudflare:workers';
-export class TokamakEvents extends WorkerEntrypoint {
-  dispatch(name, payload) {
-    const data = JSON.parse(new TextDecoder().decode(payload));
-    return { reply: new TextEncoder().encode(JSON.stringify({ name, data })) };
-  }
-}
-export default { fetch: () => new Response(null) };
-",
-        false,
-        0,
-    )?;
-    for name in ["location.update", "push.received"] {
-        let reply: serde_json::Value =
-            serde_json::from_str(&started.emit(name, r#"{"value":1}"#)?)?;
-        assert_eq!(reply, json!({ "name": name, "data": { "value": 1 } }));
-    }
     Ok(())
 }
 
@@ -315,7 +318,7 @@ fn reports_a_failed_start_and_still_delivers_events() -> TestResult {
     let Event::Failed { message } = &failure else {
         panic!("{failure:?}");
     };
-    assert!(message.starts_with("start failed: "), "{failure:?}");
+    assert!(message.starts_with("_onStart failed: "), "{failure:?}");
     Ok(())
 }
 
@@ -332,7 +335,8 @@ fn an_app_without_a_tokamak_worker_runs_nothing_for_events() -> TestResult {
         "example.test".to_owned(),
         Events::new(|_| {}),
     )?;
-    let events = WorkerEvents::start(gateway.handle(), true);
+    let events = WorkerEvents::new(gateway.handle());
+    events.start(true);
 
     let reply = events.emit("echo", b"{}", Duration::from_secs(5))?;
 

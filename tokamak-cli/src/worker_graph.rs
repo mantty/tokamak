@@ -54,18 +54,24 @@ impl WorkerGraph {
             .chain(self.tokamak.iter().map(|config| ("tokamak", config)))
     }
 
-    /// Compile each bundle independently of its late-bound environment.
-    pub(crate) fn compile(&self, cache: &Path) -> Result<Vec<CompiledWorker<'_>>> {
+    /// Compile each bundle independently of its late-bound environment. The
+    /// Tokamak worker runs only for the events that call its `handlers`.
+    pub(crate) fn compile(
+        &self,
+        cache: &Path,
+        handlers: impl Fn() -> Result<BTreeSet<String>>,
+    ) -> Result<Vec<CompiledWorker<'_>>> {
         let names: BTreeMap<_, _> = self
             .workers()
             .map(|(name, config)| (config.service_name.as_str(), name))
             .collect();
         self.workers()
             .map(|(name, config)| {
+                let handlers = (name == "tokamak").then(&handlers).transpose()?;
                 Ok(CompiledWorker {
                     config,
                     name,
-                    compiled: worker::compile(&cache.join(name), config)
+                    compiled: worker::compile(&cache.join(name), config, handlers)
                         .with_context(|| format!("compile the {name} worker"))?,
                     services: service_bindings(config, &names),
                 })

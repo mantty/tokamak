@@ -42,7 +42,6 @@ test("generates editor declarations for optional native bindings and the client 
 
 test("infers calls through MAIN on a clean build and keeps native bindings separate", async t => {
   const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")));
-  const events = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/events")).replace(/\.ts$/, ".js"));
   const { root, config } = project(t, {
     "main.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
       export default class Main extends WorkerEntrypoint<Cloudflare.Env> {
@@ -50,15 +49,13 @@ test("infers calls through MAIN on a clean build and keeps native bindings separ
         async fetch() { return Response.json(await this.env.TOKAMAK?.recipe(1)); }
       }`,
     "tokamak.ts": `import { TokamakEntrypoint } from ${sdk};
-      import { defineEvent } from ${events};
-      declare global { namespace Tokamak { interface Events { example: string } } }
-      defineEvent("example")((_event, env, ctx) => {
-        const title: Promise<{ title: string }> = env.MAIN.recipe(1);
-        ctx.waitUntil(title);
-        // @ts-expect-error the native worker has its own binding set
-        env.TOKAMAK;
-      });
       export default class Native extends TokamakEntrypoint {
+        _onExample() {
+          const title: Promise<{ title: string }> = this.env.MAIN.recipe(1);
+          this.ctx.waitUntil(title);
+          // @ts-expect-error the native worker has its own binding set
+          this.env.TOKAMAK;
+        }
         recipe(id: number) { return this.env.MAIN.recipe(id); }
         label() { return this.env.LABEL; }
         // @ts-expect-error the native worker has no main-only binding
@@ -233,7 +230,7 @@ test("rejects an unsupported public signature before building a bundle", async (
   await assert.rejects(builder.buildApp(), /Unsupported RPC type at listen.callback/);
 });
 
-test("service bindings expose validated methods and fetch while keeping events and properties local", async (t) => {
+test("service bindings expose validated methods and fetch while keeping handlers and properties local", async (t) => {
   const { root, config } = project(t, {
     "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
     class Base extends WorkerEntrypoint<{ LABEL: string }> {
@@ -243,7 +240,7 @@ test("service bindings expose validated methods and fetch while keeping events a
       #prefix = "private";
       field = () => "local field";
       get value() { return "local property"; }
-      event(): string { return "host only"; }
+      _onEvent(): string { return "host only"; }
       describe(): string { return this.#prefix; }
       fetch(request: Request): Response { return new Response(request.url); }
     }`,
@@ -270,7 +267,7 @@ test("service bindings expose validated methods and fetch while keeping events a
   assert.deepEqual(await (await get("inherited")).json(), { value: "configured:argument" });
   assert.equal(await (await get("fetch")).text(), "https://service.example/native");
   assert.deepEqual(await (await get("value")).json(), { value: "undefined" });
-  for (const method of ["event", "field"]) {
+  for (const method of ["_onEvent", "field"]) {
     const response = await get(method);
     assert.equal(response.status, 400, `${method} must not be exposed by the service binding`);
     const { error }: { error: string } = await response.json();

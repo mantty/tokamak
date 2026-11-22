@@ -5,10 +5,10 @@ import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakListeners
 import com.tokamak.runtime.TokamakPluginError
 
-/** How long the Worker's listeners have for an event, within the time Android gives a broadcast. */
+/** How long the Worker has for an event, within the time Android gives a broadcast. */
 private const val EVENT_DEADLINE_MILLIS = 8_000L
 
-/** Delivers the plugin's events to the Worker's listeners and the page's. Use it on the main thread. */
+/** Delivers the plugin's events to the Worker's handlers and the page's listeners. Use it on the main thread. */
 internal class LocationEvents(private val host: TokamakHost) {
     val updates = TokamakListeners<LocationUpdate>()
     val transitions = TokamakListeners<RegionTransition>()
@@ -38,14 +38,14 @@ internal class LocationEvents(private val host: TokamakHost) {
     fun transition(id: String, entered: Boolean, finish: () -> Unit) {
         val transition = RegionTransition(id, if (entered) Transition.Enter else Transition.Exit, System.currentTimeMillis())
         transitions.send(transition)
-        send("region", transition, finish)
+        send("_onRegionTransition", transition, finish)
     }
 
     /** Reports a background service's failure, then calls [finish]. */
     fun fail(error: TokamakPluginError, finish: () -> Unit = {}) {
         val event = LocationErrorEvent(error.errorName, error.message.orEmpty())
         errors.send(event)
-        send("error", event, finish)
+        send("_onLocationError", event, finish)
     }
 
     /** Sends the waiting positions as one update, then the positions that arrive meanwhile as the next. */
@@ -57,13 +57,13 @@ internal class LocationEvents(private val host: TokamakHost) {
         positions.clear()
         finishes.clear()
         updates.send(update)
-        send("update", update) {
+        send("_onLocationUpdate", update) {
             delivered.forEach { it() }
             sendUpdate()
         }
     }
 
-    /** Delivers [event] to the Worker's [name] listeners, then calls [finish]. */
+    /** Delivers [event] to the Worker's method [name], then calls [finish]. */
     private fun send(name: String, event: Any, finish: () -> Unit) {
         Thread {
             runCatching { host.emit(name, event, EVENT_DEADLINE_MILLIS) }

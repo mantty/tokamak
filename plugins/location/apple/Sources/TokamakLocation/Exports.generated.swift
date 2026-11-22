@@ -8,13 +8,21 @@ extension TokamakLocationPlugin {
     throws(TokamakPluginError) -> (() -> Void)?
   {
     switch method {
-    case "setup":
-      struct Arguments: Decodable {
-        let config: SetupConfig
-      }
-      let arguments = try tokamakDecode(Arguments.self, from: payload)
+    case "startSignificantChanges":
       return tokamakCall(reply) {
-        try self.setup(arguments.config)
+        try self.startSignificantChanges()
+      }
+    case "stopSignificantChanges":
+      return tokamakCall(reply) {
+        self.stopSignificantChanges()
+      }
+    case "startVisits":
+      return tokamakCall(reply) {
+        self.startVisits()
+      }
+    case "stopVisits":
+      return tokamakCall(reply) {
+        self.stopVisits()
       }
     case "recentPosition":
       struct Arguments: Decodable {
@@ -120,13 +128,13 @@ extension TokamakLocationPlugin {
 
   public func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data {
     switch name {
-    case "update":
+    case "_onLocationUpdate":
       return try tokamakEvent(name, event, as: LocationUpdate.self)
-    case "region":
+    case "_onRegionTransition":
       return try tokamakEvent(name, event, as: RegionTransition.self)
-    case "visit":
+    case "_onVisit":
       return try tokamakEvent(name, event, as: Visit.self)
-    case "error":
+    case "_onLocationError":
       return try tokamakEvent(name, event, as: LocationErrorEvent.self)
     default:
       throw .unlistedEvent(name)

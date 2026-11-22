@@ -150,10 +150,10 @@ enum Queued {
 }
 
 impl PluginCalls {
-    pub(crate) fn new(handler: Option<Arc<dyn PluginHandler>>, foreground: bool) -> Arc<Self> {
+    pub(crate) fn new(handler: Option<Arc<dyn PluginHandler>>) -> Arc<Self> {
         Arc::new(Self {
             handler,
-            foreground: AtomicBool::new(foreground),
+            foreground: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             waiting: Mutex::default(),
         })

@@ -37,12 +37,15 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
     /**
-     * Delivers the event [name] with its encoded [payload] to the Worker's listeners, blocking
-     * until they return or [timeoutMillis] passes, and returns their encoded reply, which is empty
-     * when none replied.
+     * Delivers the event [name] with its encoded [payload] to the Worker's method of that name,
+     * blocking until it returns or [timeoutMillis] passes, and returns its encoded reply, which is
+     * empty when it returns nothing.
      */
     fun emit(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
         nativeEmit(handle, name, payload, timeoutMillis)
+
+    /** Records whether the app starts in the [foreground], and delivers `_onStart` with it in the background. */
+    fun deliverStart(foreground: Boolean) = nativeDeliverStart(handle, foreground)
 
     /** What the app serves at [path], blocking until it arrives or [timeoutMillis] passes. */
     fun fetch(path: String, timeoutMillis: Long): ByteArray = nativeFetch(handle, path, timeoutMillis)
@@ -75,51 +78,34 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             System.loadLibrary("tokamak")
         }
 
-        /**
-         * Start the runtime, which delivers `start` with [foreground] and whose Worker calls
-         * [plugins], throwing when it cannot serve the app.
-         */
+        /** Whether the Tokamak worker of the app in [packagedDir] runs for the events that call [handler]. */
+        fun hasHandler(packagedDir: File, handler: String): Boolean = nativeHasHandler(packagedDir.path, handler)
+
+        /** Start the runtime, whose Worker calls [plugins], throwing when it cannot serve the app. */
         fun start(
             packagedDir: File,
             stateDir: File,
             storageDir: File,
             host: String,
-            foreground: Boolean,
             plugins: Plugins,
         ): TokamakRuntime =
-            TokamakRuntime(
-                nativeStart(
-                    packagedDir.path,
-                    stateDir.path,
-                    storageDir.path,
-                    host,
-                    foreground,
-                    plugins,
-                ),
-            )
+            TokamakRuntime(nativeStart(packagedDir.path, stateDir.path, storageDir.path, host, plugins))
 
-        /**
-         * Start the runtime against a host development server, delivering `start` with
-         * [foreground] and whose development Worker calls [plugins].
-         */
+        /** Start the runtime against a host development server, whose development Worker calls [plugins]. */
         fun startDevelopment(
             stateDir: File,
             host: String,
             endpoint: String,
             sessionToken: String,
-            foreground: Boolean,
             plugins: Plugins,
         ): TokamakRuntime =
-            TokamakRuntime(
-                nativeStartDevelopment(
-                    stateDir.path,
-                    host,
-                    endpoint,
-                    sessionToken,
-                    foreground,
-                    plugins,
-                ),
-            )
+            TokamakRuntime(nativeStartDevelopment(stateDir.path, host, endpoint, sessionToken, plugins))
+
+        @JvmStatic
+        private external fun nativeHasHandler(packagedDir: String, handler: String): Boolean
+
+        @JvmStatic
+        private external fun nativeDeliverStart(handle: Long, foreground: Boolean)
 
         @JvmStatic
         private external fun nativeStart(
@@ -127,7 +113,6 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             stateDir: String,
             storageDir: String,
             host: String,
-            foreground: Boolean,
             plugins: Plugins,
         ): Long
 
@@ -137,7 +122,6 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             host: String,
             endpoint: String,
             sessionToken: String,
-            foreground: Boolean,
             plugins: Plugins,
         ): Long
 

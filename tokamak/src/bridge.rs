@@ -9,8 +9,6 @@ use crate::{Config, DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Run
 
 /// What the shell gives a runtime it starts.
 pub(crate) struct Shell<P> {
-    /// Whether the app is in the foreground.
-    pub(crate) foreground: bool,
     /// The plugins the Worker calls.
     pub(crate) plugins: P,
     /// Logs the runtime's events.
@@ -30,7 +28,6 @@ pub(crate) fn start(
         state_dir: PathBuf::from(state_dir),
         storage_dir: PathBuf::from(storage_dir),
         host: host.to_owned(),
-        foreground: shell.foreground,
         plugins: Some(Arc::new(shell.plugins)),
     };
     let report = shell.report;
@@ -53,7 +50,6 @@ pub(crate) fn start_development(
             endpoint: endpoint.to_owned(),
             session_token: session_token.to_owned(),
         },
-        foreground: shell.foreground,
         plugins: Some(Arc::new(shell.plugins)),
     };
     let report = shell.report;

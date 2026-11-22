@@ -11,8 +11,7 @@ npx tok targets
 
 | Entry | Contents |
 | --- | --- |
-| `@tokamakdev/tok` | `TokamakEntrypoint`, `TokamakContext`, `TokamakEvent`, and the Vite plugin's `Config` type |
-| `@tokamakdev/tok/events` | The app's events, `onStart`, `onResume` and `onSuspend`, and `getLifecycleStage()` |
+| `@tokamakdev/tok` | `TokamakEntrypoint`, `TokamakContext`, `StartEvent`, `getLifecycleStage()`, and the Vite plugin's `Config` type |
 | `@tokamakdev/tok/vite` | The Vite plugin, `tokamak()` |
 | `@tokamakdev/tok/astro` | The Astro adapter, `tokamak()` |
 | `tok` | The CLI |

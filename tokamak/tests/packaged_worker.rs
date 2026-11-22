@@ -533,7 +533,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 export class TokamakEvents extends WorkerEntrypoint {
   dispatch() {
     const reply = JSON.stringify([this.env.TOKAMAK_RUNTIME, process.env.TOKAMAK_RUNTIME]);
-    return { reply: new TextEncoder().encode(reply), listened: ["check"] };
+    return new TextEncoder().encode(reply);
   }
 }
 
@@ -745,7 +745,7 @@ fn serves_the_astro_example_that_tok_packages() -> TestResult {
     // Events wait for `start`, so each is recorded once this returns.
     example
         .runtime
-        .emit("suspend", b"{}", Duration::from_secs(30))?;
+        .emit("_onSuspend", b"{}", Duration::from_secs(30))?;
 
     assert_no_failures(&example.failures);
     for (path, text) in [
@@ -778,7 +778,7 @@ fn starts_the_astro_example_without_asking_for_location() -> TestResult {
     let example = start_astro_example(temporary.path(), "prompt")?;
     example
         .runtime
-        .emit("suspend", b"{}", Duration::from_secs(30))?;
+        .emit("_onSuspend", b"{}", Duration::from_secs(30))?;
 
     assert_no_failures(&example.failures);
     let called: Vec<String> = example.called.try_iter().collect();
@@ -879,6 +879,7 @@ fn package_worker(
         &WorkerManifest {
             entry: "worker.mjs".to_owned(),
             modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
+            handlers: None,
         },
     )?;
     Ok(())
@@ -898,8 +899,8 @@ fn emit(
     Ok(serde_json::from_slice(&reply)?)
 }
 
-/// The runtime of the packaged `app`, with its state in `temporary` and the
-/// shell's `plugins`, which tells `listener` its events.
+/// The runtime of the packaged `app`, started in the foreground, with its state
+/// in `temporary` and the shell's `plugins`, which tells `listener` its events.
 fn start_runtime(
     temporary: &Path,
     app: PackageLayout,
@@ -913,11 +914,11 @@ fn start_runtime(
             state_dir: state.clone(),
             storage_dir: temporary.join("storage"),
             host: HOST.to_owned(),
-            foreground: true,
             plugins,
         },
         listener,
     )?;
+    runtime.deliver_start(true);
     Ok((runtime, state))
 }
 
@@ -1099,7 +1100,7 @@ export class TokamakEvents extends WorkerEntrypoint {
   async dispatch(name, payload) {
     const input = JSON.parse(new TextDecoder().decode(payload));
     const reply = await this.reply(name, input, this.env.FILES);
-    return { reply: new TextEncoder().encode(JSON.stringify(reply) ?? ""), listened: ["put", "get", "cloudflare"] };
+    return new TextEncoder().encode(JSON.stringify(reply) ?? "");
   }
 
   async reply(name, input, files) {
@@ -1126,12 +1127,11 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 export class TokamakEvents extends WorkerEntrypoint {
   async dispatch(name) {
     const db = this.env.DB;
-    const listened = ["setup", "hit", "count"];
     if (name === "setup") await db.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
     if (name === "hit") await db.prepare("INSERT INTO hits VALUES (?)").bind(1).run();
-    if (name !== "count") return { reply: new Uint8Array(), listened };
+    if (name !== "count") return new Uint8Array();
     const count = await db.prepare("SELECT count(*) AS count FROM hits").first("count");
-    return { reply: new TextEncoder().encode(JSON.stringify(count)), listened };
+    return new TextEncoder().encode(JSON.stringify(count));
   }
 }
 
@@ -1162,7 +1162,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 export class TokamakEvents extends WorkerEntrypoint {
   async dispatch(name) {
-    return { reply: new TextEncoder().encode(await this.env.CLOSES.get(name) ?? ""), listened: ["close", "late"] };
+    return new TextEncoder().encode(await this.env.CLOSES.get(name) ?? "");
   }
 }
 

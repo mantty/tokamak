@@ -138,8 +138,7 @@ impl TokamakPluginHandler {
     }
 }
 
-/// Start a tokamak runtime, which delivers `start` with `foreground`, and
-/// whose Worker calls `plugins`.
+/// Start a tokamak runtime whose Worker calls `plugins`.
 ///
 /// # Safety
 ///
@@ -152,27 +151,16 @@ pub unsafe extern "C" fn tokamak_runtime_start(
     state_dir: *const c_char,
     storage_dir: *const c_char,
     host: *const c_char,
-    foreground: bool,
     plugins: TokamakPluginHandler,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe {
-        start(
-            packaged_dir,
-            state_dir,
-            storage_dir,
-            host,
-            foreground,
-            plugins,
-        )
-    };
+    let result = unsafe { start(packaged_dir, state_dir, storage_dir, host, plugins) };
     into_handle(result, error, error_len)
 }
 
 /// Start a tokamak runtime that forwards requests to a host development
-/// server, and delivers `start` with `foreground`, and whose development
-/// Worker calls `plugins`.
+/// server, and whose development Worker calls `plugins`.
 ///
 /// # Safety
 ///
@@ -185,21 +173,11 @@ pub unsafe extern "C" fn tokamak_runtime_start_development(
     host: *const c_char,
     endpoint: *const c_char,
     session_token: *const c_char,
-    foreground: bool,
     plugins: TokamakPluginHandler,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe {
-        start_development(
-            state_dir,
-            host,
-            endpoint,
-            session_token,
-            foreground,
-            plugins,
-        )
-    };
+    let result = unsafe { start_development(state_dir, host, endpoint, session_token, plugins) };
     into_handle(result, error, error_len)
 }
 
@@ -268,7 +246,7 @@ pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
 }
 
 /// Deliver the event `name`, whose encoded payload is `event`, to the Worker's
-/// listeners, blocking for up to `timeout_ms`.
+/// method of that name, blocking for up to `timeout_ms`.
 ///
 /// Returns true with the encoded reply in `reply`, or false with a message in
 /// `error`.
@@ -340,8 +318,40 @@ pub unsafe extern "C" fn tokamak_runtime_fetch(
     }
 }
 
+/// Whether the Tokamak worker of the app packaged in `packaged_dir` runs for
+/// the events that call `handler`.
+///
+/// # Safety
+///
+/// Both pointers must reference NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_has_handler(
+    packaged_dir: *const c_char,
+    handler: *const c_char,
+) -> bool {
+    let (Some(packaged_dir), Some(handler)) =
+        (unsafe { text(packaged_dir) }, unsafe { text(handler) })
+    else {
+        return false;
+    };
+    crate::has_handler(&crate::PackageLayout::new(packaged_dir), handler)
+}
+
+/// Record whether the app starts in the `foreground`, and deliver `_onStart`
+/// with it in the background.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_deliver_start(handle: *const c_void, foreground: bool) {
+    if let Some(runtime) = unsafe { runtime(handle) } {
+        runtime.deliver_start(foreground);
+    }
+}
+
 /// Record whether the app is in the foreground, returning whether that
-/// changed. The shell then emits `resume` or `suspend`.
+/// changed. The shell then emits `_onResume` or `_onSuspend`.
 ///
 /// # Safety
 ///
@@ -520,7 +530,6 @@ unsafe fn start(
     state_dir: *const c_char,
     storage_dir: *const c_char,
     host: *const c_char,
-    foreground: bool,
     plugins: TokamakPluginHandler,
 ) -> Result<Runtime, String> {
     bridge::start(
@@ -528,7 +537,7 @@ unsafe fn start(
         unsafe { text(state_dir) }.ok_or("state directory is not valid UTF-8")?,
         unsafe { text(storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
         unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
-        shell(foreground, plugins),
+        Shell { plugins, report },
     )
 }
 
@@ -537,7 +546,6 @@ unsafe fn start_development(
     host: *const c_char,
     endpoint: *const c_char,
     session_token: *const c_char,
-    foreground: bool,
     plugins: TokamakPluginHandler,
 ) -> Result<Runtime, String> {
     bridge::start_development(
@@ -545,16 +553,8 @@ unsafe fn start_development(
         unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
         unsafe { text(endpoint) }.ok_or("development endpoint is not valid UTF-8")?,
         unsafe { text(session_token) }.ok_or("development session token is not valid UTF-8")?,
-        shell(foreground, plugins),
+        Shell { plugins, report },
     )
-}
-
-fn shell(foreground: bool, plugins: TokamakPluginHandler) -> Shell<TokamakPluginHandler> {
-    Shell {
-        foreground,
-        plugins,
-        report,
-    }
 }
 
 unsafe fn emit(

@@ -8,8 +8,6 @@ import TokamakPlugin
   import AppKit
 #endif
 
-/// The JSON of the configuration `setup` last applied.
-private let setupKey = "tokamak.location.setup"
 /// Whether the plugin asked for Always permission, which iOS asks once.
 private let askedForAlwaysKey = "tokamak.location.askedForAlways"
 /// How long an authorization change may take to arrive after the app is active again.
@@ -31,7 +29,7 @@ public final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private let defaults = UserDefaults.standard
   /// Reports the app's authorization, and asks for permission.
   private let authorization = CLLocationManager()
-  /// Delivers the significant changes and visits `setup` names.
+  /// Delivers significant changes and visits.
   private let monitoring = CLLocationManager()
   private var prompts: [UUID: Prompt] = [:]
   /// The prompts waiting when the app resigned active, as a prompt showing
@@ -55,11 +53,6 @@ public final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     super.init()
     authorization.delegate = self
     monitoring.delegate = self
-    if let stored = defaults.data(forKey: setupKey),
-      let config = try? JSONDecoder().decode(SetupConfig.self, from: stored)
-    {
-      apply(config)
-    }
     #if os(iOS)
       NotificationCenter.default.addObserver(
         self, selector: #selector(willResignActive),
@@ -71,15 +64,25 @@ public final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     updates.resume()
   }
 
-  /// Applies long-term location awareness, which the plugin applies again at each start.
-  func setup(_ config: SetupConfig) throws(TokamakPluginError) {
-    if config.significantChanges == true
-      && !CLLocationManager.significantLocationChangeMonitoringAvailable()
-    {
+  /// Starts significant changes of location. After a launch for one, starting
+  /// them again delivers it.
+  func startSignificantChanges() throws(TokamakPluginError) {
+    guard CLLocationManager.significantLocationChangeMonitoringAvailable() else {
       throw .notSupported("The device cannot monitor significant changes of location")
     }
-    apply(config)
-    defaults.set(try? JSONEncoder().encode(config), forKey: setupKey)
+    monitoring.startMonitoringSignificantLocationChanges()
+  }
+
+  func stopSignificantChanges() {
+    monitoring.stopMonitoringSignificantLocationChanges()
+  }
+
+  func startVisits() {
+    monitoring.startMonitoringVisits()
+  }
+
+  func stopVisits() {
+    monitoring.stopMonitoringVisits()
   }
 
   /// Core Location's latest position when it is no older than `maximumAge`
@@ -257,22 +260,6 @@ public final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   public func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
     if manager === monitoring {
       events.visit(visit)
-    }
-  }
-
-  /// Starts the significant changes and visits `config` names, and stops the
-  /// others. After a launch for one of their events, starting them again
-  /// delivers it.
-  private func apply(_ config: SetupConfig) {
-    if config.significantChanges == true {
-      monitoring.startMonitoringSignificantLocationChanges()
-    } else {
-      monitoring.stopMonitoringSignificantLocationChanges()
-    }
-    if config.visits == true {
-      monitoring.startMonitoringVisits()
-    } else {
-      monitoring.stopMonitoringVisits()
     }
   }
 

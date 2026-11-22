@@ -80,16 +80,16 @@ class TokamakExamplePluginDispatch(host: TokamakHost) : TokamakDispatch<TokamakE
     companion object : TokamakCodec {
         override fun eventPayload(name: String, event: Any): ByteArray =
             when (name) {
-                "entered" -> encodeEvent(name, event, Region::class) { json(it) }
-                "asked" -> encodeEvent(name, event, Region::class) { json(it) }
-                "chose" -> encodeEvent(name, event, Precision::class) { jsonName(it.name) }
-                "visited" -> encodeEvent(name, event, Visit::class) { json(it) }
+                "_onEntered" -> encodeEvent(name, event, Region::class) { json(it) }
+                "_onAsked" -> encodeEvent(name, event, Region::class) { json(it) }
+                "_onChose" -> encodeEvent(name, event, Precision::class) { jsonName(it.name) }
+                "_onVisited" -> encodeEvent(name, event, Visit::class) { json(it) }
                 else -> super.eventPayload(name, event)
             }
 
         override fun eventReply(name: String, reply: TokamakValue): Any =
             when (name) {
-                "asked" -> reply.enum(Precision.entries)
+                "_onAsked" -> reply.enum(Precision.entries)
                 else -> super.eventReply(name, reply)
             }
 

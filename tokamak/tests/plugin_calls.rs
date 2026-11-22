@@ -28,14 +28,11 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 export class TokamakEvents extends WorkerEntrypoint {
   async dispatch(name, payload) {
     const event = JSON.parse(new TextDecoder().decode(payload));
-    const reply = name === "start" || name === "suspend" ? undefined : await this[name](event);
-    return {
-      reply: reply === undefined ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(reply)),
-      listened: ["start", "resume", "suspend", "call", "stage", "watch", "forget", "raw", "upload", "abort"],
-    };
+    const reply = await this[name]?.(event);
+    return reply === undefined ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(reply));
   }
 
-  async resume(event) {
+  async _onResume(event) {
     void call(this.ctx, "test", "resuming");
     await sleep(event.wait);
   }
@@ -187,6 +184,7 @@ impl Started {
             &WorkerManifest {
                 entry: "worker.mjs".to_owned(),
                 modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
+                handlers: None,
             },
         )?;
         write_worker_environment(
@@ -212,6 +210,7 @@ impl Started {
             &WorkerManifest {
                 entry: "worker.mjs".into(),
                 modules: BTreeMap::from([("worker.mjs".into(), ModuleType::EsModule)]),
+                handlers: None,
             },
         )?;
         let (sender, requests) = mpsc::channel();
@@ -221,11 +220,11 @@ impl Started {
                 state_dir: directory.path().join("state"),
                 storage_dir: directory.path().join("storage"),
                 host: "app.tokamak.local".to_owned(),
-                foreground: true,
                 plugins: plugins.then(|| Arc::new(Shell(sender)) as Arc<dyn PluginHandler>),
             },
             |_| {},
         )?;
+        runtime.deliver_start(true);
         Ok(Self {
             runtime: Arc::new(runtime),
             requests,
@@ -340,7 +339,7 @@ fn answers_tokamak_calls_without_the_shell_plugins() -> TestResult {
 #[test]
 fn records_the_stage_while_a_lifecycle_event_runs() -> TestResult {
     let started = Started::new(true)?;
-    let resume = started.emit("resume", &json!({ "wait": 1000 }), TIMEOUT);
+    let resume = started.emit("_onResume", &json!({ "wait": 1000 }), TIMEOUT);
     assert_eq!(started.next_request()?.text, "call test.resuming null");
 
     started.runtime.set_foreground(false);

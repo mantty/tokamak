@@ -20,8 +20,11 @@ private const val HOST_METADATA = "tokamak.host"
 private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
 private const val DEV_SESSION_TOKEN_METADATA = "tokamak.dev.session-token"
 
-/** How long the Worker has for `resume` and `suspend`. */
+/** How long the Worker has for `_onResume` and `_onSuspend`. */
 private const val LIFECYCLE_DEADLINE_MILLIS = 10_000L
+
+/** How long launch waits for the Worker's `_beforeStart`. */
+private const val BEFORE_START_DEADLINE_MILLIS = 1_000L
 
 /**
  * The tokamak process. Owns the runtime and native plugins, which outlive any activity, so a
@@ -46,9 +49,11 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     internal val resources = TokamakResources()
 
-    private val started = lazy(::startRuntime)
+    private val created = lazy(::createRuntime)
 
-    /** The running runtime, started on first use. Blocks while it starts. */
+    private val started = lazy { created.value.also(::deliverStart) }
+
+    /** The running runtime, which is created and delivers `_onStart` on first use. Blocks while it starts. */
     internal val runtime: TokamakRuntime by started
 
     private lateinit var workerRequests: TokamakPluginRequests
@@ -77,12 +82,14 @@ class TokamakApplication : Application(), TokamakPlugins {
         requireNotNull(metadata()?.getString(HOST_METADATA)) { "$HOST_METADATA is required" }
     }
 
-    /** Delivers `resume` and `suspend` one at a time, in order. */
+    /** Delivers `_onResume` and `_onSuspend` one at a time, in order. */
     private val lifecycle = Executors.newSingleThreadExecutor()
 
     override fun onCreate() {
         super.onCreate()
-        workerRequests = TokamakPluginRequests(plugins, pull = { id -> runtime.pull(id) }) { id, result -> runtime.reply(id, result) }
+        workerRequests =
+            TokamakPluginRequests(plugins, pull = { id -> created.value.pull(id) }) { id, result -> created.value.reply(id, result) }
+        if (receivesBeforeStart()) beforeStart()
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) = moved(foreground = true)
@@ -95,8 +102,8 @@ class TokamakApplication : Application(), TokamakPlugins {
     override fun plugin(id: String): TokamakPlugin? = plugins[id].let { (it as? TokamakDispatch<*>)?.plugin ?: it }
 
     /**
-     * The host the plugin [id] sees, whose events the Worker's listeners receive as
-     * `<id>.android.<name>`, and which converts values to and from JSON with the plugin's [codec].
+     * The host the plugin [id] sees, which converts values to and from JSON with the plugin's
+     * [codec].
      */
     internal fun host(id: String, codec: TokamakCodec? = null): TokamakHost =
         object : TokamakHost {
@@ -124,7 +131,7 @@ class TokamakApplication : Application(), TokamakPlugins {
                 }
 
             override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
-                emitEvent("$id.android.$name", payload, timeoutMillis)
+                emitEvent(name, payload, timeoutMillis)
 
             override fun emit(name: String, event: Any, timeoutMillis: Long) {
                 emitBytes(name, codec { TokamakPluginError.unlistedEvent(name) }.eventPayload(name, event), timeoutMillis)
@@ -160,8 +167,8 @@ class TokamakApplication : Application(), TokamakPlugins {
         get() = if (started.isInitialized()) runtime.isForeground else activity != null
 
     /**
-     * Delivers the event [name] with its encoded [payload] to the Worker's listeners and returns
-     * their encoded reply. Starts the runtime when it is not running. Blocks.
+     * Delivers the event [name] with its encoded [payload] to the Worker's method of that name
+     * and returns its encoded reply. Starts the runtime when it is not running. Blocks.
      */
     private fun emitEvent(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
         withRuntime(timeoutMillis) { runtime, remainingMillis -> runtime.emit(name, payload, remainingMillis) }
@@ -181,10 +188,10 @@ class TokamakApplication : Application(), TokamakPlugins {
         if (started.isInitialized()) record(runtime, foreground)
     }
 
-    /** Records [foreground] in [runtime], delivering `resume` or `suspend` when it changed. */
+    /** Records [foreground] in [runtime], delivering `_onResume` or `_onSuspend` when it changed. */
     private fun record(runtime: TokamakRuntime, foreground: Boolean) {
         if (!runtime.setForeground(foreground)) return
-        val name = if (foreground) "resume" else "suspend"
+        val name = if (foreground) "_onResume" else "_onSuspend"
         lifecycle.execute {
             runCatching { runtime.emit(name, "{}".toByteArray(), LIFECYCLE_DEADLINE_MILLIS) }
                 .onFailure { Log.w("tokamak", "tokamak $name failed", it) }
@@ -192,28 +199,46 @@ class TokamakApplication : Application(), TokamakPlugins {
     }
 
     /**
-     * Starts the runtime, which delivers `start` in the foreground when an activity started it,
-     * then records where the app has moved since.
+     * Whether the Worker receives `_beforeStart`: its packaged class has that method, or it runs
+     * in the development server, which receives every event.
      */
-    private fun startRuntime(): TokamakRuntime {
+    private fun receivesBeforeStart(): Boolean =
+        !metadata()?.getString(DEV_ENDPOINT_METADATA).isNullOrEmpty() ||
+            TokamakRuntime.hasHandler(unpackApp(), "_beforeStart")
+
+    /**
+     * Creates the runtime and waits until the Worker's `_beforeStart` returns or its deadline
+     * passes, running the plugin calls it makes on the main thread.
+     */
+    private fun beforeStart() {
+        val deadline = SystemClock.elapsedRealtime() + BEFORE_START_DEADLINE_MILLIS
+        TokamakMainThread.runWhile(BEFORE_START_DEADLINE_MILLIS) {
+            runCatching {
+                created.value.emit("_beforeStart", "{}".toByteArray(), deadline - SystemClock.elapsedRealtime())
+            }.onFailure { Log.w("tokamak", "tokamak _beforeStart failed", it) }
+        }
+    }
+
+    private fun createRuntime(): TokamakRuntime {
         val metadata = metadata()
         val endpoint = metadata?.getString(DEV_ENDPOINT_METADATA)
         val sessionToken = metadata?.getString(DEV_SESSION_TOKEN_METADATA)
-        val startsInForeground = activity != null
-        val runtime =
-            if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
-                TokamakRuntime.startDevelopment(
-                    stateDir(), appHost, endpoint, sessionToken, startsInForeground, workerPlugins,
-                )
-            } else {
-                TokamakRuntime.start(
-                    unpackApp(), stateDir(), storageDir(), appHost, startsInForeground, workerPlugins,
-                )
-            }
+        return if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
+            TokamakRuntime.startDevelopment(stateDir(), appHost, endpoint, sessionToken, workerPlugins)
+        } else {
+            TokamakRuntime.start(unpackApp(), stateDir(), storageDir(), appHost, workerPlugins)
+        }
+    }
+
+    /**
+     * Delivers `_onStart` to [runtime], in the foreground when an activity started it, then
+     * records where the app has moved since.
+     */
+    private fun deliverStart(runtime: TokamakRuntime) {
+        runtime.deliverStart(foreground = activity != null)
         mainExecutor.execute {
             record(runtime, ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         }
-        return runtime
     }
 
     internal fun metadata() =

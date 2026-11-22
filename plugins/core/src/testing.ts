@@ -1,7 +1,6 @@
-import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
 import { createNativeContext, type Availability, type NativeConnection, type NativePlatform, type Overflow, type TokamakContext } from "./context.js";
 import { encodeJson, decodeJson } from "./codec.js";
-import { nativeError, platformGlobal, type NativeFailure } from "./native-protocol.js";
+import { nativeError, type NativeFailure } from "./native-protocol.js";
 
 type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
 
@@ -134,30 +133,3 @@ export function connectNative(platform?: NativePlatform, availability?: Availabi
   return new FakeNativeTransport(platform, availability);
 }
 
-/**
- * Names `platform` as the native host does, so that listeners registered from now on register as
- * they do there. Undefined is no native host. The `platform` export keeps the value it loaded with.
- */
-export function setPlatform(platform: NativePlatform | undefined): void {
-  Reflect.set(globalThis, platformGlobal, platform);
-}
-
-/**
- * Runs the listeners of the event `name` as the runtime does, returning the reply, the events
- * that have listeners, and what listeners threw, which the runtime reports with `reportError`.
- */
-export async function dispatch(
-  name: string,
-  event: unknown,
-  env: unknown = {},
-  ctx: unknown = createNativeContext({ waitUntil: () => undefined }),
-): Promise<Dispatched & { reported: unknown[] }> {
-  const reported: unknown[] = [];
-  const previous = Reflect.get(globalThis, "reportError") as unknown;
-  globalThis.reportError = (error: unknown) => reported.push(error);
-  try {
-    return { ...(await dispatchEvent(name, event, env, ctx)), reported };
-  } finally {
-    Reflect.set(globalThis, "reportError", previous);
-  }
-}

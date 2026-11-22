@@ -10,10 +10,10 @@ class {{class}}(private val host: TokamakHost) : TokamakPlugin {
 
     override val id = "{{id}}"
 
-    /** Returns [message], which the Worker's `onEchoed` listeners also receive. */
+    /** Returns [message], which the Worker's `_onEchoed` also receives. */
     fun echo(message: String): String {
-        // emit blocks until the Worker's listeners return.
-        thread { runCatching { host.emit("echoed", Echo(message), 10_000) } }
+        // emit blocks until the Worker's `_onEchoed` returns.
+        thread { runCatching { host.emit("_onEchoed", Echo(message), 10_000) } }
         return message
     }
 }

@@ -33,7 +33,7 @@ export default {
         if split {
             package(&app.tokamak_worker(), "export default {};", &json!({}))?;
         }
-        let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
+        let runtime = start(config(directory.path(), app))?;
         let result: Value = serde_json::from_slice(&runtime.fetch("/", TIMEOUT)?)?;
         if result != json!({"context": "undefined", "global": "undefined"}) {
             return Err(format!("split {split}: {result}").into());
@@ -62,12 +62,12 @@ export default class extends WorkerEntrypoint {
   }
 }
 export class TokamakEvents extends WorkerEntrypoint {
-  dispatch() { return { reply: new Uint8Array(), listened: [] }; }
+  dispatch() { return new Uint8Array(); }
 }
 ",
         &json!({}),
     )?;
-    let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
+    let runtime = start(config(directory.path(), app))?;
     assert_eq!(runtime.fetch("/", TIMEOUT)?, b"main");
     assert_eq!(runtime.fetch("/_tokamak-other", TIMEOUT)?, b"main");
     let result: Value = serde_json::from_slice(&runtime.fetch("/_tokamak/app?value=1", TIMEOUT)?)?;
@@ -134,6 +134,7 @@ fn package_modules(
                 .keys()
                 .map(|name| ((*name).into(), ModuleType::EsModule))
                 .collect(),
+            handlers: None,
         },
     )?;
     fs::write(app.worker_environment(), serde_json::to_vec(environment)?)?;
@@ -157,7 +158,7 @@ fn frontend_rpc_uses_the_packaged_native_worker_and_owns_its_streams() -> TestRe
     let mut modules = BTreeMap::from([("worker.mjs", worker.as_str())]);
     modules.extend(rpc.iter().map(|(name, source)| (*name, source.as_str())));
     package_modules(&app.tokamak_worker(), &modules, &json!({}))?;
-    let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
+    let runtime = start(config(directory.path(), app))?;
     let output = Command::new("node")
         .arg(fixtures.join("rpc-client.mts"))
         .arg(runtime.port().to_string())
@@ -172,13 +173,19 @@ fn frontend_rpc_uses_the_packaged_native_worker_and_owns_its_streams() -> TestRe
     Ok(())
 }
 
+/// The runtime `config` describes, started in the foreground.
+fn start(config: Config) -> TestResult<Runtime> {
+    let runtime = Runtime::start(config, |_| {})?;
+    runtime.deliver_start(true);
+    Ok(runtime)
+}
+
 fn config(root: &Path, app: PackageLayout) -> Config {
     Config {
         app,
         state_dir: root.join("state"),
         storage_dir: root.join("storage"),
         host: "services.tokamak.local".into(),
-        foreground: true,
         plugins: None,
     }
 }
@@ -219,14 +226,14 @@ export class Device extends WorkerEntrypoint {
 export class TokamakEvents extends WorkerEntrypoint {
   async dispatch(name) {
     const reply = { name, receiver: this.env.NAME, main: await this.env.MAIN.name() };
-    return { reply: new TextEncoder().encode(JSON.stringify(reply)), listened: ['echo'] };
+    return new TextEncoder().encode(JSON.stringify(reply));
   }
 }
 export default { fetch: () => new Response('device') };
 ",
         &json!({ "vars": { "NAME": "device" }, "services": { "MAIN": { "service": "main", "entrypoint": "default" } } }),
     )?;
-    let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
+    let runtime = start(config(directory.path(), app))?;
 
     let response: Value = serde_json::from_slice(&runtime.fetch("/", TIMEOUT)?)?;
     assert_eq!(
@@ -304,7 +311,7 @@ export default class extends WorkerEntrypoint {
   async read() { return { second: await this.env.SECOND.get('value'), shared: await this.env.ALIAS.get('value'), firstBinding: typeof this.env.FIRST }; }
 }
 export class TokamakEvents extends WorkerEntrypoint {
-  dispatch() { return { reply: new Uint8Array(), listened: [] }; }
+  dispatch() { return new Uint8Array(); }
 }
 ",
         &json!({ "storage": [
@@ -313,7 +320,7 @@ export class TokamakEvents extends WorkerEntrypoint {
     ] }),
     )?;
     for path in ["/write", "/read"] {
-        let runtime = Runtime::start(config(directory.path(), app.clone()), |_| {})?;
+        let runtime = start(config(directory.path(), app.clone()))?;
         let response: Value = serde_json::from_slice(&runtime.fetch(path, TIMEOUT)?)?;
         assert_eq!(
             response,

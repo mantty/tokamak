@@ -85,7 +85,7 @@ function installPlugins(host: NativeHost, platform: NativePlatform): void {
 
 // Delivers the event `name`, whose encoded data is `event`, to the
 // `TokamakEvents` the Worker's entry module `exports`, resolving to the
-// encoded reply and the names of the events that have listeners.
+// encoded reply.
 async function dispatchEvent(exports: object, name: string, event: Uint8Array): Promise<unknown> {
   const TokamakEvents: unknown = Reflect.get(exports, "TokamakEvents");
   if (typeof TokamakEvents !== "function") throw new TypeError("The Worker does not export TokamakEvents");

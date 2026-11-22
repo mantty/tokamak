@@ -2,12 +2,18 @@ import { decodeValues } from "@tokamakdev/plugin/streams";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { connectNative, dispatch, setPlatform } from "@tokamakdev/plugin/testing";
+import { connectNative } from "@tokamakdev/plugin/testing";
+import { TokamakEntrypoint } from "@tokamakdev/plugin/worker";
 
-import { location as createApi, type LocationUpdate } from "../src/index.js";
-import { onLocationError, onLocationUpdate, onRegionTransition, onVisit } from "../src/events.js";
+import {
+  location as createApi,
+  type LocationErrorEvent,
+  type LocationUpdate,
+  type RegionTransition,
+  type Visit,
+} from "../src/index.js";
 
-void test("calls the native plugin with each update and setup method's arguments", async () => {
+void test("calls the native plugin with each update, significant change and visit method's arguments", async () => {
   const native = connectNative();
   const location = createApi(native.ctx);
   const options = {
@@ -22,12 +28,10 @@ void test("calls the native plugin with each update and setup method's arguments
     [() => location.startUpdates(options), "startUpdates", { options }],
     [() => location.stopUpdates(), "stopUpdates", {}],
     [() => location.getUpdates(), "getUpdates", {}],
-    [() => location.setup({}), "setup", { config: {} }],
-    [
-      () => location.setup({ significantChanges: true, visits: false }),
-      "setup",
-      { config: { significantChanges: true, visits: false } },
-    ],
+    [() => location.startSignificantChanges(), "startSignificantChanges", {}],
+    [() => location.stopSignificantChanges(), "stopSignificantChanges", {}],
+    [() => location.startVisits(), "startVisits", {}],
+    [() => location.stopVisits(), "stopVisits", {}],
   ];
   for (const [run, method, arguments_] of cases) {
     const result = run();
@@ -61,34 +65,26 @@ void test("native event stream failures reject their readers", async () => {
   }
 });
 
-void test("delivers the running platform's Worker events to its listeners", async () => {
-  const received: string[] = [];
-  for (const platform of ["ios", "android"] as const) {
-    setPlatform(platform);
-    onLocationUpdate((update) => {
-      received.push(`${platform} update ${String(update.positions.length)}`);
-    });
-    onRegionTransition((transition) => {
-      received.push(`${platform} ${transition.transition} ${transition.id}`);
-    });
-    onVisit((visit) => {
-      received.push(`${platform} visit ${String(visit.arrival)}`);
-    });
-    onLocationError((error) => {
-      received.push(`${platform} ${error.name}`);
-    });
+void test("types the Worker's handlers with the events of both platform families", () => {
+  class Native extends TokamakEntrypoint {
+    _onLocationUpdate({ positions, stationary }: LocationUpdate) {
+      return void [positions, stationary];
+    }
+    _onRegionTransition({ id, transition }: RegionTransition) {
+      return void [id, transition];
+    }
+    _onVisit({ arrival, departure }: Visit) {
+      return void [arrival, departure];
+    }
+    _onLocationError({ name, id }: LocationErrorEvent) {
+      return void [name, id];
+    }
   }
-  setPlatform(undefined);
-
-  for (const family of ["apple", "android"]) {
-    await dispatch(`location.${family}.update`, { positions: [] });
-    await dispatch(`location.${family}.region`, { id: "home", transition: "enter", timestamp: 1 });
-    await dispatch(`location.${family}.visit`, { latitude: 1, longitude: 2, accuracy: 3, arrival: 4 });
-    await dispatch(`location.${family}.error`, { name: "NotReadableError", message: "Off" });
+  class Mistyped extends TokamakEntrypoint {
+    // @ts-expect-error -- the event is a `LocationUpdate`.
+    _onLocationUpdate(update: string) {
+      return void update;
+    }
   }
-
-  assert.deepEqual(received, [
-    "ios update 0", "ios enter home", "ios visit 4", "ios NotReadableError",
-    "android update 0", "android enter home", "android NotReadableError",
-  ]);
+  assert.ok(Native.prototype instanceof TokamakEntrypoint && Mistyped.prototype instanceof TokamakEntrypoint);
 });

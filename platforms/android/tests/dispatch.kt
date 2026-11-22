@@ -230,12 +230,12 @@ class DispatchTest {
         val host = Host()
         val codec = TokamakExamplePluginDispatch
         val region = Region("home", 50.0, null, emptyList(), emptyMap(), null)
-        val entered = codec.eventPayload("entered", region).toString(Charsets.UTF_8)
+        val entered = codec.eventPayload("_onEntered", region).toString(Charsets.UTF_8)
         check(entered.contains("\"id\":\"home\"") && !entered.contains("onEntry")) { entered }
-        val chose = codec.eventPayload("chose", Precision.Approximate).toString(Charsets.UTF_8)
+        val chose = codec.eventPayload("_onChose", Precision.Approximate).toString(Charsets.UTF_8)
         check(chose == "\"approximate\"") { chose }
         val mistakes = listOf(
-            Triple("entered", "home", "event entered takes Region, not String"),
+            Triple("_onEntered", "home", "event _onEntered takes Region, not String"),
             Triple("left", region, "Exports.kt lists no event left"),
         )
         for ((name, event, message) in mistakes) {
@@ -243,18 +243,18 @@ class DispatchTest {
             check(error.errorName == "TypeError" && error.message == message) { error.message.orEmpty() }
         }
 
-        /** The listeners' [reply] to the event [name] as a [type], or the failure's message. */
-        fun <R : Any> answer(reply: String, type: KClass<R>, name: String = "asked"): String {
+        /** The handler's [reply] to the event [name] as a [type], or the failure's message. */
+        fun <R : Any> answer(reply: String, type: KClass<R>, name: String = "_onAsked"): String {
             host.reply = reply.toByteArray()
             return runCatching { host.emit(name, region, type, 1_000).toString() }.getOrElse { it.message.orEmpty() }
         }
-        check(answer("\"precise\"", Precision::class) == "Precise" && host.emitted.last() == "asked")
+        check(answer("\"precise\"", Precision::class) == "Precise" && host.emitted.last() == "_onAsked")
         check(answer("", Precision::class) == "null" && answer("null", Precision::class) == "null")
         check(answer("\"vague\"", Precision::class).startsWith("reply "))
-        answer("\"precise\"", String::class).let { check(it == "event asked replies with Precision, not String") { it } }
-        answer("\"precise\"", Precision::class, "entered").let { check(it == "Exports.kt lists no reply to event entered") { it } }
-        // An event without a reply ignores what its listeners return.
-        host.emit("entered", region, 1_000)
+        answer("\"precise\"", String::class).let { check(it == "event _onAsked replies with Precision, not String") { it } }
+        answer("\"precise\"", Precision::class, "_onEntered").let { check(it == "Exports.kt lists no reply to event _onEntered") { it } }
+        // An event without a reply ignores what its handler returns.
+        host.emit("_onEntered", region, 1_000)
     }
 
     /** A plugin whose dispatch helpers the tests call directly, on the calling thread. */
@@ -285,7 +285,7 @@ class DispatchTest {
 
         override suspend fun requestPermissions(permissions: Set<String>): Map<String, Boolean> = error("unused")
 
-        /** The events emitted, by name, which the Worker's listeners answer with [reply]. */
+        /** The events emitted, by name, which the Worker's handler answers with [reply]. */
         val emitted = mutableListOf<String>()
         var reply = ByteArray(0)
 

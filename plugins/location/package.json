@@ -10,8 +10,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./apple": "./src/apple.generated.ts",
-    "./android": "./src/android.generated.ts",
-    "./events": "./src/events.ts"
+    "./android": "./src/android.generated.ts"
   },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",

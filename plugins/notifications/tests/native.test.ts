@@ -3,8 +3,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { connectNative } from "@tokamakdev/plugin/testing";
+import { TokamakEntrypoint } from "@tokamakdev/plugin/worker";
 
-import { notifications as createApi, type Subscription } from "../src/index.js";
+import {
+  notifications as createApi,
+  type DismissedNotification,
+  type Message,
+  type NotificationContent,
+  type OpenedNotification,
+  type Subscription,
+} from "../src/index.js";
 
 
 const setupConfig = {
@@ -184,4 +192,32 @@ void test("native message failures reject the stream reader", async () => {
   const values = decodeValues(createApi(native.ctx).onMessage());
   native.respond({ error: { name: "NotSupportedError", message: "unsupported" } });
   await assert.rejects(values.next(), { name: "NotSupportedError" });
+});
+
+void test("types the Worker's handlers with the events of both platform families", async () => {
+  class Native extends TokamakEntrypoint {
+    async _onPush(message: Message): Promise<NotificationContent | undefined> {
+      await Promise.resolve();
+      return message.title === undefined ? undefined : { id: message.id, title: message.title };
+    }
+    _onNotificationOpened({ action, input, source }: OpenedNotification) {
+      return void [action, input, source];
+    }
+    _onNotificationDismissed({ id }: DismissedNotification) {
+      return void id;
+    }
+  }
+  class Mistyped extends TokamakEntrypoint {
+    // @ts-expect-error -- a push reply is a notification, which has an id.
+    _onPush() {
+      return { title: "No id" };
+    }
+    // @ts-expect-error -- an opened notification takes no reply.
+    _onNotificationOpened(opened: OpenedNotification) {
+      return opened.source;
+    }
+  }
+  const worker = new Native(connectNative().ctx, {});
+  assert.deepEqual(await worker._onPush({ id: "m1", data: {}, title: "Hi" }), { id: "m1", title: "Hi" });
+  assert.ok(Mistyped.prototype instanceof TokamakEntrypoint);
 });

@@ -14,7 +14,6 @@ import { tokamak } from "./dist/vite.mjs";
 import { temporaryProject, workerTypes } from "./worker-fixtures.mts";
 
 function project(t: TestContext, cloudflareOptions: PluginConfig = {}) {
-  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const sdk = fileURLToPath(import.meta.resolve("@tokamakdev/tok"));
   const context = fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker"));
   const root = temporaryProject(t, "tokamak-native-vite-", {
@@ -31,20 +30,20 @@ function project(t: TestContext, cloudflareOptions: PluginConfig = {}) {
       return Response.json(await env.TOKAMAK.describe());
     }
   };`,
-    "src/listeners.ts": `import { onStart } from ${JSON.stringify(events)};
+    "src/revision.ts": `export const revision = "first";`,
+    "src/tokamak.ts": `import { TokamakEntrypoint, platform as loadedOn } from ${JSON.stringify(sdk)};
     import { nativeConnection } from ${JSON.stringify(context)};
-    onStart(async (event, env, ctx) => ({
-      label: env.LABEL, foreground: event.foreground, revision: "first",
-      stage: JSON.parse(new TextDecoder().decode(await ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array()))),
-    }));`,
-    "src/tokamak.ts": `import { TokamakEntrypoint, platform as loadedOn, type TokamakEvent } from ${JSON.stringify(sdk)};
-    import { nativeConnection } from ${JSON.stringify(context)};
-    import "./listeners";
+    import { revision } from "./revision";
     globalThis.nativeLoaded = true;
     export default class Native extends TokamakEntrypoint {
+      async _onExample(event: { foreground: boolean }) {
+        return { label: this.env.LABEL, foreground: event.foreground, revision, stage: await this._stage() };
+      }
       async describe(): Promise<{ label: string; stage: string; platform: string | undefined; loadedOn: string | undefined }> {
-        const stage = JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array())));
-        return { label: this.env.LABEL, stage: stage as string, platform: this.ctx.platform, loadedOn };
+        return { label: this.env.LABEL, stage: await this._stage(), platform: this.ctx.platform, loadedOn };
+      }
+      async _stage(): Promise<string> {
+        return JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array())));
       }
     }`,
   });
@@ -166,7 +165,7 @@ test("development routes device calls and reloaded events through the native wor
       socket.send(encodeDevice({ type: "result", id: message.id, result: { value: "background", done: true } }));
     } else if (message.id === eventId) reply?.(message);
   });
-  const event = async (name = "start") => {
+  const event = async (name = "_onExample") => {
     const result = new Promise<DeviceMessage>(resolve => { reply = resolve; });
     socket.send(encodeDevice({ type: "event", id: eventId, name, event: { foreground: false } }));
     return result;
@@ -182,8 +181,8 @@ test("development routes device calls and reloaded events through the native wor
   }
   assert.deepEqual(calls, ["tokamak.lifecycleStage"]);
   assert.deepEqual((await event()).reply, { label: "configured", foreground: false, revision: "first", stage: "background" });
-  const listeners = path.join(root, "src/listeners.ts");
-  fs.writeFileSync(listeners, fs.readFileSync(listeners, "utf8").replace('"first"', '"second"'));
+  const revision = path.join(root, "src/revision.ts");
+  fs.writeFileSync(revision, fs.readFileSync(revision, "utf8").replace('"first"', '"second"'));
   const second = { label: "configured", foreground: false, revision: "second", stage: "background" };
   let updated: DeviceMessage | undefined;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
@@ -195,14 +194,14 @@ test("development routes device calls and reloaded events through the native wor
   const entry = path.join(root, "src/tokamak.ts");
   fs.writeFileSync(entry, fs.readFileSync(entry, "utf8").replace(
     "async describe()",
-    `async event(event: TokamakEvent) {
-      return { type: event.type, data: event.data, stage: JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array()))) };
+    `async _onAdded(event: { foreground: boolean }) {
+      return { data: event, stage: await this._stage() };
     }
     async describe()`,
   ));
-  const handled = { type: "plugin.background", data: { foreground: false }, stage: "background" };
+  const handled = { data: { foreground: false }, stage: "background" };
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
-    updated = await event("plugin.background");
+    updated = await event("_onAdded");
     if (isDeepStrictEqual(updated.reply, handled)) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }

@@ -64,17 +64,15 @@ class TokamakLocationPlugin(
     }
 
     /**
-     * Starts significant changes when [config] names them, and stops them otherwise. Without
-     * permission they start once the app has it.
+     * Requests low-power updates, as Apple's significant changes are, until
+     * [stopSignificantChanges] or Android removes the request.
      */
-    fun setup(config: SetupConfig) =
-        located {
-            when {
-                config.significantChanges != true -> significantChanges.stop()
-                hasForegroundPermission() -> significantChanges.start(SIGNIFICANT_CHANGES)
-                else -> significantChanges.keep(SIGNIFICANT_CHANGES)
-            }
-        }
+    fun startSignificantChanges() {
+        requirePermission()
+        located { significantChanges.request(SIGNIFICANT_CHANGES) }
+    }
+
+    fun stopSignificantChanges() = significantChanges.cancel()
 
     /** The provider's last known position when it is no older than [maximumAge] milliseconds, or null. */
     fun recentPosition(maximumAge: Double): Position? = located { positions.recent(maximumAge)?.let(::Position) }
@@ -187,7 +185,7 @@ class TokamakLocationPlugin(
     }
 
     /**
-     * Restores updates, significant changes and regions where the app has permission, as Android
+     * Restores updates and regions where the app has permission, as Android
      * pauses them without it, and starts the updates' foreground service on screen, or after a restart
      * or an update with background permission. Reports a failure to `onLocationError`.
      */
@@ -195,7 +193,6 @@ class TokamakLocationPlugin(
         if (!hasForegroundPermission()) return
         runCatching {
             updates.restore(updatesRemoved)
-            significantChanges.restore(updatesRemoved)
             if (host.isInForeground || (updatesRemoved && granted(BACKGROUND))) startService()
         }.onFailure { events.fail(locationError(it)) }
         runCatching { regions.restore() }.onFailure { events.fail(locationError(it)) }

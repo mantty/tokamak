@@ -45,6 +45,7 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
         &WorkerManifest {
             entry: "worker.mjs".to_owned(),
             modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
+            handlers: None,
         },
     )?;
     let runtime = Runtime::start(
@@ -53,7 +54,6 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
             state_dir: temporary.path().join("state"),
             storage_dir: temporary.path().join("storage"),
             host: "app.tokamak.local".to_owned(),
-            foreground: true,
             plugins: None,
         },
         |_| {},

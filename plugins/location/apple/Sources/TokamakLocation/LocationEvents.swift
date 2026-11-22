@@ -2,12 +2,12 @@ import CoreLocation
 import Foundation
 import TokamakPlugin
 
-/// How long the Worker's listeners have for an event, within the few seconds
-/// the system gives an app it launches for one.
+/// How long the Worker has for an event, within the few seconds the system
+/// gives an app it launches for one.
 private let eventDeadline: TimeInterval = 8
 
-/// Delivers the plugin's events to the Worker's listeners and the page's. Use
-/// it on the main thread.
+/// Delivers the plugin's events to the Worker's handlers and the page's
+/// listeners. Use it on the main thread.
 final class TokamakLocationEvents {
   let updates = TokamakListeners<TokamakLocationPlugin.LocationUpdate>()
   let transitions = TokamakListeners<TokamakLocationPlugin.RegionTransition>()
@@ -55,17 +55,17 @@ final class TokamakLocationEvents {
     positions = []
     stationary = nil
     updating = true
-    send(update, to: updates, as: "update") { self.sendUpdate() }
+    send(update, to: updates, as: "_onLocationUpdate") { self.sendUpdate() }
   }
 
   func transition(_ id: String, entered: Bool, at date: Date) {
     send(
       TokamakLocationPlugin.RegionTransition(id: id, entered: entered, at: date), to: transitions,
-      as: "region")
+      as: "_onRegionTransition")
   }
 
   func visit(_ visit: CLVisit) {
-    send(TokamakLocationPlugin.Visit(visit), to: visits, as: "visit")
+    send(TokamakLocationPlugin.Visit(visit), to: visits, as: "_onVisit")
   }
 
   /// Reports each of `problems` that updates, or the region `id`, did not
@@ -97,10 +97,10 @@ final class TokamakLocationEvents {
   func fail(_ error: TokamakPluginError, region id: String? = nil) {
     send(
       TokamakLocationPlugin.LocationErrorEvent(name: error.name, message: error.message, id: id),
-      to: errors, as: "error")
+      to: errors, as: "_onLocationError")
   }
 
-  /// Delivers `event` to the page's `listeners` and the Worker's listeners of
+  /// Delivers `event` to the page's `listeners` and the Worker's method
   /// `name`, then calls `completion`.
   private func send<Event: Encodable>(
     _ event: Event, to listeners: TokamakListeners<Event>, as name: String,

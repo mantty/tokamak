@@ -119,7 +119,7 @@ extension TokamakAlarmsPlugin: TokamakExports {
   public static func exports(_ e: inout TokamakExporter<TokamakAlarmsPlugin>) {
     e.call(set, doc: "Sets an alarm, replacing one with the same `id`.")
     e.stream(rings, doc: "Alarms as they ring.")
-    e.event("rang", Alarm.self, doc: "Receives each alarm that rang, even in the background.")
+    e.event("_onAlarmRang", Alarm.self, doc: "Receives each alarm that rang, even in the background.")
   }
 }
 ```
@@ -130,16 +130,17 @@ object AlarmsExports : TokamakExports<TokamakAlarmsPlugin> {
     override fun exports(e: TokamakExporter<TokamakAlarmsPlugin>) {
         e.call(TokamakAlarmsPlugin::set, doc = "Sets an alarm, replacing one with the same `id`.")
         e.stream(TokamakAlarmsPlugin::rings, doc = "Alarms as they ring.")
-        e.event("rang", Alarm::class, doc = "Receives each alarm that rang, even in the background.")
+        e.event("_onAlarmRang", Alarm::class, doc = "Receives each alarm that rang, even in the background.")
     }
 }
 ```
 
 `call` registers a method that returns once; `stream` one that returns values
 until the Worker cancels, with `overflow` for a slow reader; `resource` one
-that returns a native object as a `NativeReference`; `event` an event, by name,
-with the type its listeners receive and, as `reply`, the type they may reply
-with. Write options as literal values: the Swift tooling reads the file without
+that returns a native object as a `NativeReference`; `event` an event, by the
+name of the method of the Tokamak worker's class it calls, its handler, with
+the type the handler receives and, as `reply`, the type it may reply with. A
+handler's name starts with `_`. Write options as literal values: the Swift tooling reads the file without
 running it. Register an overloaded Swift method with its labels, such as
 `e.call(set(_:))`.
 
@@ -151,7 +152,7 @@ types:
 - `src/apple.generated.ts` or `src/android.generated.ts`: the family's
   TypeScript API, a factory `apple(ctx, signal?)` or `android(ctx, signal?)`
   whose methods reject with `NotSupportedError` off the family's platforms, and
-  a function per event that registers its listeners, such as `onRang`. Aborting
+  the declaration of each event's handler, such as `_onAlarmRang`. Aborting
   `signal` cancels the methods' calls, streams and resource acquisitions, which
   fail with its reason.
 - `Exports.generated.swift` or `Exports.generated.kt`, beside the registration
@@ -319,53 +320,47 @@ this way.
 
 Native code emits a registered event with a value of its type. The generated
 dispatch encodes it, and decodes the reply of an event registered with one, such
-as `e.event("due", Alarm.self, reply: Snooze.self)`:
+as `e.event("_onAlarmDue", Alarm.self, reply: Snooze.self)`:
 
 ```swift
-host.emit("rang", event: alarm, timeout: 10) { result in … }
-host.emit("due", event: alarm, reply: Snooze.self, timeout: 10) { result in … }
+host.emit("_onAlarmRang", event: alarm, timeout: 10) { result in … }
+host.emit("_onAlarmDue", event: alarm, reply: Snooze.self, timeout: 10) { result in … }
 ```
 
 ```kotlin
-host.emit("rang", alarm, 10_000) // blocks until the listeners return
-val snooze = host.emit("due", alarm, Snooze::class, 10_000)
+host.emit("_onAlarmRang", alarm, 10_000) // blocks until the handler returns
+val snooze = host.emit("_onAlarmDue", alarm, Snooze::class, 10_000)
 ```
 
 Emitting an event the registration does not list, a value of another type, or
 asking for a reply of another type fails with a `TypeError`. The reply is nil or
-null when no listener replied, and the timeout includes starting the runtime.
-An event is on the platforms that declare its type. Synchronous OS callbacks use
-native configuration; they cannot wait for JavaScript.
+null when the handler returned none, and the timeout includes starting the
+runtime. An event is on the platforms that declare its type. Synchronous OS
+callbacks use native configuration; they cannot wait for JavaScript.
 
-The Worker's listeners receive each family's event as its own,
-`<plugin>.<family>.<name>`, such as `alarms.apple.rang`, which the generated
-`onRang` of `src/apple.generated.ts` registers. The plugin's `/events` module
-curates them, as its API curates methods: a listener of the plugin's event
-registers on each family's, mapping data and replies where the families differ.
+Each family's native code emits an event by the same name, so one handler
+receives it on every platform. The generated code declares the handler in
+`Tokamak.Handlers`, with the family's types, and an app defines it as a method
+of its Tokamak worker's class:
 
 ```ts
-import type { Listener } from "@tokamakdev/plugin/events";
-import * as android from "./android.generated.js";
-import * as apple from "./apple.generated.js";
-
-/** Receives each alarm that rang, even in the background. */
-export function onAlarmRang(listener: Listener<Alarm>): void {
-  apple.onRang(listener);
-  android.onRang(listener);
+// src/tokamak.ts
+export default class Native extends TokamakEntrypoint {
+  async _onAlarmRang(alarm: Alarm) {
+    await this.env.ALARMS.put(alarm.id, "rang");
+  }
 }
 ```
 
-A generated listener registers only on the platforms that emit its event, so
-on iOS `android.onRang` registers nothing.
+A handler receives the event's data, may call another plugin with `this.ctx`,
+and may return a typed reply. Keep an event's data and reply the same in every
+family, as a handler receives each family's. List each handler in the plugin's
+README, with its type.
 
-Apps import and register listeners from `src/tokamak.ts` or its imports. A
-listener receives `(event, env, ctx)`, may call another plugin with `ctx`, and
-may return a typed reply. The generated declarations also type the app's
-`event(event)` handler, whose `TokamakEvent` is a union of every declared event.
-
-Events travel as JSON. For other bytes, emit with `host.emitBytes` and declare
-the event by hand with `defineEvent(name, { codec, platforms })`, as the
-generated code declares its events.
+Events travel as JSON. For other bytes, emit with `host.emitBytes`, call
+`setEventCodec(handler, { decode, encode })` from `@tokamakdev/plugin/events`
+in the plugin's API module, and declare the handler in `Tokamak.Handlers` by
+hand, as the generated code declares its handlers.
 
 A browser implementation is optional. Put it in a separate module and reference
 its exported object with `web: { module, export }` in the manifest. Each method

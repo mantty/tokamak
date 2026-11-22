@@ -17,7 +17,7 @@ private let pendingLimit = 64
 private let pushDeadline: TimeInterval = 25
 /// How long a notification's attachments may take to load.
 private let attachmentDeadline: TimeInterval = 10
-/// How long the Worker's listeners have for an opened or dismissed notification.
+/// How long the Worker has for an opened or dismissed notification.
 private let responseDeadline: TimeInterval = 10
 
 #if os(iOS)
@@ -228,8 +228,8 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     finishRegistering(.failure(Self.registrationError(error)))
   }
 
-  /// Delivers a data-only message to the Worker's `onPush` listeners,
-  /// showing the notification they reply with.
+  /// Delivers a data-only message to the Worker's `_onPush`, showing the
+  /// notification it replies with.
   public func didReceiveRemoteNotification(
     _ userInfo: [AnyHashable: Any],
     completion: @escaping (TokamakBackgroundResult) -> Void
@@ -246,7 +246,7 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       await self.show(reply: reply, attachmentTimeout: deadline.timeIntervalSinceNow)
       completion(.newData)
     }
-    host.emit("push", event: message, reply: NotificationContent.self, timeout: pushDeadline) {
+    host.emit("_onPush", event: message, reply: NotificationContent.self, timeout: pushDeadline) {
       result in
       switch result {
       case .success(let reply):
@@ -291,12 +291,14 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
         let dismissed = fields.dismissed
         self.dismissed.send(dismissed)
         self.host.emit(
-          "dismissed", event: dismissed, timeout: responseDeadline, completion: delivered)
+          "_onNotificationDismissed", event: dismissed, timeout: responseDeadline,
+          completion: delivered)
       } else {
         let opened = fields.opened(
           action: action == UNNotificationDefaultActionIdentifier ? nil : action, input: input)
         self.opened.send(opened)
-        self.host.emit("opened", event: opened, timeout: responseDeadline, completion: delivered)
+        self.host.emit(
+          "_onNotificationOpened", event: opened, timeout: responseDeadline, completion: delivered)
       }
     }
   }
@@ -451,7 +453,7 @@ public final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     for attachment in attachments { try? FileManager.default.removeItem(at: attachment.url) }
   }
 
-  /// Shows the notification `onPush` listeners reply with, if any, with the attachments that load
+  /// Shows the notification `_onPush` replies with, if any, with the attachments that load
   /// within `timeout`.
   @MainActor
   private func show(

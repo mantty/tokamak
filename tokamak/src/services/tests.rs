@@ -350,7 +350,7 @@ export default class extends WorkerEntrypoint {
     main.bindings
         .insert("DEVICE".into(), target("device", "default"));
     let (sent, received) = flume::unbounded();
-    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))));
     device.config.plugins = Some(Arc::clone(&plugins));
     let registry = Arc::new(Registry::new(BTreeMap::from([
         ("main".into(), main),
@@ -448,7 +448,7 @@ export default class extends WorkerEntrypoint {
         directory.path(),
     )?;
     let (sent, received) = flume::unbounded();
-    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))));
     worker.config.plugins = Some(Arc::clone(&plugins));
     let registry = Arc::new(Registry::new(BTreeMap::from([("device".into(), worker)])));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -530,7 +530,7 @@ export default class extends WorkerEntrypoint {
         directory.path(),
     )?;
     let (sent, received) = flume::unbounded();
-    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))));
     worker.config.plugins = Some(Arc::clone(&plugins));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -607,7 +607,7 @@ export default class extends WorkerEntrypoint {
         directory.path(),
     )?;
     let (sent, received) = flume::unbounded();
-    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))));
     worker.config.plugins = Some(plugins);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
