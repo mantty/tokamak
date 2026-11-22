@@ -997,9 +997,34 @@ mod tests {
 
     use super::{
         COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
-        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, PermissionPrompt, app_permission_prompt,
-        browser_arguments, is_app_origin,
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, PermissionPrompt, ShellConfig,
+        app_permission_prompt, browser_arguments, is_app_origin, receives_before_start,
     };
+
+    #[test]
+    fn waits_for_before_start_in_development_or_when_the_build_recorded_it() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let worker = root.path().join("app").join("tokamak");
+        std::fs::create_dir_all(&worker)?;
+        let record = |handler: &str| {
+            let manifest =
+                format!(r#"{{"entry":"index.js","modules":{{}},"handlers":["{handler}"]}}"#);
+            std::fs::write(worker.join("worker-manifest.json"), manifest)
+        };
+        let packaged: ShellConfig =
+            serde_json::from_str(r#"{"name":"App","slug":"app","host":"app.tokamak.local"}"#)?;
+        let development = ShellConfig {
+            dev_endpoint: Some("http://127.0.0.1:4321".to_owned()),
+            ..packaged.clone()
+        };
+
+        record("_onStart")?;
+        assert!(!receives_before_start(&packaged, root.path()));
+        assert!(receives_before_start(&development, root.path()));
+        record("_beforeStart")?;
+        assert!(receives_before_start(&packaged, root.path()));
+        Ok(())
+    }
 
     #[test]
     fn routes_only_the_app_host_through_the_local_proxy() -> anyhow::Result<()> {
