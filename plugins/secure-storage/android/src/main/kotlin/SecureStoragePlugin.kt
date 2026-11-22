@@ -81,7 +81,7 @@ data class GroupOptions(val keychainGroup: String?)
 class TokamakSecureStoragePlugin(
     private val host: TokamakHost,
 ) : TokamakPlugin {
-    override val id = "secure-storage"
+    override val id = "secureStorage"
 
     private val context = host.context
     private val worker = Executors.newSingleThreadExecutor()

@@ -118,7 +118,8 @@ enum Command {
 enum PluginCommand {
     /// Create a publishable plugin package.
     New {
-        /// New directory, named with lowercase words joined by hyphens.
+        /// New directory, whose name is the plugin's ID: letters and digits that start with a
+        /// lowercase letter, such as deviceTools.
         directory: PathBuf,
         /// Comma-separated platforms a native implementation runs on: ios, macos or android.
         /// Without them, the plugin composes APIs in TypeScript.

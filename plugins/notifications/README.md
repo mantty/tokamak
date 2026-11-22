@@ -102,7 +102,7 @@ import { notifications } from "@tokamakdev/plugin-notifications";
 import { TokamakEntrypoint } from "@tokamakdev/tok";
 
 export default class Native extends TokamakEntrypoint {
-  async _beforeStart() {
+  _beforeStart = async () => {
     await notifications(this.ctx).setup({
       categories: [
         {
@@ -119,7 +119,7 @@ export default class Native extends TokamakEntrypoint {
       defaultChannel: { name: "General" },
       channels: [{ id: "messages", name: "Messages", importance: "high" }],
     });
-  }
+  };
 }
 ```
 
@@ -149,10 +149,10 @@ pass them in the user's language.
 ### Categories and actions
 
 A notification that names a `category` shows the category's actions. Choosing
-one removes the notification and reaches `_onNotificationOpened` with the
+one removes the notification and reaches `_notifications.onOpened` with the
 action's `id` as `action`, and the text typed into an action with `input` as
 `input`. An action without `foreground` does not open the app: the Worker's
-`_onNotificationOpened` receives it, starting the app in the background if it
+`_notifications.onOpened` receives it, starting the app in the background if it
 is not running, and so do the page's listeners while it is loaded.
 
 | Key | iOS, macOS | Android | Web |
@@ -168,7 +168,7 @@ is not running, and so do the page's listeners while it is loaded.
 Push notifications name a category in their payload: `aps.category` for APNs
 and `category` for Web Push. FCM notification messages have none; to give a
 push notification actions on Android, send a data-only message and return the
-notification, with its `category`, from `_onPush`.
+notification, with its `category`, from `_notifications.onPush`.
 
 ### While the app is on screen
 
@@ -387,7 +387,7 @@ await notifications.show({
 In native builds the plugin loads them before it shows the notification, and
 `show` resolves once it shows. One that does not load within 10 seconds, 8 on
 Android, or that the platform cannot use is left out, and the notification
-shows without it. A notification the Worker returns from `_onPush` has what
+shows without it. A notification the Worker returns from `_notifications.onPush` has what
 remains of the time the platform allows for the message. A `remove` while the
 images load keeps the notification from showing, and a later `show` with the
 same `id` replaces it.
@@ -428,10 +428,10 @@ import { notifications } from "@tokamakdev/plugin-notifications";
 import { TokamakEntrypoint } from "@tokamakdev/tok";
 
 export default class Native extends TokamakEntrypoint {
-  async _onStart() {
+  _onStart = async () => {
     const subscription = await notifications(this.ctx).subscribe();
     await fetch("https://api.example.com/push-tokens", { method: "POST", body: JSON.stringify(subscription) });
-  }
+  };
 }
 ```
 
@@ -509,30 +509,33 @@ FCM notification messages carry Android's badge as
 
 ### Data-only messages
 
-In native builds, the Tokamak worker's `_onPush` receives each message without
-a title or body, whether the app is in the foreground, in the background, or
-started by the message:
+In native builds, the plugin's handlers are in the Tokamak worker's
+`_notifications` property, which `NotificationsHandlers` types. `onPush`
+receives each message without a title or body, whether the app is in the
+foreground, in the background, or started by the message:
 
 ```ts
 // src/tokamak.ts
-import type { Message } from "@tokamakdev/plugin-notifications";
+import type { NotificationsHandlers } from "@tokamakdev/plugin-notifications";
 import { TokamakEntrypoint } from "@tokamakdev/tok";
 
 export default class Native extends TokamakEntrypoint {
-  async _onPush(message: Message) {
-    const item = await fetch(`https://api.example.com/items/${String(message.data.itemId)}`);
-    // Return a notification to show it, or return nothing.
-    return { id: `item-${String(message.data.itemId)}`, title: "New item", body: (await item.json()).summary };
-  }
+  _notifications: NotificationsHandlers = {
+    onPush: async (message) => {
+      const item = await fetch(`https://api.example.com/items/${String(message.data.itemId)}`);
+      // Return a notification to show it, or return nothing.
+      return { id: `item-${String(message.data.itemId)}`, title: "New item", body: (await item.json()).summary };
+    },
+  };
 }
 ```
 
 `message.data` is `Record<string, unknown>`; FCM delivers every `data` value
-as a string. The notification `_onPush` returns is shown as `show` shows one.
+as a string. The notification `_notifications.onPush` returns is shown as `show` shows one.
 The page also receives the message through `onMessage` while it is loaded.
 Builds for Cloudflare and the web include no Tokamak worker.
 
-`_onPush` has until the plugin's time for the message runs out, which
+`_notifications.onPush` has until the plugin's time for the message runs out, which
 includes starting the app. The plugin logs a message it could not deliver to
 the device log as `push notification failed: <reason>`.
 
@@ -563,21 +566,23 @@ in the same way. Apple platforms report only notifications whose category has
 removed, and does not report notifications FCM showed. The web reports only
 notifications its service worker showed.
 
-In native builds, the Tokamak worker's `_onNotificationOpened` and
-`_onNotificationDismissed` also receive each notification, whether or not the
-app is on screen:
+In native builds, the Tokamak worker's `_notifications.onOpened` and
+`_notifications.onDismissed` also receive each notification, whether or not
+the app is on screen:
 
 ```ts
 // src/tokamak.ts
-import type { OpenedNotification } from "@tokamakdev/plugin-notifications";
+import type { NotificationsHandlers } from "@tokamakdev/plugin-notifications";
 import { TokamakEntrypoint } from "@tokamakdev/tok";
 
 export default class Native extends TokamakEntrypoint {
-  async _onNotificationOpened(opened: OpenedNotification) {
-    if (opened.action === "reply" && opened.input !== undefined) {
-      await this.env.REPLIES.put(opened.id, opened.input);
-    }
-  }
+  _notifications: NotificationsHandlers = {
+    onOpened: async (opened) => {
+      if (opened.action === "reply" && opened.input !== undefined) {
+        await this.env.REPLIES.put(opened.id, opened.input);
+      }
+    },
+  };
 }
 ```
 

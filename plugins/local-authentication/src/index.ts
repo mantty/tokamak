@@ -19,7 +19,7 @@ export function localAuthentication(ctx: TokamakContext) {
   return {
     /** Whether each operation is implemented where the app runs, without calling it. Permission is not reported. */
     get capabilities(): Readonly<Record<string, boolean>> {
-      return capabilitiesOf(ctx, "local-authentication");
+      return capabilitiesOf(ctx, "localAuthentication");
     },
 
     status: (authentication: Authentication): Promise<Status> => native.status(authentication),

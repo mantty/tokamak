@@ -17,7 +17,10 @@ export interface WorkerContract {
 
 /** The Tokamak worker's contract. */
 export interface NativeContract extends WorkerContract {
-  /** The members whose names start with `_`, which only the native host calls, with its events. */
+  /**
+   * The handlers the members whose names start with `_` hold, which only the native host calls,
+   * with its events: a function's own name, and `<plugin id>.<event>` for each of a plugin's.
+   */
   handlers: string[];
 }
 
@@ -273,7 +276,7 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
   for (const property of instance.getProperties()) {
     if (!property.declarations?.some((node) => prototypes.has(node.parent))) continue;
     if (native && property.name.startsWith("_")) {
-      handlers.push(property.name);
+      handlers.push(...handlerNames(checker, property, source));
       continue;
     }
     if (!exposedMethod(property)) continue;
@@ -292,6 +295,20 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     ),
     files: module.files,
   };
+}
+
+/**
+ * The handlers the member `_<name>` holds: itself when it is a function, and otherwise each member
+ * of the object it is initialised with, or is typed as, such as `location.onUpdate` for a plugin's
+ * `_location`.
+ */
+function handlerNames(checker: ts.TypeChecker, member: ts.Symbol, source: ts.Node): string[] {
+  const type = checker.getTypeOfSymbolAtLocation(member, source);
+  if (type.getCallSignatures().length > 0) return [member.name];
+  const declaration = member.valueDeclaration;
+  const initializer = declaration && ts.isPropertyDeclaration(declaration) ? declaration.initializer : undefined;
+  const held = initializer && ts.isObjectLiteralExpression(initializer) ? checker.getTypeAtLocation(initializer) : type;
+  return held.getProperties().map((handler) => `${member.name.slice(1)}.${handler.name}`);
 }
 
 function byName(left: ServiceMethod, right: ServiceMethod): number {

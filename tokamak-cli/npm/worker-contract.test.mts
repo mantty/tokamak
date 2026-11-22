@@ -233,17 +233,24 @@ test("keeps class-based platform event handlers outside the RPC contract", (t) =
   assert.deepEqual(read().default.methods, ["echo"]);
 });
 
-test("keeps members whose names start with _ out of the contract and records them as handlers", (t) => {
+test("keeps members whose names start with _ out of the contract and records the handlers they hold", (t) => {
   const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")));
   const read = project(t, `import { TokamakEntrypoint, type StartEvent } from ${sdk};
+    declare global {
+      namespace Tokamak {
+        interface ExampleHandlers { onAdded?(event: string): void; onRemoved?(event: string): void }
+        interface Handlers { _example?: ExampleHandlers }
+      }
+    }
     export default class Native extends TokamakEntrypoint {
-      _onStart(event: StartEvent): void { void event; }
+      _onStart = (event: StartEvent): void => { void event; };
       _record(callback: () => void): void { callback(); }
+      _example: Tokamak.ExampleHandlers = { onAdded: (event) => { void event; } };
       #hidden(): void {}
       echo(value: string): string { return value; }
     }`, {}, readWorkerContract);
   assert.deepEqual(read().methods, ["echo"]);
-  assert.deepEqual(read().handlers, ["_onStart", "_record"]);
+  assert.deepEqual(read().handlers, ["_onStart", "_record", "example.onAdded"]);
 });
 
 test("discovers default and named Worker services while preserving other module exports", (t) => {

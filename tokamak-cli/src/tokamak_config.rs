@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokamak_cli::{Platform, VariableKind, is_valid_key};
 
+use super::plugins::valid_plugin_id;
 use super::splash;
 
 /// The app's tokamak configuration.
@@ -102,7 +103,11 @@ pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig>
             Value::Object(section) => section,
             _ => return Err(invalid(format!("unknown field `{key}`"))),
         };
-        check_key(&key, &key)?;
+        if !valid_plugin_id(&key) {
+            return Err(invalid(format!(
+                "{key} must be a plugin ID: letters and digits that start with a lowercase letter"
+            )));
+        }
         plugins.insert(key.clone(), plugin_config(&key, section)?);
     }
     let version = raw
@@ -560,7 +565,7 @@ mod tests {
             temporary.path(),
             r#"{
               "notifications": { "sounds": "sounds", "limit": 3, "ios": { "names": ["a"] }, "macos": null },
-              "secure-storage": {},
+              "secureStorage": {},
               "location": null
             }"#,
         )?;
@@ -581,7 +586,7 @@ mod tests {
                         )]),
                     },
                 ),
-                ("secure-storage".to_owned(), PluginConfig::default()),
+                ("secureStorage".to_owned(), PluginConfig::default()),
             ])
         );
         Ok(())
@@ -592,8 +597,8 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let cases = [
             (
-                r#"{ "Notifications": {} }"#,
-                "Notifications must be lowercase words",
+                r#"{ "secure-storage": {} }"#,
+                "secure-storage must be a plugin ID",
             ),
             (
                 r#"{ "notifications": { "Sounds": "x" } }"#,

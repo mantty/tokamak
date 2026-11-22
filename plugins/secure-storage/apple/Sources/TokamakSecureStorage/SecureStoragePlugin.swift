@@ -49,7 +49,7 @@ extension TokamakSecureStoragePlugin {
 }
 
 public final class TokamakSecureStoragePlugin: TokamakPlugin {
-  public let id = "secure-storage"
+  public let id = "secureStorage"
   public let host: TokamakHost
 
   private let service = "tokamak.secure-storage"

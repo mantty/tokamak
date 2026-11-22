@@ -26,12 +26,12 @@ object NotificationsExports : TokamakExports<TokamakNotificationsPlugin> {
         e.stream(TokamakNotificationsPlugin::onOpenSettings, doc = "The user's requests, from the system's settings, for the app's own.")
         e.stream(TokamakNotificationsPlugin::onSubscriptionChange, doc = "The replacement when FCM changes the Firebase Installation ID.")
         e.event(
-            "_onPush",
+            "onPush",
             Message::class,
             reply = NotificationContent::class,
             doc = "Receives each data-only push message, and shows the notification it returns.",
         )
-        e.event("_onNotificationOpened", OpenedNotification::class, doc = "Receives each notification the user opens, including one that opens the app.")
-        e.event("_onNotificationDismissed", DismissedNotification::class, doc = "Receives each notification the user dismisses.")
+        e.event("onOpened", OpenedNotification::class, doc = "Receives each notification the user opens, including one that opens the app.")
+        e.event("onDismissed", DismissedNotification::class, doc = "Receives each notification the user dismisses.")
     }
 }

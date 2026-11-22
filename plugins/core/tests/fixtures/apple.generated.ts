@@ -91,13 +91,17 @@ export function apple(ctx: TokamakContext, signal?: AbortSignal): Apple {
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- handlers are declared by merging into Tokamak.Handlers.
   namespace Tokamak {
-    interface Handlers {
+    /** The handlers of the example plugin's events, which the Tokamak worker's class holds as `_example`. */
+    interface ExampleHandlers {
       /** Each region the device enters. */
-      _onEntered?(event: Region): void | Promise<void>;
-      _onAsked?(event: Region): Precision | undefined | Promise<Precision | undefined>;
-      _onChose?(event: Precision): void | Promise<void>;
+      onEntered?(event: Region): void | Promise<void>;
+      onAsked?(event: Region): Precision | undefined | Promise<Precision | undefined>;
+      onChose?(event: Precision): void | Promise<void>;
       /** @platforms ios */
-      _onVisited?(event: Visit): void | Promise<void>;
+      onVisited?(event: Visit): void | Promise<void>;
+    }
+    interface Handlers {
+      _example?: ExampleHandlers;
     }
   }
 }

@@ -21,9 +21,9 @@ object ExampleExports : TokamakExports<TokamakExamplePlugin> {
         e.call(TokamakExamplePlugin::alert)
         e.call(TokamakExamplePlugin::zone)
         e.call(TokamakExamplePlugin::mark)
-        e.event("_onEntered", Region::class, doc = "Each region the device enters.")
-        e.event("_onAsked", Region::class, reply = Precision::class)
-        e.event("_onChose", Precision::class)
-        e.event("_onVisited", Visit::class)
+        e.event("onEntered", Region::class, doc = "Each region the device enters.")
+        e.event("onAsked", Region::class, reply = Precision::class)
+        e.event("onChose", Precision::class)
+        e.event("onVisited", Visit::class)
     }
 }

@@ -137,7 +137,8 @@ pub struct WorkerManifest {
     pub entry: String,
     /// Every module, by name, with its type.
     pub modules: BTreeMap<String, ModuleType>,
-    /// The handlers the Tokamak worker's class defines, as the app's build
+    /// The handlers the Tokamak worker's class defines, each a lifecycle
+    /// handler's name or a plugin's `<plugin>.<event>`, as the app's build
     /// recorded them: the Worker runs for no other event. Without a record it
     /// runs for every event.
     #[serde(default, skip_serializing_if = "Option::is_none")]

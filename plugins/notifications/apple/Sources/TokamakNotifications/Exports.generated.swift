@@ -125,11 +125,11 @@ extension TokamakNotificationsPlugin {
 
   public func eventPayload(_ name: String, _ event: Any) throws(TokamakPluginError) -> Data {
     switch name {
-    case "_onPush":
+    case "onPush":
       return try tokamakEvent(name, event, as: Message.self)
-    case "_onNotificationOpened":
+    case "onOpened":
       return try tokamakEvent(name, event, as: OpenedNotification.self)
-    case "_onNotificationDismissed":
+    case "onDismissed":
       return try tokamakEvent(name, event, as: DismissedNotification.self)
     default:
       throw .unlistedEvent(name)
@@ -138,7 +138,7 @@ extension TokamakNotificationsPlugin {
 
   public func eventReply(_ name: String, _ reply: Data) throws(TokamakPluginError) -> Any? {
     switch name {
-    case "_onPush":
+    case "onPush":
       return try tokamakDecode(NotificationContent?.self, from: reply, in: "reply")
     default:
       throw .unlistedReply(name)

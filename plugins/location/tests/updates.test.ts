@@ -5,13 +5,7 @@ import { test } from "node:test";
 import { connectNative } from "@tokamakdev/plugin/testing";
 import { TokamakEntrypoint } from "@tokamakdev/plugin/worker";
 
-import {
-  location as createApi,
-  type LocationErrorEvent,
-  type LocationUpdate,
-  type RegionTransition,
-  type Visit,
-} from "../src/index.js";
+import { location as createApi, type LocationHandlers, type LocationUpdate } from "../src/index.js";
 
 void test("calls the native plugin with each update, significant change and visit method's arguments", async () => {
   const native = connectNative();
@@ -67,24 +61,18 @@ void test("native event stream failures reject their readers", async () => {
 
 void test("types the Worker's handlers with the events of both platform families", () => {
   class Native extends TokamakEntrypoint {
-    _onLocationUpdate({ positions, stationary }: LocationUpdate) {
-      return void [positions, stationary];
-    }
-    _onRegionTransition({ id, transition }: RegionTransition) {
-      return void [id, transition];
-    }
-    _onVisit({ arrival, departure }: Visit) {
-      return void [arrival, departure];
-    }
-    _onLocationError({ name, id }: LocationErrorEvent) {
-      return void [name, id];
-    }
+    _location: LocationHandlers = {
+      onUpdate: ({ positions, stationary }) => void [positions, stationary],
+      onRegionTransition: ({ id, transition }) => void [id, transition],
+      onVisit: ({ arrival, departure }) => void [arrival, departure],
+      onError: ({ name, id }) => void [name, id],
+    };
   }
   class Mistyped extends TokamakEntrypoint {
-    // @ts-expect-error -- the event is a `LocationUpdate`.
-    _onLocationUpdate(update: string) {
-      return void update;
-    }
+    _location: LocationHandlers = {
+      // @ts-expect-error -- the event is a `LocationUpdate`.
+      onUpdate: (update: string) => void update,
+    };
   }
   assert.ok(Native.prototype instanceof TokamakEntrypoint && Mistyped.prototype instanceof TokamakEntrypoint);
 });

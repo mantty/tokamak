@@ -50,8 +50,8 @@ class TokamakExporter<P : TokamakPlugin> {
     val events: List<Event> get() = listedEvents
 
     /**
-     * Lists the event [name]: the Worker's method [name], which starts with `_`, receives a [type]
-     * and may reply with a [reply].
+     * Lists the event [name]: the Worker's handler [name], in its property for the plugin,
+     * receives a [type] and may reply with a [reply].
      */
     fun event(name: String, type: KClass<*>, reply: KClass<*>? = null, doc: String = "") {
         listedEvents += Event(name, type, reply, doc)

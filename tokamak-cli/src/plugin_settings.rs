@@ -359,9 +359,23 @@ pub(crate) fn option_namespaces() -> impl Iterator<Item = Option<&'static str>> 
     std::iter::once(None).chain(platforms.into_iter().map(Some))
 }
 
+/// The plugin `id` as lowercase words joined by hyphens, the form of options,
+/// environment variables and package names: `deviceTools` is `device-tools`.
+pub(crate) fn hyphenated(id: &str) -> String {
+    let mut words = String::new();
+    for character in id.chars() {
+        if character.is_ascii_uppercase() {
+            words.push('-');
+        }
+        words.push(character.to_ascii_lowercase());
+    }
+    words
+}
+
 /// The name, without `--`, of the option that sets plugin `id`'s `key` for
 /// every platform, or for the platform `namespace`.
 pub(crate) fn option_name(id: &str, namespace: Option<&str>, key: &str) -> String {
+    let id = hyphenated(id);
     match namespace {
         Some(namespace) => format!("{id}-{namespace}-{key}"),
         None => format!("{id}-{key}"),

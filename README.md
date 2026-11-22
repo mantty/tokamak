@@ -341,7 +341,7 @@ The top-level keys are `name`, `identifier`, `icon`, `version`, and the
 [splash screen](#splash-screen) keys, which are defaults for every platform,
 and `module`. Another top-level object holds a plugin's settings, by plugin ID,
 such as `notifications: { sounds: "sounds" }`; other top-level keys are
-rejected.
+rejected. A plugin ID is a camel-case identifier, such as `secureStorage`.
 A platform object (`android`, `ios`, `macos`, `windows`) overrides `name`,
 `identifier`, `icon`, or a splash screen key for that platform, and its other
 keys are settings for that platform's pack. `version` is top-level only. `ios` covers iOS devices
@@ -403,6 +403,10 @@ or a configuration key. A setting has the same name in each:
 | Platform | `--ios-plist` | `TOKAMAK_IOS_PLIST` | `ios.plist` |
 | Plugin | `--notifications-sounds` | `TOKAMAK_NOTIFICATIONS_SOUNDS` | `notifications.sounds` |
 | Plugin, one platform | `--notifications-ios-sounds` | `TOKAMAK_NOTIFICATIONS_IOS_SOUNDS` | `notifications.ios.sounds` |
+
+An option and an environment variable name a plugin by the words of its ID: a
+setting of `deviceTools` is `--device-tools-<key>` and
+`TOKAMAK_DEVICE_TOOLS_<KEY>`.
 
 An option takes precedence over an environment variable, which takes precedence
 over the configuration. Within each source, a platform's own value takes
@@ -669,36 +673,39 @@ Worker's plugin calls on the device. Apps built with `tok build` leave it out.
 
 ## Events
 
-The Tokamak worker receives native events as handlers: methods of its class
-that tokamak calls, each with an event's data. tokamak declares the app's
-handlers, and each plugin declares its own:
+The Tokamak worker receives native events as handlers: arrow functions its
+class holds, which tokamak calls, each with an event's data. The app's
+lifecycle handlers are properties of the class. Each plugin's handlers are in
+one property, `_` followed by the plugin's id, typed by the plugin:
 
 ```ts
 // src/tokamak.ts
 import { TokamakEntrypoint, type StartEvent } from "@tokamakdev/tok";
-import { notifications, type Message } from "@tokamakdev/plugin-notifications";
+import { notifications, type NotificationsHandlers } from "@tokamakdev/plugin-notifications";
 
 export default class Native extends TokamakEntrypoint {
-  async _beforeStart() {
+  _beforeStart = async () => {
     await notifications(this.ctx).setup({ showInForeground: true });
-  }
+  };
 
-  _onStart({ foreground }: StartEvent) {
+  _onStart = ({ foreground }: StartEvent) => {
     this.ctx.waitUntil(this.env.DB.prepare("INSERT INTO launches (foreground) VALUES (?)").bind(foreground).run());
-  }
+  };
 
-  async _onPush(message: Message) {
-    return { id: message.id, title: "New item", body: await this.env.ITEMS.get(message.id) };
-  }
+  _notifications: NotificationsHandlers = {
+    onPush: async (message) => ({ id: message.id, title: "New item", body: await this.env.ITEMS.get(message.id) }),
+  };
 }
 ```
 
 A handler receives the event's plain data. `this.env` is the Worker's
 environment, typed as `Tokamak.Env`, and `this.ctx` is the invocation's
 `TokamakContext`, which [plugins](#calling-plugins) take and whose `waitUntil`
-keeps the event running until a promise settles. Give the handler's parameter
-its type: TypeScript checks it, and what the handler returns, against the
-handler's declaration.
+keeps the event running until a promise settles. Type a plugin's property with
+the plugin's handlers type, such as `NotificationsHandlers`: its handlers'
+parameters then need no types, and TypeScript checks their names and what they
+return. A handler is an arrow function, so that `this` is the Worker;
+TypeScript rejects a lifecycle handler written as a method.
 
 | Handler | Called | Data |
 |---|---|---|
@@ -717,11 +724,13 @@ handler's declaration.
 Other desktop actions, such as covering the window or switching Spaces, fire
 no event.
 
-- **Names:** a method whose name starts with `_` is not an RPC method: pages
-  and the app's Worker cannot call it. An event calls the one method it names,
-  and the class can have `_` methods of its own.
+- **Names:** a member whose name starts with `_` is not an RPC method: pages
+  and the app's Worker cannot call it. An event calls one handler: a lifecycle
+  event the member it names, and a plugin's event the handler of its name in
+  the plugin's property. Plugin ids are unique in an app, so two plugins'
+  handlers never share a name. The class can have `_` members of its own.
 - **Replies:** an event's reply is what its handler returns. Plugins use it,
-  as `_onPush` shows the notification it returns.
+  as the notifications plugin shows the notification `onPush` returns.
 - **Timing:** every event after `_beforeStart` waits for `_onStart`, and
   `_onResume` and `_onSuspend` run one at a time, in order. An event completes
   when its handler and its `waitUntil` promises settle, or at its deadline: 10
@@ -734,7 +743,8 @@ no event.
   does, so module state does not carry from one event to the next. Keep state
   in a KV, D1 or R2 binding.
 - **Cost:** a packaged app runs no Worker for an event whose handler the class
-  does not define.
+  does not define. The build reads a plugin's handlers from the object its
+  property is initialised with.
 
 ### `_beforeStart`
 
@@ -809,8 +819,8 @@ Android. `tok build <platform> --update-lock` resolves the
 platform family's dependencies afresh and records the new versions.
 
 A plugin can also run Worker code through [events](#events), such as
-`_onPush` of `@tokamakdev/plugin-notifications` for a data-only push
-notification, or `_onLocationUpdate` and `_onRegionTransition` of
+`onPush` of `@tokamakdev/plugin-notifications` for a data-only push
+notification, or `onUpdate` and `onRegionTransition` of
 `@tokamakdev/plugin-location` for locations that arrive off screen.
 
 `tok build android` produces a release APK, which R8 shrinks by removing

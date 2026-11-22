@@ -131,7 +131,7 @@ class TokamakApplication : Application(), TokamakPlugins {
                 }
 
             override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
-                emitEvent(name, payload, timeoutMillis)
+                emitEvent("$id.$name", payload, timeoutMillis)
 
             override fun emit(name: String, event: Any, timeoutMillis: Long) {
                 emitBytes(name, codec { TokamakPluginError.unlistedEvent(name) }.eventPayload(name, event), timeoutMillis)
@@ -167,7 +167,7 @@ class TokamakApplication : Application(), TokamakPlugins {
         get() = if (started.isInitialized()) runtime.isForeground else activity != null
 
     /**
-     * Delivers the event [name] with its encoded [payload] to the Worker's method of that name
+     * Delivers the event [name] with its encoded [payload] to the Worker's handler of that name
      * and returns its encoded reply. Starts the runtime when it is not running. Blocks.
      */
     private fun emitEvent(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =

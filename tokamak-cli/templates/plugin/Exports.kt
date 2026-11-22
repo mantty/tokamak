@@ -6,6 +6,6 @@ import com.tokamak.runtime.TokamakExports
 object {{class}}Exports : TokamakExports<{{class}}> {
     override fun exports(e: TokamakExporter<{{class}}>) {
         e.call({{class}}::echo, doc = "Returns a message through the native implementation.")
-        e.event("_onEchoed", {{class}}.Echo::class, doc = "Receives each message the native implementation echoed.")
+        e.event("onEchoed", {{class}}.Echo::class, doc = "Receives each message the native implementation echoed.")
     }
 }

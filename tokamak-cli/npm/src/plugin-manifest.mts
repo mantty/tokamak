@@ -51,21 +51,25 @@ export function discoverPlugins(root: string): PluginDefinition[] {
     // Schema version one supplies only native build metadata.
     if (data.schemaVersion === 1) continue;
     if (data.schemaVersion !== 2) throw new Error(`${manifest}: unsupported plugin schema version ${data.schemaVersion}.`);
-    if (typeof data.id !== "string" || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(data.id) || data.id.length > 63) {
-      throw new Error(`${manifest}: plugin id must be lowercase words joined by single hyphens.`);
+    if (typeof data.id !== "string" || !/^[a-z][a-zA-Z0-9]*$/.test(data.id) || data.id.length > 63) {
+      throw new Error(`${manifest}: plugin id must start with a lowercase letter and contain only letters and digits, such as deviceTools.`);
     }
-    const reserved = reservedPluginWords.find(word => data.id === word || data.id.startsWith(`${word}-`));
+    // The id as hyphenated words, the form of Tokamak's options: deviceTools is device-tools.
+    const words = data.id.replace(/[A-Z]/g, "-$&").toLowerCase();
+    const reserved = reservedPluginWords.find(word => words === word || words.startsWith(`${word}-`));
     if (reserved) throw new Error(`${manifest}: plugin id must not start with '${reserved}', which Tokamak's options use.`);
     if (data.operations !== undefined) {
       throw new Error(`${manifest}: operations is no longer read; tag a method that only some platforms implement with @platforms in its doc comment.`);
     }
     const api = moduleExport(directory, data.api, "api");
-    if (plugins.has(data.id)) throw new Error(`Duplicate Tokamak plugin id ${data.id}.`);
+    // Ids name directories, which some file systems compare without case.
+    const id = data.id.toLowerCase();
+    if ([...plugins.keys()].some(other => other.toLowerCase() === id)) throw new Error(`Duplicate Tokamak plugin id ${data.id}.`);
     const platforms = nativePlatforms.filter(platform => data.platforms?.[platform] !== undefined);
     plugins.set(data.id, {
       id: data.id, package: name, manifest, api,
       web: data.web === undefined ? undefined : moduleExport(directory, data.web, "web"),
-      binding: `TOKAMAK_${data.id.toUpperCase().replaceAll("-", "_")}`,
+      binding: `TOKAMAK_${words.toUpperCase().replaceAll("-", "_")}`,
       client: `${name}/client`,
       platforms,
     });

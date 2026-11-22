@@ -25,14 +25,14 @@ extension TokamakNotificationsPlugin: TokamakExports {
       onOpenSettings, doc: "The user's requests, from the system's settings, for the app's own.")
     e.stream(onSubscriptionChange, doc: "The replacement when APNs changes the subscription.")
     e.event(
-      "_onPush", Message.self, reply: NotificationContent.self,
+      "onPush", Message.self, reply: NotificationContent.self,
       doc: "Receives each data-only push message, and shows the notification it returns."
     )
     e.event(
-      "_onNotificationOpened", OpenedNotification.self,
+      "onOpened", OpenedNotification.self,
       doc: "Receives each notification the user opens, including one that opens the app.")
     e.event(
-      "_onNotificationDismissed", DismissedNotification.self,
+      "onDismissed", DismissedNotification.self,
       doc:
         "Receives each notification the user dismisses, of categories with `customDismissAction`.")
   }

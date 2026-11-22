@@ -246,7 +246,7 @@ pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
 }
 
 /// Deliver the event `name`, whose encoded payload is `event`, to the Worker's
-/// method of that name, blocking for up to `timeout_ms`.
+/// handler of that name, blocking for up to `timeout_ms`.
 ///
 /// Returns true with the encoded reply in `reply`, or false with a message in
 /// `error`.

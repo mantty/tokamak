@@ -247,7 +247,7 @@ class TokamakNotificationsPlugin(
         intent.removeExtra(OPENED_EXTRA)
         intent.removeExtra(FCM_MESSAGE_ID_EXTRA)
         intent.removeExtra(GROUP_EXTRA)
-        deliver(this.opened, "_onNotificationOpened", opened) {}
+        deliver(this.opened, "onOpened", opened) {}
     }
 
     /** Delivers an action without `foreground`, or a dismissed notification. Call it on the main thread. */
@@ -256,8 +256,8 @@ class TokamakNotificationsPlugin(
         val opened = intent.getStringExtra(OPENED_EXTRA)?.let { opened(intent, it) }
         dismissed?.let { removeSummaryIfEmpty(intent, it.id) }
         when {
-            dismissed != null -> deliver(this.dismissed, "_onNotificationDismissed", dismissed, finish)
-            opened != null -> deliver(this.opened, "_onNotificationOpened", opened, finish)
+            dismissed != null -> deliver(this.dismissed, "onDismissed", dismissed, finish)
+            opened != null -> deliver(this.opened, "onOpened", opened, finish)
             else -> finish()
         }
     }
@@ -293,7 +293,7 @@ class TokamakNotificationsPlugin(
     }
 
     /**
-     * Delivers an FCM message to the page, and a data-only message to the Worker's `_onPush`,
+     * Delivers an FCM message to the page, and a data-only message to the Worker's `_notifications.onPush`,
      * showing the notification it replies with. FCM calls this off the main thread.
      */
     internal fun onMessageReceived(received: Message, notification: NotificationContent?) {
@@ -303,12 +303,12 @@ class TokamakNotificationsPlugin(
             presentBeforeReturning(notification, Source.Push, deadline)
             return
         }
-        runCatching { host.emit("_onPush", received, NotificationContent::class, PUSH_DEADLINE_MILLIS) }
+        runCatching { host.emit("onPush", received, NotificationContent::class, PUSH_DEADLINE_MILLIS) }
             .onSuccess { showReply(it, deadline) }
             .onFailure { Log.w("tokamak", "push notification failed: ${it.message}") }
     }
 
-    /** Shows the notification `_onPush` replies with, if any, with the images that load by [deadline]. */
+    /** Shows the notification `_notifications.onPush` replies with, if any, with the images that load by [deadline]. */
     private fun showReply(reply: NotificationContent?, deadline: Long) {
         if (reply == null) return
         runCatching {

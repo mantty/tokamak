@@ -254,8 +254,9 @@ ln -s "$pack/frameworks/TokamakRuntime.xcframework" "$app_package/TokamakRuntime
 # A plugin's class is a Swift type named with its module, which the package's
 # library product of the module's name provides.
 swift_type='^([A-Za-z_][A-Za-z0-9_]*)(\.[A-Za-z_][A-Za-z0-9_]*)+$'
-# A plugin's compilation conditions start with its id in capitals, such as
-# LOCATION_ for location, as each one applies to every module the app compiles.
+# A plugin's compilation conditions start with its id as words in capitals,
+# such as SECURE_STORAGE_ for secureStorage, as each one applies to every
+# module the app compiles.
 compilation_conditions=
 dependencies="    .package(path: \"$plugin_api\"),"$'\n'
 products="        .product(name: \"TokamakPlugin\", package: \"TokamakPlugin\"),"$'\n'
@@ -273,7 +274,7 @@ for plugin in "$input/plugins"/*/; do
     echo "plugin '$plugin_id' has no Swift package, apple/Package.swift" >&2
     exit 1
   fi
-  condition_prefix=$(printf '%s' "$plugin_id" | tr 'a-z-' 'A-Z_')_
+  condition_prefix=$(printf '%s' "$plugin_id" | sed 's/[A-Z]/_&/g' | tr 'a-z' 'A-Z')_
   for condition_file in "$plugin/compilation-conditions"/*; do
     condition=$(<"$condition_file")
     if [[ ! "$condition" =~ ^${condition_prefix}[A-Za-z0-9_]+$ ]]; then

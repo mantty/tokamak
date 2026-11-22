@@ -38,14 +38,14 @@ internal class LocationEvents(private val host: TokamakHost) {
     fun transition(id: String, entered: Boolean, finish: () -> Unit) {
         val transition = RegionTransition(id, if (entered) Transition.Enter else Transition.Exit, System.currentTimeMillis())
         transitions.send(transition)
-        send("_onRegionTransition", transition, finish)
+        send("onRegionTransition", transition, finish)
     }
 
     /** Reports a background service's failure, then calls [finish]. */
     fun fail(error: TokamakPluginError, finish: () -> Unit = {}) {
         val event = LocationErrorEvent(error.errorName, error.message.orEmpty())
         errors.send(event)
-        send("_onLocationError", event, finish)
+        send("onError", event, finish)
     }
 
     /** Sends the waiting positions as one update, then the positions that arrive meanwhile as the next. */
@@ -57,7 +57,7 @@ internal class LocationEvents(private val host: TokamakHost) {
         positions.clear()
         finishes.clear()
         updates.send(update)
-        send("_onLocationUpdate", update) {
+        send("onUpdate", update) {
             delivered.forEach { it() }
             sendUpdate()
         }

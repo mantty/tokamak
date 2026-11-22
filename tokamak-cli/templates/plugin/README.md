@@ -1,4 +1,4 @@
-# tokamak-plugin-{{id}}
+# {{name}}
 
 Install this package in your app with npm, pnpm, or Yarn. During development,
 use a workspace dependency or `npm install ../{{id}}`; publishing after each
@@ -8,7 +8,7 @@ In `src/tokamak.ts`:
 
 ```ts
 import { TokamakEntrypoint } from "@tokamakdev/tok";
-import { {{factory}} } from "tokamak-plugin-{{id}}";
+import { {{factory}} } from "{{name}}";
 
 export default class Native extends TokamakEntrypoint {
   example() {
@@ -20,7 +20,7 @@ export default class Native extends TokamakEntrypoint {
 In page code:
 
 ```ts
-import api from "tokamak-plugin-{{id}}/client";
+import api from "{{name}}/client";
 console.log(await api.{{operation}});
 ```
 
@@ -40,8 +40,9 @@ The root SDK runs only with a Tokamak context. Everything else is optional:
 - `apple/`, a Swift package, and `android/`, an Android library module, hold
   native code and declare its dependencies. It builds for the manifest's
   `platforms`. `Exports.swift` or `Exports.kt` lists the methods the Worker
-  calls and the events native code emits. Each event calls the method of the
-  Tokamak worker's class it names, such as `_onEchoed`.
+  calls and the events native code emits. Each event calls the handler of its
+  name in the Tokamak worker's `_{{id}}` property, such as `onEchoed`, which
+  `{{handlers}}` types.
 - `src/apple.generated.ts` and `src/android.generated.ts` are each family's
   TypeScript API, which `npm run generate:apple` or `npm run generate:android`
   writes from the registration file, with the family's native dispatch.

@@ -30,7 +30,9 @@ use tokamak_cli::{
     Platform, PlatformPackManifest, SHARED_PLATFORM_KEYS, VariableKind, is_valid_key,
 };
 
-use super::plugin_settings::{Kind, Setting, option_name, option_namespaces, option_text};
+use super::plugin_settings::{
+    Kind, Setting, hyphenated, option_name, option_namespaces, option_text,
+};
 use super::plugins::Plugin;
 use super::splash;
 use super::tokamak_config::{TokamakConfig, app_name_problem, valid};
@@ -483,10 +485,11 @@ fn resolve_setting(
     if let Some(value) = option {
         return Ok(in_current_dir(value.clone()));
     }
-    let platform_namespace = format!("{id}-{namespace}");
+    let words = hyphenated(id);
+    let platform_namespace = format!("{words}-{namespace}");
     for name in [
         environment_name(Some(&platform_namespace), key),
-        environment_name(Some(id), key),
+        environment_name(Some(&words), key),
     ] {
         if let Some(text) = (sources.environment)(&name)? {
             let value = setting
@@ -600,7 +603,7 @@ pub(crate) fn plugin_arguments(plugins: &[Plugin]) -> Vec<Arg> {
             let help = format!(
                 "{}{default} [`{}`, `{id}.{key}`]",
                 setting.description,
-                environment_name(Some(id), key)
+                environment_name(Some(&hyphenated(id)), key)
             );
             option_namespaces().map(move |namespace| {
                 let argument = setting.kind.argument(option_name(id, namespace, key));

@@ -5,42 +5,28 @@ import type { NativeConnection } from "../src/context.js";
 import { capabilitiesModule, createNativeContext, nativeConnection, TokamakEntrypoint, type StartEvent } from "../src/worker.js";
 import { connectNative } from "../src/testing.js";
 
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace -- the test's handler merges into Tokamak.Handlers.
-  namespace Tokamak {
-    interface Handlers {
-      _onProbed?(event: { id: string }): string | undefined | Promise<string | undefined>;
-    }
-  }
-}
-
-void test("a worker's handlers are typed as Tokamak.Handlers declares them", () => {
+void test("a worker's lifecycle handlers are arrow functions typed as Tokamak.Handlers declares them", () => {
   class Native extends TokamakEntrypoint<{ label: string }> {
-    _onStart({ foreground }: StartEvent) {
-      this.ctx.waitUntil(Promise.resolve(foreground));
-    }
-    _onProbed(event: { id: string }) {
-      return `${this.env.label}:${event.id}`;
-    }
-    _own(count: number) {
-      return count + 1;
-    }
+    readonly started: string[] = [];
+    _onStart = ({ foreground }: StartEvent) => {
+      this.started.push(`${this.env.label}:${foreground ? "foreground" : "background"}`);
+    };
+    _own = (count: number) => count + 1;
   }
   const worker = new Native(createNativeContext({ waitUntil: () => undefined }), { label: "device" });
-  assert.equal(worker._onProbed({ id: "home" }), "device:home");
+  worker._onStart({ foreground: true });
+  assert.deepEqual(worker.started, ["device:foreground"]);
   assert.equal(worker._own(1), 2);
 
   class Mistyped extends TokamakEntrypoint {
     // @ts-expect-error -- `_onStart` receives `{ foreground: boolean }`.
-    _onStart(event: { foreground: string }) {
-      return void event;
-    }
-    // @ts-expect-error -- `_onProbed` replies with a string.
-    _onProbed() {
-      return 1;
+    _onStart = (event: { foreground: string }) => void event;
+    // @ts-expect-error -- a handler is an arrow function, not a method.
+    _onResume() {
+      return undefined;
     }
   }
-  assert.equal(new Mistyped(createNativeContext({ waitUntil: () => undefined }), {})._onProbed(), 1);
+  assert.ok(Mistyped.prototype instanceof TokamakEntrypoint);
 });
 
 void test("a native context uses the connection the host attached to the execution context", async () => {

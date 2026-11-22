@@ -151,7 +151,7 @@ final class TokamakApp: TokamakHostApp {
   }
 
   /// Delivers the event `name`, whose encoded data is `payload`, to the
-  /// Worker's method of that name, and calls `completion` on the main thread
+  /// Worker's handler of that name, and calls `completion` on the main thread
   /// with its encoded reply, which is empty when it returns nothing. Fails
   /// unless it returns within `timeout`, which includes runtime startup. Call
   /// it on the main thread.
@@ -456,7 +456,7 @@ final class RuntimeHandle {
   }
 
   /// Delivers the event `name`, whose encoded data is `payload`, to the
-  /// Worker's method of that name, blocking until it returns or `timeout`
+  /// Worker's handler of that name, blocking until it returns or `timeout`
   /// passes, and returns its encoded reply, which is empty when it returns
   /// nothing.
   func emit(_ name: String, payload: Data, timeout: TimeInterval) throws -> Data {

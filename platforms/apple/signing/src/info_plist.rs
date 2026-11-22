@@ -618,12 +618,12 @@ mod tests {
         let input = input(root, "ios")?;
         plugin_plist(
             &input,
-            "local-authentication",
+            "localAuthentication",
             &[("NSFaceIDUsageDescription", string("One"))],
         )?;
         plugin_plist(
             &input,
-            "secure-storage",
+            "secureStorage",
             &[("NSFaceIDUsageDescription", string("Two"))],
         )?;
         Ok(input)
@@ -687,7 +687,7 @@ mod tests {
     fn plugins_share_an_identical_value() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "ios")?;
-        for plugin in ["local-authentication", "secure-storage"] {
+        for plugin in ["localAuthentication", "secureStorage"] {
             plugin_plist(
                 &input,
                 plugin,
@@ -789,7 +789,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "plugin 'local-authentication' and plugin 'secure-storage' set different values \
+            "plugin 'localAuthentication' and plugin 'secureStorage' set different values \
              for Info.plist key 'NSFaceIDUsageDescription'; set it in the app's ios.plist file"
         );
         Ok(())
@@ -834,12 +834,12 @@ mod tests {
         let input = input(temporary.path(), "macos")?;
         plugin_plist(
             &input,
-            "local-authentication",
+            "localAuthentication",
             &[("NSFaceIDUsageDescription", string("One"))],
         )?;
         plugin_plist(
             &input,
-            "secure-storage",
+            "secureStorage",
             &[("NSFaceIDUsageDescription", string("Two"))],
         )?;
         let user = user_plist(

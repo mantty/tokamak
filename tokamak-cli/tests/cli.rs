@@ -27,12 +27,12 @@ fn scaffolds_plugin_names_that_are_javascript_keywords() -> TestResult {
 fn scaffolds_publishable_plugins_without_overwriting_existing_projects() -> TestResult {
     let root = tempfile::tempdir()?;
     for (name, platforms, families) in [
-        ("page-tools", None, &[][..]),
-        ("apple-tools", Some("ios,macos"), &["apple"][..]),
-        ("android-tools", Some("android"), &["android"][..]),
+        ("PageTools", None, &[][..]),
+        ("AppleTools", Some("ios,macos"), &["apple"][..]),
+        ("AndroidTools", Some("android"), &["android"][..]),
     ] {
         // Avoid reserved CLI option prefixes in the plugin's ID.
-        let path = root.path().join(format!("example-{name}"));
+        let path = root.path().join(format!("example{name}"));
         Command::cargo_bin("tok")?
             .args(["plugin", "new"])
             .arg(&path)
@@ -99,7 +99,7 @@ fn assert_plugin_modules_exist(path: &std::path::Path, manifest: &serde_json::Va
 #[test]
 fn scaffolds_each_family_for_the_named_platforms() -> TestResult {
     let root = tempfile::tempdir()?;
-    let path = root.path().join("phone-tools");
+    let path = root.path().join("phoneTools");
     Command::cargo_bin("tok")?
         .args(["plugin", "new", "--platforms", "ios,android"])
         .arg(&path)
@@ -110,13 +110,15 @@ fn scaffolds_each_family_for_the_named_platforms() -> TestResult {
     let package: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path.join("package.json"))?)?;
     assert_eq!(declared_platforms(&manifest)?, "android,ios");
+    assert_eq!(manifest["id"], "phoneTools");
+    assert_eq!(package["name"], "tokamak-plugin-phone-tools");
     for family in ["apple", "android"] {
         assert_native_package(&path, &package, &manifest, family)?;
     }
     for family in ["apple", "android"] {
         assert!(
             std::fs::read_to_string(path.join(format!("src/{family}.generated.ts")))?
-                .contains("_onEchoed?(event: Echo): void | Promise<void>;")
+                .contains("onEchoed?(event: Echo): void | Promise<void>;")
         );
     }
     assert!(
@@ -129,7 +131,7 @@ fn scaffolds_each_family_for_the_named_platforms() -> TestResult {
 #[test]
 fn rejects_platforms_without_plugin_native_code_before_creating_files() -> TestResult {
     let root = tempfile::tempdir()?;
-    let path = root.path().join("desk-tools");
+    let path = root.path().join("deskTools");
     for (platforms, reason) in [
         ("windows", "android, not windows"),
         ("ios-simulator", "android, not ios-simulator"),
@@ -283,11 +285,11 @@ fn stand_in_pack(
     Ok(pack)
 }
 
-/// A new Apple plugin, `device-tools`, in a temporary directory.
+/// A new Apple plugin, `deviceTools`, in a temporary directory.
 #[cfg(unix)]
 fn scaffolded_plugin() -> TestResult<(tempfile::TempDir, std::path::PathBuf)> {
     let root = tempfile::tempdir()?;
-    let plugin = root.path().join("device-tools");
+    let plugin = root.path().join("deviceTools");
     Command::cargo_bin("tok")?
         .args(["plugin", "new", "--platforms", "ios,macos"])
         .arg(&plugin)
@@ -445,10 +447,10 @@ fn rejects_invalid_plugin_names_before_creating_files() -> TestResult {
     let root = tempfile::tempdir()?;
     for name in [
         "BadName",
-        "double--hyphen",
+        "device-tools",
         "tokamak",
-        "tokamak-device",
-        "ios-helper",
+        "tokamakDevice",
+        "iosHelper",
     ] {
         let path = root.path().join(name);
         Command::cargo_bin("tok")?

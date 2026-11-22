@@ -476,5 +476,18 @@ export interface OpenSettingsEvent {
   readonly notification?: string;
 }
 
+/**
+ * The handlers of the plugin's events, which the Tokamak worker's class holds as `_notifications`.
+ * Each is an arrow function, whose `this` is the worker.
+ */
+export interface NotificationsHandlers {
+  /** Receives each data-only push message, and shows the notification it returns. */
+  onPush?(message: Message): NotificationContent | undefined | Promise<NotificationContent | undefined>;
+  /** Receives each notification the user opens, including one that opens the app. */
+  onOpened?(opened: OpenedNotification): void | Promise<void>;
+  /** Receives each notification the user dismisses: on Apple platforms, of categories with `customDismissAction`. */
+  onDismissed?(dismissed: DismissedNotification): void | Promise<void>;
+}
+
 export type Listener<T> = (value: T) => void;
 export type ErrorListener = (error: DOMException) => void;

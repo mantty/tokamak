@@ -29,21 +29,20 @@ await location.addRegion({ id: "home", latitude: 51.5, longitude: -0.12, radius:
 
 ```ts
 // src/tokamak.ts
-import { location, type LocationUpdate, type RegionTransition } from "@tokamakdev/plugin-location";
+import { location, type LocationHandlers } from "@tokamakdev/plugin-location";
 import { TokamakEntrypoint } from "@tokamakdev/tok";
 
 export default class Native extends TokamakEntrypoint {
-  async _beforeStart() {
+  _beforeStart = async () => {
     await location(this.ctx).startSignificantChanges();
-  }
+  };
 
-  async _onLocationUpdate({ positions }: LocationUpdate) {
-    await fetch("https://example.com/whereabouts", { method: "POST", body: JSON.stringify(positions) });
-  }
-
-  _onRegionTransition({ id, transition }: RegionTransition) {
-    console.log(id, transition);
-  }
+  _location: LocationHandlers = {
+    onUpdate: async ({ positions }) => {
+      await fetch("https://example.com/whereabouts", { method: "POST", body: JSON.stringify(positions) });
+    },
+    onRegionTransition: ({ id, transition }) => console.log(id, transition),
+  };
 }
 ```
 
@@ -133,14 +132,16 @@ with a declaration and a video.
 ## Worker events
 
 The Tokamak worker's [handlers](../../README.md#events) run whether or not a
-page is loaded, including when the system launches the app for an event:
+page is loaded, including when the system launches the app for an event. The
+plugin's are in the class's `_location` property, which `LocationHandlers`
+types:
 
 | Handler | Receives |
 |---|---|
-| `_onLocationUpdate` | A `LocationUpdate`: `{ positions, stationary? }` from updates and significant changes. |
-| `_onRegionTransition` | A `RegionTransition`: `{ id, transition, timestamp }`, where `transition` is `"enter"` or `"exit"`. |
-| `_onVisit` | Apple only. A `Visit`: `{ latitude, longitude, accuracy, arrival, departure }`, times in milliseconds, absent when unknown. |
-| `_onLocationError` | A `LocationErrorEvent`: `{ name, message, id? }` when a background service fails, with the region's `id` when it concerns one. |
+| `onUpdate` | A `LocationUpdate`: `{ positions, stationary? }` from updates and significant changes. |
+| `onRegionTransition` | A `RegionTransition`: `{ id, transition, timestamp }`, where `transition` is `"enter"` or `"exit"`. |
+| `onVisit` | Apple only. A `Visit`: `{ latitude, longitude, accuracy, arrival, departure }`, times in milliseconds, absent when unknown. |
+| `onError` | A `LocationErrorEvent`: `{ name, message, id? }` when a background service fails, with the region's `id` when it concerns one. |
 
 In Doze, the idle state of an unplugged Android device left still with its
 screen off, Android starts the app for updates and region transitions alike,
@@ -167,14 +168,14 @@ Significant changes and visits keep the app aware of where the device is over
 days, with little power and no indicator.
 
 - `startSignificantChanges()` delivers moves of 500 metres or more, at most
-  every 5 minutes, to `_onLocationUpdate`, located from cellular and Wi-Fi
+  every 5 minutes, to `_location.onUpdate`, located from cellular and Wi-Fi
   rather than GPS, until `stopSignificantChanges()`. Apple platforms use the
   significant-change service, and reject with `NotSupportedError` where the
   device cannot monitor significant changes. Android uses a low-power request
   with the same thresholds, which it limits to a few an hour off screen, and
   rejects with `NotAllowedError` without in-use permission.
 - `startVisits()`, Apple only, delivers arrivals at and departures from the
-  places the user stays to `_onVisit`, until `stopVisits()`. It uses the least
+  places the user stays to `_location.onVisit`, until `stopVisits()`. It uses the least
   power of all.
 
 Call `startSignificantChanges()` at each launch for as long as the app wants
@@ -211,7 +212,7 @@ plugin keeps them across launches and restarts.
   build setting, whose background activity session shows the pill.
   `startUpdates` rejects with `NeedsUIError` off screen on iOS.
 - From iOS 18, failures such as denied permission or lost location reach
-  `_onLocationError` once each.
+  `_location.onError` once each.
 - `getCurrentPosition` and `watchPosition` can change the coordinates updates
   deliver while they run.
 
@@ -240,7 +241,7 @@ app's process for each update.
 `addRegion({ id, latitude, longitude, radius, onEntry, onExit })` monitors a
 circular region of `radius` metres, replacing one with the same `id`, until
 `removeRegion(id)`. `onEntry` and `onExit` are true by default. Entries and
-exits reach `_onRegionTransition`, including when the system launches the app
+exits reach `_location.onRegionTransition`, including when the system launches the app
 for one. A region starts outside, so a device already inside reports an
 entry. `getRegions()` resolves with the regions, each with its `state` on
 Apple platforms: `"inside"`, `"outside"` or `"unknown"`.
@@ -265,7 +266,7 @@ including the event-stream methods. Native support is provided on Apple and Andr
 
 ## Errors
 
-Rejections and `_onLocationError` events are `DOMException` names:
+Rejections and `_location.onError` events are `DOMException` names:
 `NotAllowedError` (no permission, or none for the background),
 `NotReadableError` (location unavailable, or services off), `NeedsUIError` (a
 prompt or a start off screen), `NotSupportedError`, `QuotaExceededError`,

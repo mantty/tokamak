@@ -63,9 +63,9 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
     companion object : TokamakCodec {
         override fun eventPayload(name: String, event: Any): ByteArray =
             when (name) {
-                "_onLocationUpdate" -> encodeEvent(name, event, LocationUpdate::class) { json(it) }
-                "_onRegionTransition" -> encodeEvent(name, event, RegionTransition::class) { json(it) }
-                "_onLocationError" -> encodeEvent(name, event, LocationErrorEvent::class) { json(it) }
+                "onUpdate" -> encodeEvent(name, event, LocationUpdate::class) { json(it) }
+                "onRegionTransition" -> encodeEvent(name, event, RegionTransition::class) { json(it) }
+                "onError" -> encodeEvent(name, event, LocationErrorEvent::class) { json(it) }
                 else -> super.eventPayload(name, event)
             }
 

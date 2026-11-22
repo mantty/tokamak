@@ -57,7 +57,7 @@ export function secureStorage(ctx: TokamakContext) {
   return {
     /** Whether each operation is implemented where the app runs, without calling it. Permission is not reported. */
     get capabilities(): Readonly<Record<string, boolean>> {
-      return capabilitiesOf(ctx, "secure-storage");
+      return capabilitiesOf(ctx, "secureStorage");
     },
 
     /** Stores a new value; rejects with `DuplicateItemError` when `name` has one. */

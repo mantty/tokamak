@@ -68,15 +68,15 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
     companion object : TokamakCodec {
         override fun eventPayload(name: String, event: Any): ByteArray =
             when (name) {
-                "_onPush" -> encodeEvent(name, event, Message::class) { json(it) }
-                "_onNotificationOpened" -> encodeEvent(name, event, OpenedNotification::class) { json(it) }
-                "_onNotificationDismissed" -> encodeEvent(name, event, DismissedNotification::class) { json(it) }
+                "onPush" -> encodeEvent(name, event, Message::class) { json(it) }
+                "onOpened" -> encodeEvent(name, event, OpenedNotification::class) { json(it) }
+                "onDismissed" -> encodeEvent(name, event, DismissedNotification::class) { json(it) }
                 else -> super.eventPayload(name, event)
             }
 
         override fun eventReply(name: String, reply: TokamakValue): Any =
             when (name) {
-                "_onPush" -> reply.asNotificationContent()
+                "onPush" -> reply.asNotificationContent()
                 else -> super.eventReply(name, reply)
             }
 

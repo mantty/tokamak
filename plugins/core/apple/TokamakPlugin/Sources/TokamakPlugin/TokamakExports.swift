@@ -40,8 +40,8 @@ public enum TokamakOverflow {
 /// replies are `Decodable`, method results and events `Encodable`, and options
 /// literal values.
 public struct TokamakExporter<Plugin> {
-  /// Lists the event `name`: the Worker's method `name`, which starts with
-  /// `_`, receives an `E`.
+  /// Lists the event `name`: the Worker's handler `name`, in its property
+  /// for the plugin, receives an `E`.
   public mutating func event<E: Encodable>(_ name: String, _ type: E.Type, doc: String = "") {}
 
   /// Lists the event `name`, whose handler receives an `E` and may reply with an `R`.

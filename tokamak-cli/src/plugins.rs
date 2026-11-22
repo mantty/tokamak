@@ -17,14 +17,15 @@ use tokamak_cli::{
 };
 
 use super::paths::{command_path, reset_path};
-use super::plugin_settings::{Setting, option_name, option_namespaces};
+use super::plugin_settings::{Setting, hyphenated, option_name, option_namespaces};
 
 const MANIFEST: &str = "tokamak-plugin.json";
 
 /// Words a plugin ID may not be or start with: the platform namespaces, the
 /// top-level keys of the `tokamak()` options, and the first words of tok's own
 /// options and environment variables, since a plugin's settings are
-/// `--<id>-<key>`, `TOKAMAK_<ID>_<KEY>` and `<id>.<key>`.
+/// `--<id>-<key>` and `TOKAMAK_<ID>_<KEY>`, with the ID as hyphenated or
+/// underscored words, and `<id>.<key>`.
 pub(crate) const RESERVED_WORDS: &[&str] = &[
     "tokamak",
     "android",
@@ -104,7 +105,8 @@ pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
         }
         let plugin = load(&root, &manifest)
             .with_context(|| format!("invalid plugin package {dependency}"))?;
-        if !ids.insert(plugin.id.clone()) {
+        // IDs name directories, which some file systems compare without case.
+        if !ids.insert(plugin.id.to_ascii_lowercase()) {
             bail!("duplicate tokamak plugin id '{}'", plugin.id);
         }
         pending.extend(
@@ -126,7 +128,7 @@ const PLUGIN_DEPENDENCIES: [&str; 2] = ["dependencies", "peerDependencies"];
 
 /// Fails when a plugin's setting has an option name, and so an environment
 /// variable name, that starts with another plugin's longer ID: `secure`'s
-/// `storage-x` and `--secure-storage-x`, which goes to `secure-storage`.
+/// `storage-x` and `--secure-storage-x`, which goes to `secureStorage`.
 fn reject_shared_option_names(plugins: &[Plugin]) -> Result<()> {
     let namespaces = option_namespaces().collect::<Vec<_>>();
     let namespaces = namespaces.as_slice();
@@ -139,7 +141,8 @@ fn reject_shared_option_names(plugins: &[Plugin]) -> Result<()> {
     });
     for (plugin, key, name) in names {
         let longer = |other: &&Plugin| {
-            other.id.len() > plugin.id.len() && name.starts_with(&format!("{}-", other.id))
+            other.id.len() > plugin.id.len()
+                && name.starts_with(&format!("{}-", hyphenated(&other.id)))
         };
         if let Some(other) = plugins.iter().find(longer) {
             bail!(
@@ -450,7 +453,7 @@ fn load(root: &Path, path: &Path) -> Result<Plugin> {
     }
     if !valid_plugin_id(&plugin.id) {
         bail!(
-            "plugin id '{}' must start with a lowercase letter and contain only lowercase letters, digits, and single hyphens",
+            "plugin id '{}' must start with a lowercase letter and contain only letters and digits, such as deviceTools",
             plugin.id
         );
     }
@@ -494,16 +497,23 @@ fn load(root: &Path, path: &Path) -> Result<Plugin> {
     Ok(plugin)
 }
 
+/// Whether `id` is a camel-case identifier, which names the plugin's handlers
+/// in the Tokamak worker's class.
 pub(crate) fn valid_plugin_id(id: &str) -> bool {
-    is_valid_key(id) && id.len() <= 63
+    id.starts_with(|character: char| character.is_ascii_lowercase())
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+        && id.len() <= 63
 }
 
 /// The reserved word `id` is or starts with.
 pub(crate) fn reserved_prefix(id: &str) -> Option<&'static str> {
+    let id = hyphenated(id);
     RESERVED_WORDS
         .iter()
         .copied()
-        .find(|word| starts_with_word(id, word))
+        .find(|word| starts_with_word(&id, word))
 }
 
 fn starts_with_word(name: &str, word: &str) -> bool {
@@ -904,16 +914,16 @@ mod tests {
                 "plugin id 'build' must not start with 'build'",
             ),
             (
-                "android-auto",
+                "androidAuto",
                 "x",
                 true,
-                "plugin id 'android-auto' must not start with 'android'",
+                "plugin id 'androidAuto' must not start with 'android'",
             ),
             (
-                "skip-project",
+                "skipProject",
                 "build",
                 true,
-                "plugin id 'skip-project' must not start with 'skip'",
+                "plugin id 'skipProject' must not start with 'skip'",
             ),
             (
                 "alerts",
@@ -961,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_settings_whose_options_belong_to_a_plugin_with_a_longer_id() -> TestResult {
+    fn rejects_plugins_whose_ids_or_options_clash() -> TestResult {
         let setting = serde_json::json!({ "kind": "string", "description": "X" });
         for (short, long, message) in [
             (
@@ -971,8 +981,8 @@ mod tests {
                     "settings": { "storage-x": setting },
                     "build": "build.mjs",
                 }),
-                serde_json::json!({ "schemaVersion": 1, "id": "secure-storage" }),
-                "plugin 'secure' setting storage-x takes the option --secure-storage-x, which belongs to plugin 'secure-storage'",
+                serde_json::json!({ "schemaVersion": 1, "id": "secureStorage" }),
+                "plugin 'secure' setting storage-x takes the option --secure-storage-x, which belongs to plugin 'secureStorage'",
             ),
             (
                 serde_json::json!({
@@ -983,11 +993,16 @@ mod tests {
                 }),
                 serde_json::json!({
                     "schemaVersion": 1,
-                    "id": "alerts-ios",
+                    "id": "alertsIos",
                     "settings": { "sound": setting },
                     "build": "build.mjs",
                 }),
-                "plugin 'alerts' setting sound takes the option --alerts-ios-sound, which belongs to plugin 'alerts-ios'",
+                "plugin 'alerts' setting sound takes the option --alerts-ios-sound, which belongs to plugin 'alertsIos'",
+            ),
+            (
+                serde_json::json!({ "schemaVersion": 1, "id": "deviceTools" }),
+                serde_json::json!({ "schemaVersion": 1, "id": "devicetools" }),
+                "duplicate tokamak plugin id 'deviceTools'",
             ),
         ] {
             let project = tempfile::tempdir()?;
@@ -1164,10 +1179,11 @@ mod tests {
     fn validates_protocol_identifiers() {
         for (id, valid) in [
             ("location", true),
-            ("photo-library2", true),
+            ("photoLibrary2", true),
             ("PhotoLibrary", false),
             ("2photo", false),
-            ("photo--library", false),
+            ("photo-library", false),
+            ("photo_library", false),
             ("../photo", false),
         ] {
             assert_eq!(valid_plugin_id(id), valid, "{id}");

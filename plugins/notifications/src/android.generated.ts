@@ -334,13 +334,17 @@ export function android(ctx: TokamakContext, signal?: AbortSignal): Android {
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- handlers are declared by merging into Tokamak.Handlers.
   namespace Tokamak {
-    interface Handlers {
+    /** The handlers of the notifications plugin's events, which the Tokamak worker's class holds as `_notifications`. */
+    interface NotificationsHandlers {
       /** Receives each data-only push message, and shows the notification it returns. */
-      _onPush?(event: Message): NotificationContent | undefined | Promise<NotificationContent | undefined>;
+      onPush?(event: Message): NotificationContent | undefined | Promise<NotificationContent | undefined>;
       /** Receives each notification the user opens, including one that opens the app. */
-      _onNotificationOpened?(event: OpenedNotification): void | Promise<void>;
+      onOpened?(event: OpenedNotification): void | Promise<void>;
       /** Receives each notification the user dismisses. */
-      _onNotificationDismissed?(event: DismissedNotification): void | Promise<void>;
+      onDismissed?(event: DismissedNotification): void | Promise<void>;
+    }
+    interface Handlers {
+      _notifications?: NotificationsHandlers;
     }
   }
 }

@@ -119,11 +119,11 @@ printf '{"tokamakVersion": "%s", "target": "android-arm64", "variables": {}, "pl
   > "$pack/platform-pack.json"
 # A new plugin starts with the files the pack generates, as do first-party ones, and its
 # TypeScript composes each family's.
-"$root/target/debug/tok" plugin new "$temporary/device-tools" --platforms ios,macos,android > /dev/null
-mkdir -p "$temporary/device-tools/node_modules/@tokamakdev"
-ln -s "$root/plugins/core" "$temporary/device-tools/node_modules/@tokamakdev/plugin"
-"$root/plugins/node_modules/.bin/tsc" --project "$temporary/device-tools"
-for plugin in "$temporary/device-tools" "$root"/plugins/*/; do
+"$root/target/debug/tok" plugin new "$temporary/deviceTools" --platforms ios,macos,android > /dev/null
+mkdir -p "$temporary/deviceTools/node_modules/@tokamakdev"
+ln -s "$root/plugins/core" "$temporary/deviceTools/node_modules/@tokamakdev/plugin"
+"$root/plugins/node_modules/.bin/tsc" --project "$temporary/deviceTools"
+for plugin in "$temporary/deviceTools" "$root"/plugins/*/; do
   [[ -f "$plugin/tokamak-plugin.json" && -d "$plugin/android" ]] || continue
   checked=$(cd "$plugin" && TOKAMAK_PLATFORM_PACK_PATH=$packs "$root/target/debug/tok" plugin check 2>&1) ||
     { echo "$checked" >&2; exit 1; }

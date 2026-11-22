@@ -55,17 +55,17 @@ final class TokamakLocationEvents {
     positions = []
     stationary = nil
     updating = true
-    send(update, to: updates, as: "_onLocationUpdate") { self.sendUpdate() }
+    send(update, to: updates, as: "onUpdate") { self.sendUpdate() }
   }
 
   func transition(_ id: String, entered: Bool, at date: Date) {
     send(
       TokamakLocationPlugin.RegionTransition(id: id, entered: entered, at: date), to: transitions,
-      as: "_onRegionTransition")
+      as: "onRegionTransition")
   }
 
   func visit(_ visit: CLVisit) {
-    send(TokamakLocationPlugin.Visit(visit), to: visits, as: "_onVisit")
+    send(TokamakLocationPlugin.Visit(visit), to: visits, as: "onVisit")
   }
 
   /// Reports each of `problems` that updates, or the region `id`, did not
@@ -97,7 +97,7 @@ final class TokamakLocationEvents {
   func fail(_ error: TokamakPluginError, region id: String? = nil) {
     send(
       TokamakLocationPlugin.LocationErrorEvent(name: error.name, message: error.message, id: id),
-      to: errors, as: "_onLocationError")
+      to: errors, as: "onError")
   }
 
   /// Delivers `event` to the page's `listeners` and the Worker's method

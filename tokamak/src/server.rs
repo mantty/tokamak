@@ -160,22 +160,24 @@ impl Runtime {
         self.events.start(foreground);
     }
 
-    /// Deliver an event to the Tokamak worker's method `name`, with the
-    /// event's encoded data, and return the method's encoded reply, which is
-    /// empty when it returns nothing.
+    /// Deliver an event to the Tokamak worker's handler `name`, with the
+    /// event's encoded data, and return the handler's encoded reply, which is
+    /// empty when it returns nothing. A lifecycle handler is a member of the
+    /// worker's class, such as `_onResume`; a plugin's is `<plugin>.<event>`,
+    /// the function `<event>` in the class's `_<plugin>` property.
     ///
-    /// Blocks until the method and its `waitUntil` promises settle, or
+    /// Blocks until the handler and its `waitUntil` promises settle, or
     /// `timeout` passes. Events wait for `_onStart`, apart from `_beforeStart`,
     /// which a shell emits inside the platform's launch. `_onResume` and
     /// `_onSuspend` are delivered one at a time, so a shell emits them from
     /// one thread to keep their order, each after [`Runtime::set_foreground`]
-    /// reports a change. No Worker runs for a method the app's build did not
+    /// reports a change. No Worker runs for a handler the app's build did not
     /// record, or in an app without a Tokamak worker.
     ///
     /// # Errors
     ///
     /// Returns an error when `name` is `_onStart`, the Worker cannot run, or
-    /// `timeout` passes before the method returns.
+    /// `timeout` passes before the handler returns.
     pub fn emit(&self, name: &str, event: &[u8], timeout: Duration) -> Result<Vec<u8>> {
         self.events
             .emit(name, event, timeout)

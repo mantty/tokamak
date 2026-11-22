@@ -119,11 +119,11 @@ the page closes its calls. Web builds expose the same app-method names, rejectin
 transport.
 
 The entrypoint receives its own bindings in `this.env` and native invocation
-context in `this.ctx`. Its default `event()` runs registered listeners; an
-override receives `{ type, data }` and can return a reply or promise. Native
-events use this handler independently of page requests. `event()` is excluded
-from the service binding's public methods. Listener callbacks receive the same
-invocation context and register follow-up work with `ctx.waitUntil()`.
+context in `this.ctx`. Native events call its handlers, independently of page
+requests: arrow functions such as `_onStart`, and a plugin's in its property,
+such as `_location.onUpdate`. Members whose names start with `_` are excluded
+from the service binding's public methods. A handler registers follow-up work
+with `this.ctx.waitUntil()`.
 
 The package installs the `tok` binary for the current machine through an
 optional dependency (`@tokamakdev/tok-darwin-arm64`, `-darwin-x64`,

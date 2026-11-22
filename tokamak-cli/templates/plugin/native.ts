@@ -2,6 +2,9 @@ import { capabilitiesOf, platformApi, type TokamakContext } from "@tokamakdev/pl
 
 {{imports}}
 
+/** The handlers of the plugin's events, which the Tokamak worker's class holds as `_{{id}}`. */
+export type {{handlers}} = Tokamak.{{handlers}};
+
 /** The {{id}} plugin's native operations. */
 export function {{factory}}(ctx: TokamakContext) {
   const native = platformApi(ctx, { {{families}} });

@@ -7,9 +7,7 @@ import { TokamakEntrypoint } from "@tokamakdev/plugin/worker";
 
 import {
   notifications as createApi,
-  type DismissedNotification,
-  type Message,
-  type NotificationContent,
+  type NotificationsHandlers,
   type OpenedNotification,
   type Subscription,
 } from "../src/index.js";
@@ -196,28 +194,24 @@ void test("native message failures reject the stream reader", async () => {
 
 void test("types the Worker's handlers with the events of both platform families", async () => {
   class Native extends TokamakEntrypoint {
-    async _onPush(message: Message): Promise<NotificationContent | undefined> {
-      await Promise.resolve();
-      return message.title === undefined ? undefined : { id: message.id, title: message.title };
-    }
-    _onNotificationOpened({ action, input, source }: OpenedNotification) {
-      return void [action, input, source];
-    }
-    _onNotificationDismissed({ id }: DismissedNotification) {
-      return void id;
-    }
+    _notifications: NotificationsHandlers = {
+      onPush: async (message) => {
+        await Promise.resolve();
+        return message.title === undefined ? undefined : { id: message.id, title: message.title };
+      },
+      onOpened: ({ action, input, source }) => void [action, input, source],
+      onDismissed: ({ id }) => void id,
+    };
   }
   class Mistyped extends TokamakEntrypoint {
-    // @ts-expect-error -- a push reply is a notification, which has an id.
-    _onPush() {
-      return { title: "No id" };
-    }
-    // @ts-expect-error -- an opened notification takes no reply.
-    _onNotificationOpened(opened: OpenedNotification) {
-      return opened.source;
-    }
+    _notifications: NotificationsHandlers = {
+      // @ts-expect-error -- a push reply is a notification, which has an id.
+      onPush: () => ({ title: "No id" }),
+      // @ts-expect-error -- an opened notification takes no reply.
+      onOpened: (opened: OpenedNotification) => opened.source,
+    };
   }
   const worker = new Native(connectNative().ctx, {});
-  assert.deepEqual(await worker._onPush({ id: "m1", data: {}, title: "Hi" }), { id: "m1", title: "Hi" });
+  assert.deepEqual(await worker._notifications.onPush?.({ id: "m1", data: {}, title: "Hi" }), { id: "m1", title: "Hi" });
   assert.ok(Mistyped.prototype instanceof TokamakEntrypoint);
 });

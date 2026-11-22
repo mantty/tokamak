@@ -50,12 +50,12 @@ test("infers calls through MAIN on a clean build and keeps native bindings separ
       }`,
     "tokamak.ts": `import { TokamakEntrypoint } from ${sdk};
       export default class Native extends TokamakEntrypoint {
-        _onExample() {
+        _onExample = () => {
           const title: Promise<{ title: string }> = this.env.MAIN.recipe(1);
           this.ctx.waitUntil(title);
           // @ts-expect-error the native worker has its own binding set
           this.env.TOKAMAK;
-        }
+        };
         recipe(id: number) { return this.env.MAIN.recipe(id); }
         label() { return this.env.LABEL; }
         // @ts-expect-error the native worker has no main-only binding

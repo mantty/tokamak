@@ -4,18 +4,10 @@ import {
   type StartEvent,
   type TokamakContext,
 } from "@tokamakdev/tok";
-import {
-  location,
-  type LocationErrorEvent,
-  type LocationUpdate,
-  type RegionTransition,
-  type Visit,
-} from "@tokamakdev/plugin-location";
+import { location, type LocationHandlers } from "@tokamakdev/plugin-location";
 import {
   notifications,
-  type DismissedNotification,
-  type Message,
-  type OpenedNotification,
+  type NotificationsHandlers,
 } from "@tokamakdev/plugin-notifications";
 
 export default class Native extends TokamakEntrypoint {
@@ -30,7 +22,7 @@ export default class Native extends TokamakEntrypoint {
 
   // Inside the platform's launch, sets up notifications and long-term location awareness:
   // significant changes everywhere, and visits on Apple platforms.
-  async _beforeStart() {
+  _beforeStart = async () => {
     await this._record("before start");
     for (const { channel, fields } of await setUpNotifications(this.ctx)) {
       await this._record(`channel ${channel} kept its ${fields.join(", ")}`);
@@ -42,11 +34,11 @@ export default class Native extends TokamakEntrypoint {
     } catch (error) {
       await this._record(`location awareness failed: ${String(error)}`);
     }
-  }
+  };
 
   // Records each start and, on screen once the user has answered the location prompt, where
   // location first places the device.
-  async _onStart({ foreground }: StartEvent) {
+  _onStart = async ({ foreground }: StartEvent) => {
     await this._record(
       foreground ? "start in the foreground" : "start in the background",
     );
@@ -65,67 +57,56 @@ export default class Native extends TokamakEntrypoint {
     } catch (error) {
       await this._record(`location failed: ${String(error)}`);
     }
-  }
+  };
 
-  _onResume() {
-    return this._record("resume");
-  }
+  _onResume = () => this._record("resume");
 
-  _onSuspend() {
-    return this._record("suspend");
-  }
+  _onSuspend = () => this._record("suspend");
 
   // The updates, region transitions, visits and failures that reach the Worker, including those
   // the system launches the app for.
-  _onLocationUpdate({ positions, stationary }: LocationUpdate) {
-    const last = positions.at(-1)?.coords;
-    const at = last
-      ? ` at ${last.latitude.toFixed(3)}, ${last.longitude.toFixed(3)}`
-      : "";
-    return this._record(
-      `location update of ${String(positions.length)}${at}${stationary ? ", stationary" : ""}`,
-    );
-  }
+  _location: LocationHandlers = {
+    onUpdate: ({ positions, stationary }) => {
+      const last = positions.at(-1)?.coords;
+      const at = last
+        ? ` at ${last.latitude.toFixed(3)}, ${last.longitude.toFixed(3)}`
+        : "";
+      return this._record(
+        `location update of ${String(positions.length)}${at}${stationary ? ", stationary" : ""}`,
+      );
+    },
+    onRegionTransition: ({ id, transition }) =>
+      this._record(`region ${id}: ${transition}`),
+    onVisit: ({ latitude, longitude, departure }) =>
+      this._record(
+        `visit at ${latitude.toFixed(3)}, ${longitude.toFixed(3)}${departure === null ? "" : ", departed"}`,
+      ),
+    onError: ({ name, message, id }) =>
+      this._record(
+        `location failure${id === undefined ? "" : ` of ${id}`}: ${name}: ${message}`,
+      ),
+  };
 
-  _onRegionTransition({ id, transition }: RegionTransition) {
-    return this._record(`region ${id}: ${transition}`);
-  }
-
-  _onVisit({ latitude, longitude, departure }: Visit) {
-    return this._record(
-      `visit at ${latitude.toFixed(3)}, ${longitude.toFixed(3)}${departure === null ? "" : ", departed"}`,
-    );
-  }
-
-  _onLocationError({ name, message, id }: LocationErrorEvent) {
-    return this._record(
-      `location failure${id === undefined ? "" : ` of ${id}`}: ${name}: ${message}`,
-    );
-  }
-
-  // Records each data-only push message, and shows a notification of its data.
-  async _onPush(message: Message) {
-    await this._record(`push message ${message.id}`);
-    return {
-      id: `push-${message.id}`,
-      title: "Push message",
-      body: JSON.stringify(message.data),
-    };
-  }
-
-  _onNotificationOpened(opened: OpenedNotification) {
-    const action = opened.action === null ? "" : ` with ${opened.action}`;
-    const input = opened.input === null ? "" : `: ${opened.input}`;
-    return this._record(
-      `opened ${opened.source} notification ${opened.id}${action}${input}`,
-    );
-  }
-
-  _onNotificationDismissed(dismissed: DismissedNotification) {
-    return this._record(
-      `dismissed ${dismissed.source} notification ${dismissed.id}`,
-    );
-  }
+  _notifications: NotificationsHandlers = {
+    // Records each data-only push message, and shows a notification of its data.
+    onPush: async (message) => {
+      await this._record(`push message ${message.id}`);
+      return {
+        id: `push-${message.id}`,
+        title: "Push message",
+        body: JSON.stringify(message.data),
+      };
+    },
+    onOpened: (opened) => {
+      const action = opened.action === null ? "" : ` with ${opened.action}`;
+      const input = opened.input === null ? "" : `: ${opened.input}`;
+      return this._record(
+        `opened ${opened.source} notification ${opened.id}${action}${input}`,
+      );
+    },
+    onDismissed: (dismissed) =>
+      this._record(`dismissed ${dismissed.source} notification ${dismissed.id}`),
+  };
 }
 
 /**

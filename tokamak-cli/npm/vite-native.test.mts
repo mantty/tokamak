@@ -36,9 +36,9 @@ function project(t: TestContext, cloudflareOptions: PluginConfig = {}) {
     import { revision } from "./revision";
     globalThis.nativeLoaded = true;
     export default class Native extends TokamakEntrypoint {
-      async _onExample(event: { foreground: boolean }) {
+      _onExample = async (event: { foreground: boolean }) => {
         return { label: this.env.LABEL, foreground: event.foreground, revision, stage: await this._stage() };
-      }
+      };
       async describe(): Promise<{ label: string; stage: string; platform: string | undefined; loadedOn: string | undefined }> {
         return { label: this.env.LABEL, stage: await this._stage(), platform: this.ctx.platform, loadedOn };
       }
@@ -194,9 +194,9 @@ test("development routes device calls and reloaded events through the native wor
   const entry = path.join(root, "src/tokamak.ts");
   fs.writeFileSync(entry, fs.readFileSync(entry, "utf8").replace(
     "async describe()",
-    `async _onAdded(event: { foreground: boolean }) {
+    `_onAdded = async (event: { foreground: boolean }) => {
       return { data: event, stage: await this._stage() };
-    }
+    };
     async describe()`,
   ));
   const handled = { data: { foreground: false }, stage: "background" };
