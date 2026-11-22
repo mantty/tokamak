@@ -45,6 +45,10 @@ export class TokamakEvents extends WorkerEntrypoint {
     return call(this.ctx, "tokamak", "lifecycleStage");
   }
 
+  _beforeStart() {
+    return this.stage();
+  }
+
   async raw(event) {
     const input = Uint8Array.from(event.bytes);
     const output = await this.ctx[Symbol.for("tokamak.native")].call("bytes", "echo", input.subarray(1, 5));
@@ -169,9 +173,16 @@ struct Started {
 }
 
 impl Started {
-    /// The runtime of `WORKER`, with the shell's plugins unless `plugins` is
-    /// false.
+    /// The runtime of `WORKER`, with `_onStart` delivered in the foreground
+    /// and the shell's plugins unless `plugins` is false.
     fn new(plugins: bool) -> TestResult<Self> {
+        let started = Self::unstarted(plugins)?;
+        started.runtime.deliver_start(true);
+        Ok(started)
+    }
+
+    /// The runtime of `WORKER` before `_onStart`.
+    fn unstarted(plugins: bool) -> TestResult<Self> {
         let directory = tempfile::tempdir()?;
         let app = PackageLayout::new(directory.path().join("app"));
         let native = app.tokamak_worker();
@@ -224,7 +235,6 @@ impl Started {
             },
             |_| {},
         )?;
-        runtime.deliver_start(true);
         Ok(Self {
             runtime: Arc::new(runtime),
             requests,
@@ -333,6 +343,16 @@ fn answers_tokamak_calls_without_the_shell_plugins() -> TestResult {
     )?;
     assert_eq!(failure["name"], "NotSupportedError");
     assert_eq!(failure["domException"], true);
+    Ok(())
+}
+
+#[test]
+fn reports_the_background_stage_until_start_is_delivered() -> TestResult {
+    let started = Started::unstarted(false)?;
+
+    assert_eq!(started.reply_to("_beforeStart", &json!({}))?, "background");
+    started.runtime.deliver_start(true);
+    assert_eq!(started.reply_to("stage", &json!({}))?, "foreground");
     Ok(())
 }
 

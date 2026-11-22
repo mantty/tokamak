@@ -941,6 +941,21 @@ fn packages_both_workers_with_their_own_bindings_and_migrations() -> TestResult 
 
 #[cfg(unix)]
 #[test]
+fn requires_the_handlers_of_a_tokamak_worker() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    configure_worker_graph(&project)?;
+    fs::remove_file(project.join("build/.tokamak/vite/worker/handlers.json"))?;
+    build_command("macos", &project, &platform_pack)?
+        .assert()
+        .failure()
+        .stderr(contains(
+            "the build did not report the Tokamak worker's handlers",
+        ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn caches_worker_bundles_independently_and_refreshes_native_environment() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
     configure_worker_graph(&project)?;
