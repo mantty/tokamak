@@ -189,7 +189,6 @@ fn test_manifest(target: Target, tokamak_version: &str) -> TestResult<PlatformPa
     let mut variables = namespaces
         .remove(target.platform().namespace())
         .ok_or("the pack does not declare its namespace")?;
-    variables.extend(namespaces.remove("shared").unwrap_or_default());
     variables.insert(
         "test".to_owned(),
         PackVariable {
