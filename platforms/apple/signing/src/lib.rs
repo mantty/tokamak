@@ -5,10 +5,12 @@
 
 mod entitlements;
 mod info_plist;
+mod privacy_manifest;
 mod splash;
 #[cfg(target_os = "macos")]
 use info_plist::configured_file;
 pub use info_plist::write_info_plist;
+pub use privacy_manifest::write_privacy_manifest;
 pub use splash::Splash;
 
 #[cfg(target_os = "macos")]

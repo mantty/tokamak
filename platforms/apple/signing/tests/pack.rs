@@ -462,9 +462,16 @@ fn stage_demo_plugins(fixture: &Fixture) -> Result<()> {
     Ok(())
 }
 
-/// Gives the location plugin a package resource and a usage description.
+/// Gives the location plugin a package resource, a usage description and a privacy manifest.
 fn add_location_resource_bundle(fixture: &Fixture) -> Result<()> {
     let plugin = fixture.input().join("plugins/location");
+    fs::write(
+        plugin.join("privacy-manifest"),
+        r#"<plist version="1.0"><dict><key>NSPrivacyAccessedAPITypes</key><array><dict>
+<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+<key>NSPrivacyAccessedAPITypeReasons</key><array><string>CA92.1</string></array>
+</dict></array></dict></plist>"#,
+    )?;
     let manifest = fs::read_to_string(plugin.join("native/Package.swift"))?;
     fs::write(
         plugin.join("native/Package.swift"),
@@ -517,6 +524,27 @@ fn assert_macos_bundle(fixture: &Fixture) -> Result<()> {
     assert_eq!(
         resource_bundles(&bundle)?,
         ["TokamakLocation_TokamakLocation.bundle"]
+    );
+    let privacy = Value::from_file(bundle.join("Contents/Resources/PrivacyInfo.xcprivacy"))?;
+    let categories: Vec<_> = privacy
+        .as_dictionary()
+        .and_then(|manifest| manifest.get("NSPrivacyAccessedAPITypes"))
+        .and_then(Value::as_array)
+        .context("the privacy manifest lists accessed APIs")?
+        .iter()
+        .filter_map(|api| {
+            api.as_dictionary()?
+                .get("NSPrivacyAccessedAPIType")?
+                .as_string()
+        })
+        .collect();
+    assert_eq!(
+        categories,
+        [
+            "NSPrivacyAccessedAPICategoryDiskSpace",
+            "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPICategoryUserDefaults",
+        ]
     );
     Ok(())
 }
@@ -722,7 +750,7 @@ fn links_only_the_runtime_entry_points_the_app_uses() -> Result<()> {
 }
 
 #[test]
-fn embeds_the_entitlements_in_ios_simulator_apps() -> Result<()> {
+fn embeds_the_entitlements_and_privacy_manifest_of_ios_simulator_apps() -> Result<()> {
     for target in ["ios-simulator-arm64", "ios-simulator-x64"] {
         let fixture = Fixture::new(target)?;
         let entitlements = fixture.root.path().join("App.entitlements");
@@ -732,9 +760,16 @@ fn embeds_the_entitlements_in_ios_simulator_apps() -> Result<()> {
 <plist version="1.0"><dict><key>aps-environment</key><string>development</string></dict></plist>"#,
         )?;
 
+        let privacy_manifest = fixture.root.path().join("PrivacyInfo.xcprivacy");
+        fs::write(
+            &privacy_manifest,
+            r#"<plist version="1.0"><dict><key>NSPrivacyTracking</key><true/></dict></plist>"#,
+        )?;
+
         run(fixture
             .build()
-            .env("TOKAMAK_IOS_ENTITLEMENTS", &entitlements))?;
+            .env("TOKAMAK_IOS_ENTITLEMENTS", &entitlements)
+            .env("TOKAMAK_IOS_PRIVACY_MANIFEST", &privacy_manifest))?;
 
         let plist = fixture.plist()?;
         assert_eq!(
@@ -748,6 +783,14 @@ fn embeds_the_entitlements_in_ios_simulator_apps() -> Result<()> {
         assert_eq!(
             string(&plist, "MinimumOSVersion"),
             Some(ios_minimum()?.as_str())
+        );
+        assert_eq!(
+            Value::from_file(fixture.output().join("PrivacyInfo.xcprivacy"))?,
+            Value::Dictionary(Dictionary::from_iter([(
+                "NSPrivacyTracking",
+                Value::Boolean(true)
+            )])),
+            "the privacy-manifest setting's file replaces the generated manifest"
         );
         assert_eq!(
             simulator_entitlements(&fixture.output().join("demo-app"))?,

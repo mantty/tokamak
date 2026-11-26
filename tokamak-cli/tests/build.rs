@@ -189,6 +189,7 @@ fn test_manifest(target: Target, tokamak_version: &str) -> TestResult<PlatformPa
     let mut variables = namespaces
         .remove(target.platform().namespace())
         .ok_or("the pack does not declare its namespace")?;
+    variables.extend(namespaces.remove("shared").unwrap_or_default());
     variables.insert(
         "test".to_owned(),
         PackVariable {
@@ -1147,6 +1148,7 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
         fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
     assert_texts(&[(plugin.join("compilation-conditions/0"), "LOCATION_ALWAYS")])?;
+    assert!(fs::read_to_string(plugin.join("privacy-manifest"))?.contains("CA92.1"));
     assert_file(&plugin.join("native/Sources/TokamakLocation/LocationPlugin.swift"));
     Ok(())
 }

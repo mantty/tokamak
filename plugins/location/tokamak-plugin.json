@@ -38,10 +38,12 @@
   "build": "dist/build/index.js",
   "platforms": {
     "macos": {
-      "class": "TokamakLocation.TokamakLocationPlugin"
+      "class": "TokamakLocation.TokamakLocationPlugin",
+      "privacy-manifest": "apple/PrivacyInfo.xcprivacy"
     },
     "ios": {
-      "class": "TokamakLocation.TokamakLocationPlugin"
+      "class": "TokamakLocation.TokamakLocationPlugin",
+      "privacy-manifest": "apple/PrivacyInfo.xcprivacy"
     },
     "android": {
       "class": "com.tokamak.plugins.location.TokamakLocationPlugin"

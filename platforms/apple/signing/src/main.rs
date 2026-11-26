@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 
 use tokamak_apple_signing::{
     Splash, inventory, sign_ios_bundle, sign_macos_bundle, write_info_plist,
-    write_simulator_entitlements,
+    write_privacy_manifest, write_simulator_entitlements,
 };
 
 fn main() -> ExitCode {
@@ -40,11 +40,12 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("plist") => plist(arguments),
+        Some("privacy-manifest") => privacy_manifest(arguments),
         Some("sign") => sign(arguments),
         Some("splash") => splash(arguments),
         Some("simulator-entitlements") => simulator_entitlements(arguments),
         _ => bail!(
-            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | sign --platform ios|macos --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE] | simulator-entitlements --identifier ID --output OUTPUT | splash --platform ios|macos --resources DIR --catalog CATALOG"
+            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | privacy-manifest --input INPUT --output OUTPUT | sign --platform ios|macos --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE] | simulator-entitlements --identifier ID --output OUTPUT | splash --platform ios|macos --resources DIR --catalog CATALOG"
         ),
     }
 }
@@ -63,6 +64,13 @@ fn plist(arguments: impl Iterator<Item = OsString>) -> Result<()> {
         Path::new(&output),
         icon_info_plist.as_deref(),
     )
+}
+
+fn privacy_manifest(arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let mut options = Options::parse("privacy-manifest", arguments, &["--input", "--output"])?;
+    let input = options.required("--input")?;
+    let output = options.required("--output")?;
+    write_privacy_manifest(Path::new(&input), Path::new(&output))
 }
 
 fn sign(arguments: impl Iterator<Item = OsString>) -> Result<()> {
