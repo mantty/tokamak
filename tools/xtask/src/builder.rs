@@ -74,8 +74,7 @@ fn cargo_target_dir(workspace: &WorkspaceLayout) -> Result<PathBuf> {
         .context("cargo metadata has no target directory")
 }
 
-/// The variables a pack declares for `target`'s platform namespace, with those
-/// its `shared` section declares for all its namespaces.
+/// The variables a pack declares for `target`'s platform namespace.
 fn target_variables(
     workspace: &WorkspaceLayout,
     target: Target,
@@ -87,14 +86,12 @@ fn target_variables(
         serde_json::from_str(&content)
             .with_context(|| format!("parse platform-pack variables {}", path.display()))?;
     let namespace = target.platform().namespace();
-    let mut variables = namespaces.remove(namespace).with_context(|| {
+    namespaces.remove(namespace).with_context(|| {
         format!(
             "platform-pack variables {} do not declare the {namespace} namespace",
             path.display()
         )
-    })?;
-    variables.extend(namespaces.remove("shared").unwrap_or_default());
-    Ok(variables)
+    })
 }
 
 /// The keys a pack reads from a plugin's platform section.
@@ -158,7 +155,6 @@ mod tests {
         );
         assert!(simulator.contains_key("provisioning-profile"));
         assert!(!macos.contains_key("provisioning-profile"));
-        assert!(macos.contains_key("privacy-manifest"));
         assert!(windows.is_empty());
         Ok(())
     }

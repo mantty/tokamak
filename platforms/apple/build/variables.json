@@ -1,5 +1,5 @@
 {
-  "shared": {
+  "ios": {
     "build-number": {
       "kind": "string",
       "description": "CFBundleVersion, one to three period-separated integers; defaults to the app version"
@@ -15,9 +15,7 @@
     "privacy-manifest": {
       "kind": "path",
       "description": "PrivacyInfo.xcprivacy used in place of the generated privacy manifest"
-    }
-  },
-  "ios": {
+    },
     "provisioning-profile": {
       "kind": "path",
       "description": "Provisioning profile for manual signing, used with signing-identity"
@@ -32,6 +30,22 @@
     }
   },
   "macos": {
+    "build-number": {
+      "kind": "string",
+      "description": "CFBundleVersion, one to three period-separated integers; defaults to the app version"
+    },
+    "entitlements": {
+      "kind": "path",
+      "description": "Entitlements plist layered over the provisioning profile's entitlements at signing"
+    },
+    "plist": {
+      "kind": "path",
+      "description": "Info.plist whose values take precedence over generated and plugin values"
+    },
+    "privacy-manifest": {
+      "kind": "path",
+      "description": "PrivacyInfo.xcprivacy used in place of the generated privacy manifest"
+    },
     "team-id": {
       "kind": "string",
       "description": "Apple Development team to sign with; builds are ad-hoc signed without one"

@@ -16,7 +16,7 @@
     "**/libsqlite3-sys/**",
     "**/rquickjs/**",
     "**/pnpm-lock.yaml",
-    "**/package-lock.json",
+    "**/*.json",
     "**/*.generated.*",
     "**/fixture/**",
     "**/tests/**",
@@ -29,7 +29,6 @@
     "**/__tests__/**",
     "**/streams/node.js",
     "**/streams/web-standard.js",
-    "**/storage/d1-api.js",
-    "**/package.json"
+    "**/storage/d1-api.js"
   ]
 }
