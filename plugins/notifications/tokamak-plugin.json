@@ -10,11 +10,13 @@
   "build": "dist/build/index.js",
   "platforms": {
     "macos": {
-      "class": "TokamakNotifications.TokamakNotificationsPlugin"
+      "class": "TokamakNotifications.TokamakNotificationsPlugin",
+      "privacy-manifest": "apple/PrivacyInfo.xcprivacy"
     },
     "ios": {
       "class": "TokamakNotifications.TokamakNotificationsPlugin",
-      "plist": "apple/Info.plist"
+      "plist": "apple/Info.plist",
+      "privacy-manifest": "apple/PrivacyInfo.xcprivacy"
     },
     "android": {
       "class": "com.tokamak.plugins.notifications.TokamakNotificationsPlugin"

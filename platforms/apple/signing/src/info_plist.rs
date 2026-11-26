@@ -380,7 +380,7 @@ impl PluginMerge<'_> {
 }
 
 /// Appends, in order, each of `values` that `existing` does not hold yet.
-fn append_missing(existing: &mut Vec<Value>, values: Vec<Value>) {
+pub(crate) fn append_missing(existing: &mut Vec<Value>, values: Vec<Value>) {
     for value in values {
         if !existing.contains(&value) {
             existing.push(value);
@@ -388,7 +388,7 @@ fn append_missing(existing: &mut Vec<Value>, values: Vec<Value>) {
     }
 }
 
-fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
     if !path.is_dir() {
         return Ok(Vec::new());
     }
@@ -413,7 +413,7 @@ fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
 
 /// The environment variable that passes the pack variable `name`, in upper
 /// case, for the `platform` namespace.
-fn pack_variable(platform: &str, name: &str) -> String {
+pub(crate) fn pack_variable(platform: &str, name: &str) -> String {
     format!("TOKAMAK_{}_{name}", platform.to_ascii_uppercase())
 }
 
@@ -464,7 +464,7 @@ fn insert_array<const N: usize>(plist: &mut Dictionary, key: &str, values: [Valu
     plist.insert(key.into(), Value::Array(values.into()));
 }
 
-fn read_required(path: &Path) -> Result<String> {
+pub(crate) fn read_required(path: &Path) -> Result<String> {
     fs::read_to_string(path)
         .with_context(|| format!("read Apple build metadata {}", path.display()))
 }

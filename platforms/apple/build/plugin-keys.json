@@ -2,5 +2,6 @@
   "class": "string",
   "compilation-conditions": "strings",
   "plist": "path",
+  "privacy-manifest": "path",
   "resources": "paths"
 }

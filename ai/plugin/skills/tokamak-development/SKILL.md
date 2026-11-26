@@ -111,6 +111,13 @@ keychain items in the team's shared `TEAMID.*` group; to keep them, declare
 one group. Entitlements that need a profile require
 `macos.team-id` on macOS.
 
+Apple builds include a generated privacy manifest (`PrivacyInfo.xcprivacy`)
+with the required reason APIs of tokamak's runtime and of each plugin. It
+declares no collected data or tracking unless a plugin does. An app that
+collects data names its own file with `ios.privacy-manifest` or
+`macos.privacy-manifest`; that file replaces the generated one whole, so copy
+the generated entries from a build without the setting into it.
+
 The Android platform pack accepts an optional partial `AndroidManifest.xml`
 through `android.manifest`, for example to declare `android.permission.CAMERA`
 for `getUserMedia`. The Android Gradle Plugin's manifest merger combines it with

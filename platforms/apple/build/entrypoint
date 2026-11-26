@@ -128,7 +128,7 @@ if [[ "$platform" == macos ]]; then
   app_dir=$resources_dir/app
   icon=${TOKAMAK_MACOS_ICON:-}
   splash=${TOKAMAK_MACOS_SPLASH_WIDTH:-}
-  app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}" "${TOKAMAK_MACOS_SPLASH_IMAGE:-}" "${TOKAMAK_MACOS_SPLASH_IMAGE_DARK:-}")
+  app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_PRIVACY_MANIFEST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}" "${TOKAMAK_MACOS_SPLASH_IMAGE:-}" "${TOKAMAK_MACOS_SPLASH_IMAGE_DARK:-}")
 else
   contents=$bundle
   executable_dir=$bundle
@@ -136,7 +136,7 @@ else
   app_dir=$bundle/app
   icon=${TOKAMAK_IOS_ICON:-}
   splash=${TOKAMAK_IOS_SPLASH_WIDTH:-}
-  app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}" "${TOKAMAK_IOS_SPLASH_IMAGE:-}" "${TOKAMAK_IOS_SPLASH_IMAGE_DARK:-}")
+  app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_PRIVACY_MANIFEST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}" "${TOKAMAK_IOS_SPLASH_IMAGE:-}" "${TOKAMAK_IOS_SPLASH_IMAGE_DARK:-}")
 fi
 if [[ -n "$icon" && ! ( -d "$icon" && "$icon" == *.[iI][cC][oO][nN] ) ]]; then
   echo "$platform.icon must be an Icon Composer .icon package: $icon" >&2
@@ -413,6 +413,7 @@ for framework in "$products"/PackageFrameworks/*.framework; do
 done
 
 write_plist
+"$apple_tool" privacy-manifest --input "$input" --output "$resources_dir/PrivacyInfo.xcprivacy"
 
 # Plugins' resources go in the bundle's resources directory, where the system
 # finds files such as notification sounds by name.
