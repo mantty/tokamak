@@ -763,7 +763,9 @@ fn embeds_the_entitlements_and_privacy_manifest_of_ios_simulator_apps() -> Resul
         let privacy_manifest = fixture.root.path().join("PrivacyInfo.xcprivacy");
         fs::write(
             &privacy_manifest,
-            r#"<plist version="1.0"><dict><key>NSPrivacyTracking</key><true/></dict></plist>"#,
+            r#"<plist version="1.0"><dict><key>NSPrivacyCollectedDataTypes</key><array><dict>
+<key>NSPrivacyCollectedDataType</key><string>NSPrivacyCollectedDataTypeEmailAddress</string>
+</dict></array></dict></plist>"#,
         )?;
 
         run(fixture
@@ -784,13 +786,21 @@ fn embeds_the_entitlements_and_privacy_manifest_of_ios_simulator_apps() -> Resul
             string(&plist, "MinimumOSVersion"),
             Some(ios_minimum()?.as_str())
         );
+        let privacy = Value::from_file(fixture.output().join("PrivacyInfo.xcprivacy"))?;
+        let entries = |key| {
+            privacy
+                .as_dictionary()
+                .and_then(|manifest| manifest.get(key))
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        };
         assert_eq!(
-            Value::from_file(fixture.output().join("PrivacyInfo.xcprivacy"))?,
-            Value::Dictionary(Dictionary::from_iter([(
-                "NSPrivacyTracking",
-                Value::Boolean(true)
-            )])),
-            "the privacy-manifest setting's file replaces the generated manifest"
+            (
+                entries("NSPrivacyCollectedDataTypes"),
+                entries("NSPrivacyAccessedAPITypes")
+            ),
+            (1, 2),
+            "the privacy-manifest setting's file is joined with the runtime's APIs"
         );
         assert_eq!(
             simulator_entitlements(&fixture.output().join("demo-app"))?,

@@ -14,7 +14,7 @@
     },
     "privacy-manifest": {
       "kind": "path",
-      "description": "PrivacyInfo.xcprivacy used in place of the generated privacy manifest"
+      "description": "PrivacyInfo.xcprivacy whose entries are added to the generated privacy manifest"
     },
     "provisioning-profile": {
       "kind": "path",
@@ -44,7 +44,7 @@
     },
     "privacy-manifest": {
       "kind": "path",
-      "description": "PrivacyInfo.xcprivacy used in place of the generated privacy manifest"
+      "description": "PrivacyInfo.xcprivacy whose entries are added to the generated privacy manifest"
     },
     "team-id": {
       "kind": "string",

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use plist::{Dictionary, Value};
@@ -18,9 +18,9 @@ const RUNTIME_APIS: [(&str, &str); 2] = [
     ("NSPrivacyAccessedAPICategoryFileTimestamp", "C617.1"),
 ];
 
-/// Write the app's privacy manifest: the file the `privacy-manifest` setting
-/// names, or otherwise the runtime's required reason APIs joined with each
-/// plugin's privacy manifest.
+/// Write the app's privacy manifest: the runtime's required reason APIs joined
+/// with each plugin's privacy manifest and the file the `privacy-manifest`
+/// setting names.
 ///
 /// # Errors
 ///
@@ -29,19 +29,23 @@ const RUNTIME_APIS: [(&str, &str); 2] = [
 pub fn write_privacy_manifest(input: &Path, output: &Path) -> Result<()> {
     let platform = read_required(&input.join("metadata/platform"))?;
     let variable = pack_variable(&platform, "PRIVACY_MANIFEST");
-    let manifest = match env::var_os(&variable) {
-        Some(value) => read_dictionary(&configured_file(&variable, value)?)?,
-        None => generated_manifest(input)?,
-    };
-    Value::Dictionary(manifest)
+    let mut manifests: Vec<PathBuf> = sorted_directories(&input.join("plugins"))?
+        .into_iter()
+        .map(|plugin| plugin.join("privacy-manifest"))
+        .filter(|path| path.is_file())
+        .collect();
+    if let Some(value) = env::var_os(&variable) {
+        manifests.push(configured_file(&variable, value)?);
+    }
+    Value::Dictionary(joined_manifest(&manifests)?)
         .to_file_xml(output)
         .with_context(|| format!("write privacy manifest {}", output.display()))
 }
 
-/// The runtime's required reason APIs joined with the privacy manifest of
-/// each plugin staged in `input`: tracking when any tracks, and the union of
-/// the tracking domains, collected data types and each API category's reasons.
-fn generated_manifest(input: &Path) -> Result<Dictionary> {
+/// The runtime's required reason APIs joined with `manifests`: tracking when
+/// any tracks, and the union of the tracking domains, collected data types and
+/// each API category's reasons.
+fn joined_manifest(manifests: &[PathBuf]) -> Result<Dictionary> {
     let mut tracking = false;
     let mut tracking_domains = Vec::new();
     let mut collected_data = Vec::new();
@@ -49,12 +53,8 @@ fn generated_manifest(input: &Path) -> Result<Dictionary> {
         .iter()
         .map(|&(category, reason)| (category.into(), vec![reason.into()]))
         .collect();
-    for plugin in sorted_directories(&input.join("plugins"))? {
-        let path = plugin.join("privacy-manifest");
-        if !path.is_file() {
-            continue;
-        }
-        let manifest = read_dictionary(&path)?;
+    for path in manifests {
+        let manifest = read_dictionary(path)?;
         tracking |= manifest.get("NSPrivacyTracking") == Some(&Value::Boolean(true));
         append_missing(
             &mut tracking_domains,
@@ -103,11 +103,9 @@ fn array(dictionary: &Dictionary, key: &str) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use plist::{Dictionary, Value};
 
-    use super::generated_manifest;
+    use super::joined_manifest;
 
     /// An accessed API entry of `category` with `reasons`.
     fn api(category: &str, reasons: &[&str]) -> Value {
@@ -118,80 +116,71 @@ mod tests {
         ]))
     }
 
+    /// A manifest that tracks through one domain and collects one data type,
+    /// with the accessed `apis`.
+    fn tracking_manifest(apis: Vec<Value>) -> Dictionary {
+        let collected = Dictionary::from_iter([(
+            "NSPrivacyCollectedDataType",
+            Value::from("NSPrivacyCollectedDataTypeEmailAddress"),
+        )]);
+        Dictionary::from_iter([
+            ("NSPrivacyTracking", Value::Boolean(true)),
+            (
+                "NSPrivacyTrackingDomains",
+                Value::Array(vec!["example.com".into()]),
+            ),
+            (
+                "NSPrivacyCollectedDataTypes",
+                Value::Array(vec![Value::Dictionary(collected)]),
+            ),
+            ("NSPrivacyAccessedAPITypes", Value::Array(apis)),
+        ])
+    }
+
     #[test]
-    fn joins_the_runtimes_apis_with_each_plugins_manifest() -> anyhow::Result<()> {
-        let input = tempfile::tempdir()?;
+    fn joins_the_runtimes_apis_with_each_manifest() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
         let user_defaults = "NSPrivacyAccessedAPICategoryUserDefaults";
+        let file_timestamp = "NSPrivacyAccessedAPICategoryFileTimestamp";
         let manifests = [
-            (
-                "alerts",
-                Dictionary::from_iter([(
-                    "NSPrivacyAccessedAPITypes",
-                    Value::Array(vec![api(user_defaults, &["CA92.1"])]),
-                )]),
-            ),
-            (
-                "places",
-                Dictionary::from_iter([
-                    ("NSPrivacyTracking", Value::Boolean(true)),
-                    (
-                        "NSPrivacyTrackingDomains",
-                        Value::Array(vec!["example.com".into()]),
-                    ),
-                    (
-                        "NSPrivacyAccessedAPITypes",
-                        Value::Array(vec![
-                            api(user_defaults, &["CA92.1", "1C8F.1"]),
-                            api("NSPrivacyAccessedAPICategoryFileTimestamp", &["DDA9.1"]),
-                        ]),
-                    ),
-                ]),
-            ),
+            Dictionary::from_iter([(
+                "NSPrivacyAccessedAPITypes",
+                Value::Array(vec![api(user_defaults, &["CA92.1"])]),
+            )]),
+            tracking_manifest(vec![
+                api(user_defaults, &["CA92.1", "1C8F.1"]),
+                api(file_timestamp, &["DDA9.1"]),
+            ]),
         ];
-        for (plugin, manifest) in manifests {
-            let directory = input.path().join("plugins").join(plugin);
-            fs::create_dir_all(&directory)?;
-            Value::Dictionary(manifest).to_file_xml(directory.join("privacy-manifest"))?;
+        let mut paths = Vec::new();
+        for (index, manifest) in manifests.into_iter().enumerate() {
+            let path = directory.path().join(index.to_string());
+            Value::Dictionary(manifest).to_file_xml(&path)?;
+            paths.push(path);
         }
-        fs::create_dir_all(input.path().join("plugins/silent"))?;
 
         assert_eq!(
-            generated_manifest(input.path())?,
-            Dictionary::from_iter([
-                ("NSPrivacyTracking", Value::Boolean(true)),
-                (
-                    "NSPrivacyTrackingDomains",
-                    Value::Array(vec!["example.com".into()]),
-                ),
-                ("NSPrivacyCollectedDataTypes", Value::Array(Vec::new())),
-                (
-                    "NSPrivacyAccessedAPITypes",
-                    Value::Array(vec![
-                        api("NSPrivacyAccessedAPICategoryDiskSpace", &["E174.1"]),
-                        api(
-                            "NSPrivacyAccessedAPICategoryFileTimestamp",
-                            &["C617.1", "DDA9.1"],
-                        ),
-                        api(user_defaults, &["CA92.1", "1C8F.1"]),
-                    ]),
-                ),
+            joined_manifest(&paths)?,
+            tracking_manifest(vec![
+                api("NSPrivacyAccessedAPICategoryDiskSpace", &["E174.1"]),
+                api(file_timestamp, &["C617.1", "DDA9.1"]),
+                api(user_defaults, &["CA92.1", "1C8F.1"]),
             ])
         );
         Ok(())
     }
 
     #[test]
-    fn rejects_a_plugins_accessed_api_without_a_type() -> anyhow::Result<()> {
-        let input = tempfile::tempdir()?;
-        let directory = input.path().join("plugins/alerts");
-        fs::create_dir_all(&directory)?;
+    fn rejects_an_accessed_api_without_a_type() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("privacy-manifest");
         let manifest = Dictionary::from_iter([(
             "NSPrivacyAccessedAPITypes",
             Value::Array(vec![Value::Dictionary(Dictionary::new())]),
         )]);
-        Value::Dictionary(manifest).to_file_xml(directory.join("privacy-manifest"))?;
+        Value::Dictionary(manifest).to_file_xml(&path)?;
 
-        let Err(error) = generated_manifest(input.path()) else {
+        let Err(error) = joined_manifest(&[path]) else {
             anyhow::bail!("the manifest was accepted");
         };
         assert!(

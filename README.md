@@ -438,7 +438,7 @@ The platform packs accept these settings:
 |---|---|---|
 | `build-number` | `ios`, `macos` | `CFBundleVersion`: one to three period-separated integers; defaults to the app version |
 | `plist` | `ios`, `macos` | Application plist layered over generated values |
-| `privacy-manifest` | `ios`, `macos` | `PrivacyInfo.xcprivacy` used in place of the generated privacy manifest |
+| `privacy-manifest` | `ios`, `macos` | `PrivacyInfo.xcprivacy` whose entries are added to the generated privacy manifest |
 | `entitlements` | `ios`, `macos` | Entitlements plist layered over the provisioning profile's entitlements |
 | `team-id` | `ios`, `macos` | Apple Development team for signing |
 | `signing-identity` | `ios` | Identity SHA-1 for manual signing |
@@ -488,13 +488,13 @@ only a provisioning profile can authorise.
 
 Each Apple build has a privacy manifest, `PrivacyInfo.xcprivacy`. Tokamak
 generates it from the required reason APIs its runtime calls (file metadata,
-and the file system checks of its SQLite) and each plugin's privacy manifest,
-which a plugin's manifest names as `privacy-manifest` beside `plist`. An API
-category's reasons and the tracking domains are combined, and tracking is on
-when any plugin declares it. The generated manifest declares no collected data
-unless a plugin does. A `privacy-manifest` file replaces the generated one
-whole, so it holds everything the app declares, including the entries of the
-generated one, which a build without the setting writes into the app bundle.
+and the file system checks of its SQLite), each plugin's privacy manifest,
+which a plugin's manifest names as `privacy-manifest` beside `plist`, and the
+app's `privacy-manifest` file. The collected data types, the tracking domains
+and each API category's reasons are combined, and tracking is on when any of
+them declares it. Tokamak and its plugins declare no collected data, so the
+app's file declares the data the app collects; it needs no entries for the
+APIs that tokamak and the plugins call.
 
 The Android manifest is a partial `AndroidManifest.xml`:
 

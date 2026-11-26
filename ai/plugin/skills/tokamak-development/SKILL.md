@@ -115,8 +115,8 @@ Apple builds include a generated privacy manifest (`PrivacyInfo.xcprivacy`)
 with the required reason APIs of tokamak's runtime and of each plugin. It
 declares no collected data or tracking unless a plugin does. An app that
 collects data names its own file with `ios.privacy-manifest` or
-`macos.privacy-manifest`; that file replaces the generated one whole, so copy
-the generated entries from a build without the setting into it.
+`macos.privacy-manifest`; the build adds that file's entries to the generated
+ones, so it declares only what the app itself collects, tracks and calls.
 
 The Android platform pack accepts an optional partial `AndroidManifest.xml`
 through `android.manifest`, for example to declare `android.permission.CAMERA`
