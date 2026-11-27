@@ -395,20 +395,24 @@ final class RuntimeHandle {
         throw RuntimeError(description: "app bundle resources are unavailable")
       }
       let storage = try Self.storageDirectory()
+      let excludedStorage = try Self.excludedStorageDirectory()
       handle = bundle.path.withCString { bundlePath in
         state.path.withCString { statePath in
           storage.path.withCString { storagePath in
-            appHost.withCString { appHost in
-              error.withUnsafeMutableBufferPointer { error in
-                tokamak_runtime_start(
-                  bundlePath,
-                  statePath,
-                  storagePath,
-                  appHost,
-                  plugins,
-                  error.baseAddress,
-                  error.count
-                )
+            excludedStorage.path.withCString { excludedStoragePath in
+              appHost.withCString { appHost in
+                error.withUnsafeMutableBufferPointer { error in
+                  tokamak_runtime_start(
+                    bundlePath,
+                    statePath,
+                    storagePath,
+                    excludedStoragePath,
+                    appHost,
+                    plugins,
+                    error.baseAddress,
+                    error.count
+                  )
+                }
               }
             }
           }
@@ -589,6 +593,17 @@ final class RuntimeHandle {
     let storage = try appDirectory(.applicationSupportDirectory)
       .appendingPathComponent("tokamak/storage", isDirectory: true)
     try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+    return storage
+  }
+
+  /// Stores behind storage bindings whose `backup` is `excluded`, which device backups leave out.
+  private static func excludedStorageDirectory() throws -> URL {
+    var storage = try appDirectory(.applicationSupportDirectory)
+      .appendingPathComponent("tokamak/storage-excluded", isDirectory: true)
+    try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    try storage.setResourceValues(values)
     return storage
   }
 

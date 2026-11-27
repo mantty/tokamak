@@ -185,6 +185,7 @@ fn config(root: &Path, app: PackageLayout) -> Config {
         app,
         state_dir: root.join("state"),
         storage_dir: root.join("storage"),
+        excluded_storage_dir: root.join("storage-excluded"),
         host: "services.tokamak.local".into(),
         plugins: None,
     }

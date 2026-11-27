@@ -12,8 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::assets::Assets;
 use crate::dispatcher::Dispatcher;
-use crate::env_vars::StorageBinding;
+use crate::env_vars::{Backup, StorageBinding};
 use crate::gateway::{Handler, Job, JobResponse};
+use crate::linked::StorageDirectories;
 use crate::packaging::{
     AssetManifest, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, WorkerManifest,
     write_worker,
@@ -608,22 +609,24 @@ fn storage_bindings_match_cloudflare() -> TestResult {
         StorageBinding::D1 {
             name: "DB".to_owned(),
             id: "DB".to_owned(),
+            backup: Backup::Included,
             migrations_table: "d1_migrations".to_owned(),
             migrations: Vec::new(),
         },
         StorageBinding::Kv {
             name: "KV".to_owned(),
             id: "KV".to_owned(),
+            backup: Backup::Included,
         },
         StorageBinding::R2 {
             name: "R2".to_owned(),
             id: "R2".to_owned(),
+            backup: Backup::Included,
         },
     ];
     let config = RuntimeConfig {
         storage: Some(Arc::new(Storage::open(
-            &directory.path().join("storage"),
-            &directory.path().join("scratch"),
+            &StorageDirectories::under(&directory.path().join("storage")),
             &PackageLayout::new(directory.path()),
             &bindings,
         )?)),
@@ -665,11 +668,11 @@ export default {{ async fetch(request, env) {{
     let bindings = [StorageBinding::R2 {
         name: "FILES".to_owned(),
         id: "files".to_owned(),
+        backup: Backup::Included,
     }];
     let config = RuntimeConfig {
         storage: Some(Arc::new(Storage::open(
-            &directory.path().join("storage"),
-            &directory.path().join("scratch"),
+            &StorageDirectories::under(&directory.path().join("storage")),
             &PackageLayout::new(directory.path()),
             &bindings,
         )?)),

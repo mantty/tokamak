@@ -38,6 +38,7 @@ pub(crate) const RESERVED_WORDS: &[&str] = &[
     "splash",
     "version",
     "module",
+    "bindings",
     "build",
     "project",
     "platform",

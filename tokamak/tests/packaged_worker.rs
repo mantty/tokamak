@@ -913,6 +913,7 @@ fn start_runtime(
             app,
             state_dir: state.clone(),
             storage_dir: temporary.join("storage"),
+            excluded_storage_dir: temporary.join("storage-excluded"),
             host: HOST.to_owned(),
             plugins,
         },
@@ -1014,6 +1015,7 @@ fn start_close_runtime(temporary: &Path) -> TestResult<(Runtime, PathBuf, Receiv
         storage: vec![StorageBinding::Kv {
             name: "CLOSES".to_owned(),
             id: "closes".to_owned(),
+            backup: tokamak::Backup::Included,
         }],
     };
     start_reporting_runtime(temporary, close_worker_source(), &environment)
@@ -1060,6 +1062,7 @@ fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
         storage: vec![StorageBinding::D1 {
             name: "DB".to_owned(),
             id: "app".to_owned(),
+            backup: tokamak::Backup::Included,
             migrations_table: "d1_migrations".to_owned(),
             migrations: migrations.iter().map(|name| (*name).to_owned()).collect(),
         }],
@@ -1073,6 +1076,7 @@ fn r2_environment() -> WorkerEnvironment {
         storage: vec![StorageBinding::R2 {
             name: "FILES".to_owned(),
             id: "files".to_owned(),
+            backup: tokamak::Backup::Included,
         }],
     }
 }

@@ -75,6 +75,7 @@ pub(crate) fn package(
     app_dir: &Path,
     compiled: &Path,
     wrangler: &WranglerConfig,
+    provisioned: &storage::Provisioned,
     services: BTreeMap<String, ServiceBinding>,
 ) -> Result<()> {
     let layout = PackageLayout::new(app_dir);
@@ -84,7 +85,7 @@ pub(crate) fn package(
         &WorkerEnvironment {
             services,
             vars: wrangler.vars.clone(),
-            storage: storage::package(wrangler, &layout)?,
+            storage: storage::package(wrangler, provisioned, &layout)?,
         },
     )?;
     if let Some(assets) = &wrangler.assets {
@@ -276,7 +277,14 @@ mod tests {
         let compiled = compile(&root.join("cache"), &wrangler, None)?;
         let app = PackageLayout::new(root.join("app")).tokamak_worker();
 
-        package(app.root(), &compiled, &wrangler, BTreeMap::new())?;
+        let provisioned = BTreeMap::new();
+        package(
+            app.root(),
+            &compiled,
+            &wrangler,
+            &provisioned,
+            BTreeMap::new(),
+        )?;
 
         assert!(app.worker_manifest().is_file());
         assert!(app.worker_environment().is_file());

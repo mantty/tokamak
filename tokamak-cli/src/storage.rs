@@ -4,32 +4,85 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use tokamak::{PackageLayout, StorageBinding, store_id_problem};
+use tokamak::{Backup, PackageLayout, StorageBinding, store_id_problem};
 use tokamak_cli::copy_file;
 use walkdir::WalkDir;
 
 use super::paths::slash_path;
+use super::tokamak_config::{BindingConfig, BindingKind};
 use super::wrangler_config::{WranglerConfig, WranglerMigrations, WranglerStorage, glob_matches};
 
-/// The storage bindings `wrangler` declares, after copying each D1
-/// database's migrations into `layout`.
+/// The app's `bindings` option: the device resources it provisions, by the
+/// name of the Wrangler binding that binds each.
+pub(crate) type Provisioned = BTreeMap<String, BindingConfig>;
+
+/// Check that `provisioned` has the store of every storage binding in
+/// `workers`, and that each store has one `backup` value.
+pub(crate) fn check<'a>(
+    workers: impl IntoIterator<Item = &'a WranglerConfig>,
+    provisioned: &Provisioned,
+) -> Result<()> {
+    let mut backups = BTreeMap::new();
+    for binding in workers.into_iter().flat_map(|wrangler| &wrangler.storage) {
+        let backup = backup(binding, provisioned)?;
+        let (kind, store) = (binding.kind(), binding.store());
+        if backups
+            .insert((kind, store), backup)
+            .is_some_and(|other| other != backup)
+        {
+            bail!("{kind} store `{store}` is bound with different `backup` values");
+        }
+    }
+    Ok(())
+}
+
+/// The `backup` value `provisioned` gives the store `binding` names.
+fn backup(binding: &WranglerStorage, provisioned: &Provisioned) -> Result<Backup> {
+    let (kind, name) = (binding.kind(), binding.name());
+    let Some(config) = provisioned.get(name) else {
+        bail!(
+            "{kind} binding {name} has no entry in the `bindings` of the tokamak() options, which provision its store"
+        );
+    };
+    let matches = matches!(
+        (binding, config.kind),
+        (WranglerStorage::Kv { .. }, BindingKind::Kv)
+            | (WranglerStorage::D1 { .. }, BindingKind::D1)
+            | (WranglerStorage::R2 { .. }, BindingKind::R2)
+    );
+    if !matches {
+        bail!(
+            "`bindings.{name}` of the tokamak() options has another `type` than the {kind} binding it provisions"
+        );
+    }
+    Ok(config.backup)
+}
+
+/// The storage bindings `wrangler` declares with the `backup` values of
+/// `provisioned`, after copying each D1 database's migrations into `layout`.
 pub(crate) fn package(
     wrangler: &WranglerConfig,
+    provisioned: &Provisioned,
     layout: &PackageLayout,
 ) -> Result<Vec<StorageBinding>> {
     validate(wrangler)?;
     wrangler
         .storage
         .iter()
-        .map(|binding| package_binding(binding, layout))
+        .map(|binding| package_binding(binding, backup(binding, provisioned)?, layout))
         .collect()
 }
 
-fn package_binding(binding: &WranglerStorage, layout: &PackageLayout) -> Result<StorageBinding> {
+fn package_binding(
+    binding: &WranglerStorage,
+    backup: Backup,
+    layout: &PackageLayout,
+) -> Result<StorageBinding> {
     Ok(match binding {
         WranglerStorage::Kv { name, id } => StorageBinding::Kv {
             name: name.clone(),
             id: id.clone(),
+            backup,
         },
         WranglerStorage::D1 {
             name,
@@ -38,12 +91,14 @@ fn package_binding(binding: &WranglerStorage, layout: &PackageLayout) -> Result<
         } => StorageBinding::D1 {
             name: name.clone(),
             id: id.clone(),
+            backup,
             migrations_table: migrations.table.clone(),
             migrations: package_migrations(name, migrations, layout)?,
         },
         WranglerStorage::R2 { name, id } => StorageBinding::R2 {
             name: name.clone(),
             id: id.clone(),
+            backup,
         },
     })
 }
@@ -144,12 +199,21 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use tokamak::{PackageLayout, StorageBinding};
+    use tokamak::{Backup, PackageLayout, StorageBinding};
 
-    use super::{compare_migrations, leading_number, migration_names, package};
+    use super::{Provisioned, check, compare_migrations, leading_number, migration_names, package};
+    use crate::tokamak_config::{BindingConfig, BindingKind};
     use crate::wrangler_config::{self, WranglerConfig, WranglerMigrations};
 
     type TestResult = anyhow::Result<()>;
+
+    /// The `bindings` option with an entry of each name, kind and backup.
+    fn provisioned(entries: &[(&str, BindingKind, Backup)]) -> Provisioned {
+        entries
+            .iter()
+            .map(|&(name, kind, backup)| (name.to_owned(), BindingConfig { kind, backup }))
+            .collect()
+    }
 
     fn wrangler(root: &Path, config: &str) -> anyhow::Result<WranglerConfig> {
         let path = root.join("wrangler.json");
@@ -227,7 +291,13 @@ mod tests {
         )?;
         let layout = PackageLayout::new(root.join("app"));
 
-        let bindings = package(&config, &layout)?;
+        let provisioned = provisioned(&[
+            ("SESSION", BindingKind::Kv, Backup::Excluded),
+            ("FILES", BindingKind::R2, Backup::Included),
+            ("DB", BindingKind::D1, Backup::Included),
+        ]);
+
+        let bindings = package(&config, &provisioned, &layout)?;
 
         assert_eq!(
             bindings,
@@ -235,10 +305,12 @@ mod tests {
                 StorageBinding::Kv {
                     name: "SESSION".to_owned(),
                     id: "SESSION".to_owned(),
+                    backup: Backup::Excluded,
                 },
                 StorageBinding::D1 {
                     name: "DB".to_owned(),
                     id: "db".to_owned(),
+                    backup: Backup::Included,
                     migrations_table: "d1_migrations".to_owned(),
                     migrations: vec![
                         "0000_b/migration.sql".to_owned(),
@@ -248,6 +320,7 @@ mod tests {
                 StorageBinding::R2 {
                     name: "FILES".to_owned(),
                     id: "files".to_owned(),
+                    backup: Backup::Included,
                 }
             ]
         );
@@ -281,11 +354,46 @@ mod tests {
                 root,
                 &format!(r#"{{ "name": "app", "main": "worker.js", {config} }}"#),
             )?;
-            let error = package(&config, &layout)
+            let error = package(&config, &Provisioned::new(), &layout)
                 .err()
                 .ok_or_else(|| anyhow::anyhow!("accepted {problem}"))?;
             assert!(error.to_string().contains(problem), "{error}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn rejects_bindings_the_options_do_not_provision_with_one_backup() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let config = wrangler(
+            directory.path(),
+            r#"{ "name": "app", "main": "worker.js",
+                 "kv_namespaces": [{ "binding": "CACHE", "id": "cache" }, { "binding": "COPY", "id": "cache" }] }"#,
+        )?;
+        let kv = |backup| ("CACHE", BindingKind::Kv, backup);
+        for (entries, problem) in [
+            (vec![], "kv_namespaces binding CACHE has no entry"),
+            (
+                vec![("CACHE", BindingKind::D1, Backup::Included)],
+                "`bindings.CACHE` of the tokamak() options has another `type`",
+            ),
+            (
+                vec![
+                    kv(Backup::Excluded),
+                    ("COPY", BindingKind::Kv, Backup::Included),
+                ],
+                "kv_namespaces store `cache` is bound with different `backup` values",
+            ),
+        ] {
+            let error = check([&config], &provisioned(&entries))
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("accepted {problem}"))?;
+            assert!(error.to_string().contains(problem), "{error}");
+        }
+        let both = [
+            kv(Backup::Excluded),
+            ("COPY", BindingKind::Kv, Backup::Excluded),
+        ];
+        check([&config], &provisioned(&both))
     }
 }

@@ -86,10 +86,20 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             packagedDir: File,
             stateDir: File,
             storageDir: File,
+            excludedStorageDir: File,
             host: String,
             plugins: Plugins,
         ): TokamakRuntime =
-            TokamakRuntime(nativeStart(packagedDir.path, stateDir.path, storageDir.path, host, plugins))
+            TokamakRuntime(
+                nativeStart(
+                    packagedDir.path,
+                    stateDir.path,
+                    storageDir.path,
+                    excludedStorageDir.path,
+                    host,
+                    plugins,
+                ),
+            )
 
         /** Start the runtime against a host development server, whose development Worker calls [plugins]. */
         fun startDevelopment(
@@ -112,6 +122,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             packagedDir: String,
             stateDir: String,
             storageDir: String,
+            excludedStorageDir: String,
             host: String,
             plugins: Plugins,
         ): Long

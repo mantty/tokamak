@@ -13,7 +13,7 @@ use crate::certificates::{Certificates, Renewal};
 use crate::env_vars::StorageBinding;
 use crate::gateway;
 use crate::lifecycle_events::{Event, Events};
-use crate::linked::{StorageCatalog, StorageRuntime};
+use crate::linked::{StorageCatalog, StorageDirectories, StorageRuntime};
 use crate::packaging::PackageLayout;
 use crate::plugin_calls::{PluginCalls, PluginHandler};
 use crate::quickjs::{RuntimeConfig, WorkerBundle};
@@ -28,8 +28,12 @@ pub struct Config {
     pub app: PackageLayout,
     /// Writable per-app directory holding generated certificates.
     pub state_dir: PathBuf,
-    /// Writable per-app directory holding the stores behind storage bindings.
+    /// Writable per-app directory holding the stores behind storage bindings
+    /// that device backups include.
     pub storage_dir: PathBuf,
+    /// Writable per-app directory holding the stores that device backups
+    /// leave out.
+    pub excluded_storage_dir: PathBuf,
     /// Stable HTTPS host the shell's `WebView` loads.
     pub host: String,
     /// The shell's plugins, which the Worker calls; without them, the Worker's
@@ -313,10 +317,15 @@ fn open_storage(
     config: &Config,
     bindings: &[StorageBinding],
 ) -> Result<Option<Box<dyn StorageCatalog>>> {
-    let scratch = config.state_dir.join("storage");
+    let directories = StorageDirectories {
+        included: config.storage_dir.clone(),
+        excluded: config.excluded_storage_dir.clone(),
+        scratch: config.state_dir.join("storage"),
+    };
     if bindings.is_empty() {
-        remove_directory(&config.storage_dir)?;
-        remove_directory(&scratch)?;
+        remove_directory(&directories.included)?;
+        remove_directory(&directories.excluded)?;
+        remove_directory(&directories.scratch)?;
         return Ok(None);
     }
     let entry = crate::linked::storage().ok_or_else(|| {
@@ -324,7 +333,7 @@ fn open_storage(
             "the app declares storage bindings, but its runtime was linked without storage",
         )
     })?;
-    Ok(Some((entry.open)(&config.storage_dir, &scratch, bindings)?))
+    Ok(Some((entry.open)(&directories, bindings)?))
 }
 
 fn remove_directory(directory: &Path) -> io::Result<()> {
@@ -348,6 +357,7 @@ mod tests {
             app: PackageLayout::new(root),
             state_dir: root.join("state"),
             storage_dir: root.join("storage"),
+            excluded_storage_dir: root.join("storage-excluded"),
             host: "example.tokamak.local".to_owned(),
             plugins: None,
         }
@@ -447,6 +457,7 @@ mod tests {
             storage: vec![StorageBinding::Kv {
                 name: "SESSION".to_owned(),
                 id: "session".to_owned(),
+                backup: crate::env_vars::Backup::Included,
             }],
         })?;
         let config = config(directory.path());

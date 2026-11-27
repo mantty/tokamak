@@ -43,6 +43,7 @@ export const reservedPluginWords: readonly string[] = [
   "splash",
   "version",
   "module",
+  "bindings",
   "build",
   "project",
   "platform",

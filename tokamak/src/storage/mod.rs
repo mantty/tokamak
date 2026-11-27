@@ -21,8 +21,10 @@ use rquickjs::{Ctx, Module};
 use serde::Serialize;
 use tokamak_macros::JsType;
 
-use crate::env_vars::{StorageBinding, store_id_problem};
-use crate::linked::{OpenedStorage, StorageCatalog, StorageEntry, StorageRuntime};
+use crate::env_vars::{Backup, StorageBinding, store_id_problem};
+use crate::linked::{
+    OpenedStorage, StorageCatalog, StorageDirectories, StorageEntry, StorageRuntime,
+};
 use crate::lock;
 use crate::packaging::PackageLayout;
 use crate::typed::Serde;
@@ -51,11 +53,10 @@ static ENTRY: StorageEntry = StorageEntry { open };
 
 /// The stores `bindings` name, as the runtime uses them.
 fn open(
-    directory: &Path,
-    scratch: &Path,
+    directories: &StorageDirectories,
     bindings: &[StorageBinding],
 ) -> io::Result<Box<dyn StorageCatalog>> {
-    Ok(Box::new(Catalog::open(directory, scratch, bindings)?))
+    Ok(Box::new(Catalog::open(directories, bindings)?))
 }
 
 /// Files of a store kept in one SQLite database.
@@ -142,7 +143,7 @@ struct Catalog {
 }
 
 impl Catalog {
-    fn open(directory: &Path, scratch: &Path, bindings: &[StorageBinding]) -> io::Result<Self> {
+    fn open(directories: &StorageDirectories, bindings: &[StorageBinding]) -> io::Result<Self> {
         for binding in bindings {
             if let Some(problem) = store_id_problem(binding.store()) {
                 return Err(io::Error::new(
@@ -156,9 +157,9 @@ impl Catalog {
             }
         }
         Ok(Self {
-            namespaces: Stores::open(directory, scratch, StoreKind::Kv, bindings)?,
-            databases: Stores::open(directory, scratch, StoreKind::D1, bindings)?,
-            buckets: Stores::open(directory, scratch, StoreKind::R2, bindings)?,
+            namespaces: Stores::open(directories, StoreKind::Kv, bindings)?,
+            databases: Stores::open(directories, StoreKind::D1, bindings)?,
+            buckets: Stores::open(directories, StoreKind::R2, bindings)?,
         })
     }
 }
@@ -172,13 +173,12 @@ impl StorageCatalog for Catalog {
 impl Storage {
     #[cfg(test)]
     pub(crate) fn open(
-        directory: &Path,
-        scratch: &Path,
+        directories: &StorageDirectories,
         app: &PackageLayout,
         bindings: &[StorageBinding],
     ) -> io::Result<Self> {
         Ok(Self::bind(
-            &mut Catalog::open(directory, scratch, bindings)?,
+            &mut Catalog::open(directories, bindings)?,
             app,
             bindings,
         ))
@@ -189,15 +189,20 @@ impl Storage {
         let mut kinds = BTreeMap::new();
         for binding in bindings {
             let entry = match binding {
-                StorageBinding::Kv { id, .. } => Binding::Kv(catalog.namespaces.get(id)),
-                StorageBinding::R2 { id, .. } => Binding::R2(catalog.buckets.get(id)),
+                StorageBinding::Kv { id, backup, .. } => {
+                    Binding::Kv(catalog.namespaces.get(id, *backup))
+                }
+                StorageBinding::R2 { id, backup, .. } => {
+                    Binding::R2(catalog.buckets.get(id, *backup))
+                }
                 StorageBinding::D1 {
                     name,
                     id,
+                    backup,
                     migrations_table,
                     migrations,
                 } => Binding::D1 {
-                    database: catalog.databases.get(id),
+                    database: catalog.databases.get(id, *backup),
                     migrations: Migrations {
                         directory: app.d1_migrations(name),
                         names: migrations.clone(),
@@ -287,44 +292,56 @@ impl StorageRuntime for Storage {
 
 /// The stores of one kind, each shared by the bindings that name it.
 struct Stores<T> {
-    directory: PathBuf,
-    scratch: PathBuf,
+    /// The kind's directory in each of the app's storage directories.
+    directories: StorageDirectories,
     by_id: BTreeMap<String, Arc<Store<T>>>,
 }
 
 impl<T: Open> Stores<T> {
-    /// The stores of `kind`, after deleting every one that none of
-    /// `bindings` names.
+    /// The stores of `kind`, after deleting from each directory every store
+    /// that none of `bindings` names there.
     fn open(
-        directory: &Path,
-        scratch: &Path,
+        directories: &StorageDirectories,
         kind: StoreKind,
         bindings: &[StorageBinding],
     ) -> io::Result<Self> {
         let stores = Self {
-            directory: directory.join(kind.directory()),
-            scratch: scratch.join(kind.directory()),
+            directories: StorageDirectories {
+                included: directories.included.join(kind.directory()),
+                excluded: directories.excluded.join(kind.directory()),
+                scratch: directories.scratch.join(kind.directory()),
+            },
             by_id: BTreeMap::new(),
         };
-        let named: BTreeSet<&str> = bindings
-            .iter()
-            .filter(|binding| kind_of(binding) == kind)
-            .map(StorageBinding::store)
-            .collect();
-        remove_entries(&stores.directory, |name| {
-            T::FILES
+        let named = |backup| -> BTreeSet<&str> {
+            bindings
                 .iter()
-                .filter_map(|suffix| name.strip_suffix(suffix))
-                .any(|store| named.contains(store))
+                .filter(|binding| kind_of(binding) == kind && binding.backup() == backup)
+                .map(StorageBinding::store)
+                .collect()
+        };
+        let (included, excluded) = (named(Backup::Included), named(Backup::Excluded));
+        for (backup, named) in [(Backup::Included, &included), (Backup::Excluded, &excluded)] {
+            remove_entries(stores.directories.of(backup), |name| {
+                T::FILES
+                    .iter()
+                    .filter_map(|suffix| name.strip_suffix(suffix))
+                    .any(|store| named.contains(store))
+            })?;
+        }
+        remove_entries(&stores.directories.scratch, |name| {
+            included.contains(name) || excluded.contains(name)
         })?;
-        remove_entries(&stores.scratch, |name| named.contains(name))?;
         Ok(stores)
     }
 
-    fn get(&mut self, id: &str) -> Arc<Store<T>> {
+    fn get(&mut self, id: &str, backup: Backup) -> Arc<Store<T>> {
         let location = Location {
-            path: self.directory.join(format!("{id}{}", T::SUFFIX)),
-            scratch: self.scratch.join(id),
+            path: self
+                .directories
+                .of(backup)
+                .join(format!("{id}{}", T::SUFFIX)),
+            scratch: self.directories.scratch.join(id),
         };
         Arc::clone(self.by_id.entry(id.to_owned()).or_insert_with(|| {
             Arc::new(Store {

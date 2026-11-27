@@ -8,21 +8,51 @@
 use std::ffi::{CStr, CString, c_void};
 use std::fmt::Debug;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rquickjs::{Ctx, Module};
 
-use crate::env_vars::StorageBinding;
+use crate::env_vars::{Backup, StorageBinding};
 use crate::gateway::Handler;
 use crate::packaging::PackageLayout;
 use crate::plugin_calls::PluginCalls;
 use crate::server::DevProxyConfig;
 
+/// The directories that hold an app's stores.
+pub(crate) struct StorageDirectories {
+    /// The stores device backups include.
+    pub(crate) included: PathBuf,
+    /// The stores device backups leave out.
+    pub(crate) excluded: PathBuf,
+    /// The stores' temporary files, which device backups leave out.
+    pub(crate) scratch: PathBuf,
+}
+
+impl StorageDirectories {
+    /// `root` for the included stores, with the other two directories in it.
+    #[cfg(test)]
+    pub(crate) fn under(root: &Path) -> Self {
+        Self {
+            included: root.to_owned(),
+            excluded: root.join("excluded"),
+            scratch: root.join("scratch"),
+        }
+    }
+
+    /// The directory of the stores with `backup`.
+    pub(crate) fn of(&self, backup: Backup) -> &Path {
+        match backup {
+            Backup::Included => &self.included,
+            Backup::Excluded => &self.excluded,
+        }
+    }
+}
+
 /// The storage part's entry point.
 pub(crate) struct StorageEntry {
     /// Open the app's shared stores, retaining those named by any Worker.
-    pub(crate) open: fn(&Path, &Path, &[StorageBinding]) -> OpenedCatalog,
+    pub(crate) open: fn(&StorageDirectories, &[StorageBinding]) -> OpenedCatalog,
 }
 
 pub(crate) type OpenedCatalog = io::Result<Box<dyn StorageCatalog>>;

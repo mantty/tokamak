@@ -122,16 +122,18 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     packaged_dir: JString,
     state_dir: JString,
     storage_dir: JString,
+    excluded_storage_dir: JString,
     host: JString,
     plugins: JObject,
 ) -> jlong {
-    let result = shell(&mut env, &plugins).and_then(|shell| {
-        start(
-            &mut env,
-            [&packaged_dir, &state_dir, &storage_dir, &host],
-            shell,
-        )
-    });
+    let directories = [
+        &packaged_dir,
+        &state_dir,
+        &storage_dir,
+        &excluded_storage_dir,
+    ];
+    let result =
+        shell(&mut env, &plugins).and_then(|shell| start(&mut env, directories, &host, shell));
     into_handle(&mut env, result, "runtime startup failed")
 }
 
@@ -378,13 +380,15 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeClientIdent
 
 fn start(
     env: &mut JNIEnv,
-    [packaged_dir, state_dir, storage_dir, host]: [&JString; 4],
+    [packaged_dir, state_dir, storage_dir, excluded_storage_dir]: [&JString; 4],
+    host: &JString,
     shell: Shell<KotlinPlugins>,
 ) -> Result<Runtime, String> {
     bridge::start(
         &text(env, packaged_dir)?,
         &text(env, state_dir)?,
         &text(env, storage_dir)?,
+        &text(env, excluded_storage_dir)?,
         &text(env, host)?,
         shell,
     )
