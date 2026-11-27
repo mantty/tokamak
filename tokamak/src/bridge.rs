@@ -20,6 +20,7 @@ pub(crate) fn start(
     packaged_dir: &str,
     state_dir: &str,
     storage_dir: &str,
+    excluded_storage_dir: &str,
     host: &str,
     shell: Shell<impl PluginHandler + 'static>,
 ) -> Result<Runtime, String> {
@@ -27,6 +28,7 @@ pub(crate) fn start(
         app: PackageLayout::new(packaged_dir),
         state_dir: PathBuf::from(state_dir),
         storage_dir: PathBuf::from(storage_dir),
+        excluded_storage_dir: PathBuf::from(excluded_storage_dir),
         host: host.to_owned(),
         plugins: Some(Arc::new(shell.plugins)),
     };

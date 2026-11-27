@@ -11,7 +11,7 @@ use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
 use super::vite::VitePlugin;
 use super::worker_graph::{CompiledWorker, WorkerGraph};
 use super::wrangler_config::WranglerConfig;
-use super::{lock, paths, plugins, project, settings};
+use super::{lock, paths, plugins, project, settings, storage};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -61,6 +61,8 @@ struct BuildContext<'a> {
     project: &'a Path,
     build_dir: &'a Path,
     workers: &'a [CompiledWorker<'a>],
+    /// The device resources the app's `bindings` option provisions.
+    provisioned: &'a storage::Provisioned,
     plugins: &'a [plugins::Plugin],
     version: &'a str,
     update_lock: bool,
@@ -134,10 +136,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         &current_dir,
     );
     let version = required_version(&sources)?;
-    let graph = WorkerGraph::load(&project)?;
-    for (_, config) in graph.workers() {
-        warn_unsupported_bindings(config);
-    }
+    let graph = load_graph(&project, &tokamak.bindings)?;
     let builds = request
         .platforms
         .iter()
@@ -168,6 +167,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         project: &project,
         build_dir: &build_dir,
         workers: &workers,
+        provisioned: &tokamak.bindings,
         plugins,
         version: &version,
         update_lock: request.update_lock,
@@ -194,6 +194,18 @@ pub(crate) fn check_settings(
     settings::resolve(&sources, platform, manifest)?;
     settings::resolve_plugins(&sources, platform, plugins)?;
     Ok(())
+}
+
+/// The Worker graph `project`'s build recorded, after warning about the
+/// bindings the packaged app lacks and checking that `provisioned` has the
+/// store of each storage binding.
+fn load_graph(project: &Path, provisioned: &storage::Provisioned) -> Result<WorkerGraph> {
+    let graph = WorkerGraph::load(project)?;
+    for (_, config) in graph.workers() {
+        warn_unsupported_bindings(config);
+    }
+    storage::check(graph.workers().map(|(_, config)| config), provisioned)?;
+    Ok(graph)
 }
 
 pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<DevelopmentSummary> {
@@ -292,7 +304,7 @@ fn build_platform(build: &PlatformBuild, context: &BuildContext<'_>) -> Result<B
 
     for worker in context.workers {
         worker
-            .package(&input.join("app"))
+            .package(&input.join("app"), context.provisioned)
             .context("prepare the tokamak application package")?;
     }
     plugins::stage(

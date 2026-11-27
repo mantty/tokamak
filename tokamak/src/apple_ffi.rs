@@ -150,12 +150,14 @@ pub unsafe extern "C" fn tokamak_runtime_start(
     packaged_dir: *const c_char,
     state_dir: *const c_char,
     storage_dir: *const c_char,
+    excluded_storage_dir: *const c_char,
     host: *const c_char,
     plugins: TokamakPluginHandler,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe { start(packaged_dir, state_dir, storage_dir, host, plugins) };
+    let directories = [packaged_dir, state_dir, storage_dir, excluded_storage_dir];
+    let result = unsafe { start(directories, host, plugins) };
     into_handle(result, error, error_len)
 }
 
@@ -526,9 +528,7 @@ pub unsafe extern "C" fn tokamak_identity_free(identity: TokamakIdentity) {
 }
 
 unsafe fn start(
-    packaged_dir: *const c_char,
-    state_dir: *const c_char,
-    storage_dir: *const c_char,
+    [packaged_dir, state_dir, storage_dir, excluded_storage_dir]: [*const c_char; 4],
     host: *const c_char,
     plugins: TokamakPluginHandler,
 ) -> Result<Runtime, String> {
@@ -536,6 +536,7 @@ unsafe fn start(
         unsafe { text(packaged_dir) }.ok_or("packaged app path is not valid UTF-8")?,
         unsafe { text(state_dir) }.ok_or("state directory is not valid UTF-8")?,
         unsafe { text(storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
+        unsafe { text(excluded_storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
         unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
         Shell { plugins, report },
     )

@@ -35,6 +35,7 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
             storage: vec![StorageBinding::Kv {
                 name: "SESSION".to_owned(),
                 id: "session".to_owned(),
+                backup: tokamak::Backup::Included,
             }],
         },
     )?;
@@ -53,6 +54,7 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
             app,
             state_dir: temporary.path().join("state"),
             storage_dir: temporary.path().join("storage"),
+            excluded_storage_dir: temporary.path().join("storage-excluded"),
             host: "app.tokamak.local".to_owned(),
             plugins: None,
         },

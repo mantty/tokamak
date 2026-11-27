@@ -226,7 +226,14 @@ class TokamakApplication : Application(), TokamakPlugins {
         return if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
             TokamakRuntime.startDevelopment(stateDir(), appHost, endpoint, sessionToken, workerPlugins)
         } else {
-            TokamakRuntime.start(unpackApp(), stateDir(), storageDir(), appHost, workerPlugins)
+            TokamakRuntime.start(
+                unpackApp(),
+                stateDir(),
+                storageDir(),
+                excludedStorageDir(),
+                appHost,
+                workerPlugins,
+            )
         }
     }
 
@@ -271,6 +278,9 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     /** Runtime state, which backups leave out. */
     private fun stateDir(): File = File(noBackupFilesDir, "tokamak/state").apply { mkdirs() }
+
+    /** Stores behind storage bindings whose `backup` is `excluded`, which backups leave out. */
+    private fun excludedStorageDir(): File = File(noBackupFilesDir, "tokamak/storage").apply { mkdirs() }
 
     /**
      * Stores behind storage bindings, which Auto Backup includes. tokamak keeps nothing else in the

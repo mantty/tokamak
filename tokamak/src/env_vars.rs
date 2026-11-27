@@ -31,6 +31,17 @@ pub struct ServiceBinding {
     pub entrypoint: String,
 }
 
+/// Whether device backups include a store.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backup {
+    /// Device backups include the store.
+    #[default]
+    Included,
+    /// The store stays on the device only.
+    Excluded,
+}
+
 /// A binding to a store on the device, identified as Cloudflare identifies
 /// the resource it names.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -46,6 +57,9 @@ pub enum StorageBinding {
         name: String,
         /// Namespace identifier.
         id: String,
+        /// Whether device backups include the namespace.
+        #[serde(default)]
+        backup: Backup,
     },
     /// A D1 database.
     D1 {
@@ -53,6 +67,9 @@ pub enum StorageBinding {
         name: String,
         /// Database identifier.
         id: String,
+        /// Whether device backups include the database.
+        #[serde(default)]
+        backup: Backup,
         /// Table recording applied migrations.
         migrations_table: String,
         /// Packaged migrations, relative to the binding's migrations
@@ -65,6 +82,9 @@ pub enum StorageBinding {
         name: String,
         /// Bucket name.
         id: String,
+        /// Whether device backups include the bucket.
+        #[serde(default)]
+        backup: Backup,
     },
 }
 
@@ -82,6 +102,14 @@ impl StorageBinding {
     pub fn store(&self) -> &str {
         match self {
             Self::Kv { id, .. } | Self::D1 { id, .. } | Self::R2 { id, .. } => id,
+        }
+    }
+
+    /// Whether device backups include the store the binding names.
+    #[must_use]
+    pub fn backup(&self) -> Backup {
+        match self {
+            Self::Kv { backup, .. } | Self::D1 { backup, .. } | Self::R2 { backup, .. } => *backup,
         }
     }
 }
@@ -165,6 +193,7 @@ mod tests {
             storage: vec![StorageBinding::D1 {
                 name: "DB".to_owned(),
                 id: "app".to_owned(),
+                backup: super::Backup::Included,
                 migrations_table: "d1_migrations".to_owned(),
                 migrations: vec!["0001_init.sql".to_owned()],
             }],

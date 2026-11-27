@@ -93,7 +93,7 @@ use thiserror::Error as Fail;
 #[cfg(feature = "native")]
 pub use certificates::{Certificates, Challenge, Decision};
 pub use env_vars::{
-    ServiceBinding, StorageBinding, WorkerEnvironment, store_id_problem,
+    Backup, ServiceBinding, StorageBinding, WorkerEnvironment, store_id_problem,
     write as write_worker_environment,
 };
 #[cfg(feature = "native")]

@@ -205,19 +205,41 @@ the runtime has no WebAssembly and loads only ES modules.
 ### Storage
 
 A packaged app's Worker gets KV, D1 and R2 bindings backed by storage on the
-device. Declare them in the Wrangler configuration as for Cloudflare; the
-Worker uses the same APIs, so the code deploys to Cloudflare unchanged. The
+device. As on Cloudflare, a store is provisioned in one place and bound in
+another: the `bindings` option of `tokamak()` provisions the stores on the
+device, and the Wrangler configuration binds them as it does for Cloudflare.
+The Worker uses the same APIs, so the code deploys to Cloudflare unchanged. The
 data stays on the device and is not synced with the Cloudflare resources the
 bindings name. `tok build` warns about other bindings, such as Durable Objects
 or Queues, which the packaged app does not provide.
 
 ```jsonc
+// wrangler.jsonc
 {
   "kv_namespaces": [{ "binding": "SETTINGS", "id": "0f2ac74b498b48028cb68387c421e279" }],
   "d1_databases": [{ "binding": "DB", "database_name": "app", "database_id": "…" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "app-files" }]
 }
 ```
+
+```ts
+// vite.config.ts
+tokamak({
+  bindings: {
+    SETTINGS: { type: "kv" },
+    DB: { type: "d1", backup: "excluded" },
+    FILES: { type: "r2" },
+  },
+});
+```
+
+Each key of `bindings` is the name of the Wrangler binding the store is for,
+and `type` is `kv`, `d1` or `r2`. `tok build` fails when a KV, D1 or R2 binding
+in the Wrangler configuration has no entry of its name and type. That includes
+the KV binding Astro's Cloudflare adapter adds for sessions, `SESSION` unless
+`sessionKVBindingName` names another. `backup` says whether
+[device backups](#where-data-lives) include the store: `included`, the default,
+or `excluded`.
 
 | Binding | Worker API | Device store |
 | --- | --- | --- |
@@ -292,18 +314,25 @@ R2's missing-part error.
 
 #### Where data lives
 
-Stores are in the app's private data directory:
+Stores are in the app's private data directory, in one of two directories by
+their `backup` value:
 
-| Platform | Directory |
-| --- | --- |
-| iOS, macOS | `Application Support/<bundle identifier>/tokamak/storage` |
-| Android | The app's files directory, `tokamak/storage` |
-| Windows | `%LOCALAPPDATA%\<app>\tokamak\storage` |
+| Platform | `included` | `excluded` |
+| --- | --- | --- |
+| iOS, macOS | `Application Support/<bundle identifier>/tokamak/storage` | `Application Support/<bundle identifier>/tokamak/storage-excluded`, which the app excludes from backups |
+| Android | The app's files directory, `tokamak/storage` | The app's no-backup files directory, `tokamak/storage` |
+| Windows | `%LOCALAPPDATA%\<app>\tokamak\storage` | `%LOCALAPPDATA%\<app>\tokamak\storage-excluded` |
 
-Uninstalling the app removes them. Device backups include them: iOS and macOS
-back up Application Support, and Android's Auto Backup includes the files
-directory unless the app's `android.manifest` file opts out. Auto Backup stops
-backing up an app whose data exceeds 25 MB.
+Uninstalling the app removes them. Device backups include the `included`
+stores: iOS and macOS back up Application Support, and Android's Auto Backup
+includes the files directory unless the app's `android.manifest` file opts out.
+Auto Backup stops backing up an app whose data exceeds 25 MB. An `excluded`
+store stays on the device, so it is empty after the app is restored from a
+backup. On Windows the value only selects the directory.
+
+Bindings that name the same store need the same `backup` value. Changing a
+store's value does not move its data: the app starts with an empty store in the
+other directory and deletes the old one.
 
 `tok dev` runs the Worker in the framework's development server, where Wrangler
 provides these bindings from the project's `.wrangler/state`, so development
@@ -322,6 +351,11 @@ tokamak({
   icon: "assets/icons/AppIcon.icon",
   version: "1.0.0",
 
+  // The stores on the device, by Wrangler binding name
+  bindings: {
+    SETTINGS: { type: "kv" },
+  },
+
   // Platform overrides and platform-pack settings
   ios: {
     name: "Myapp Pro",
@@ -339,7 +373,7 @@ tokamak({
 
 The top-level keys are `name`, `identifier`, `icon`, `version`, and the
 [splash screen](#splash-screen) keys, which are defaults for every platform,
-and `module`. Another top-level object holds a plugin's settings, by plugin ID,
+[`bindings`](#storage), and `module`. Another top-level object holds a plugin's settings, by plugin ID,
 such as `notifications: { sounds: "sounds" }`; other top-level keys are
 rejected. A plugin ID is a camel-case identifier, such as `secureStorage`.
 A platform object (`android`, `ios`, `macos`, `windows`) overrides `name`,

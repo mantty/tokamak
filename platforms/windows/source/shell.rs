@@ -598,6 +598,7 @@ fn start_runtime(
                 app: PackageLayout::new(root.join("app")),
                 state_dir: state.join("runtime"),
                 storage_dir: state.join("storage"),
+                excluded_storage_dir: state.join("storage-excluded"),
                 host: config.host.clone(),
                 plugins: Some(plugins),
             },

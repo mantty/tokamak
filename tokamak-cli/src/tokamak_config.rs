@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
+use tokamak::Backup;
 use tokamak_cli::{Platform, VariableKind, is_valid_key};
 
 use super::plugins::valid_plugin_id;
@@ -25,6 +26,29 @@ pub(crate) struct TokamakConfig {
     platforms: BTreeMap<&'static str, PlatformConfig>,
     /// Each plugin's values, by plugin ID.
     pub(crate) plugins: BTreeMap<String, PluginConfig>,
+    /// The device resources the app provisions, by the name of the Wrangler
+    /// binding that binds each.
+    pub(crate) bindings: BTreeMap<String, BindingConfig>,
+}
+
+/// A device resource the app provisions for a binding.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BindingConfig {
+    #[serde(rename = "type")]
+    pub(crate) kind: BindingKind,
+    /// Whether device backups include the resource.
+    #[serde(default)]
+    pub(crate) backup: Backup,
+}
+
+/// The kind of resource a `bindings` entry provisions.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum BindingKind {
+    Kv,
+    D1,
+    R2,
 }
 
 /// The values configured for a plugin, as JSON: for every platform, and each
@@ -84,9 +108,9 @@ pub(crate) fn slug(name: &str) -> String {
 ///
 /// Top-level values are defaults; a platform object overrides them for that
 /// platform. Relative icon and splash image paths are resolved against `root`.
-/// Other platform-object keys are values for that platform's pack. Other
-/// top-level objects are plugins' values, by plugin ID. `null` leaves a value
-/// unset.
+/// Other platform-object keys are values for that platform's pack. `bindings`
+/// holds the device resources the app provisions. Other top-level objects are
+/// plugins' values, by plugin ID. `null` leaves a value unset.
 pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig> {
     if !config.is_object() {
         return Err(invalid("options must be an object"));
@@ -114,6 +138,12 @@ pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig>
         .version
         .map(|version| validate_value("version", version))
         .transpose()?;
+    let mut bindings = BTreeMap::new();
+    for (name, binding) in raw.bindings.unwrap_or_default() {
+        let binding = BindingConfig::deserialize(binding)
+            .map_err(|error| invalid(format!("bindings.{name}: {error}")))?;
+        bindings.insert(name, binding);
+    }
     let top = platform_config(root, "", raw.top)?;
     let mut platforms = BTreeMap::new();
     for (namespace, object) in [
@@ -133,6 +163,7 @@ pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig>
         top,
         platforms,
         plugins,
+        bindings,
     })
 }
 
@@ -179,6 +210,7 @@ fn plugin_platform_values(field: &str, value: Value) -> Result<Option<BTreeMap<S
 #[derive(Deserialize)]
 struct RawConfig {
     version: Option<String>,
+    bindings: Option<BTreeMap<String, Value>>,
     android: Option<RawPlatformConfig>,
     ios: Option<RawPlatformConfig>,
     macos: Option<RawPlatformConfig>,
@@ -323,7 +355,11 @@ mod tests {
     use anyhow::{Context, Result};
     use tokamak_cli::Platform;
 
-    use super::{PlatformConfig, PluginConfig, TokamakConfig, parse_config, slug};
+    use tokamak::Backup;
+
+    use super::{
+        BindingConfig, BindingKind, PlatformConfig, PluginConfig, TokamakConfig, parse_config, slug,
+    };
 
     type TestResult<T = ()> = Result<T>;
 
@@ -517,6 +553,54 @@ mod tests {
     fn assert_message(root: &std::path::Path, content: &str, expected: &str) -> TestResult {
         let message = invalid_message(root, content)?;
         assert!(message.starts_with(expected), "{content}: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn reads_the_resources_bindings_provision() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let config = load(
+            temporary.path(),
+            r#"{ "bindings": { "CACHE": { "type": "kv", "backup": "excluded" }, "DB": { "type": "d1" } } }"#,
+        )?;
+
+        assert_eq!(
+            config.bindings,
+            BTreeMap::from([
+                (
+                    "CACHE".to_owned(),
+                    BindingConfig {
+                        kind: BindingKind::Kv,
+                        backup: Backup::Excluded
+                    }
+                ),
+                (
+                    "DB".to_owned(),
+                    BindingConfig {
+                        kind: BindingKind::D1,
+                        backup: Backup::Included
+                    }
+                ),
+            ])
+        );
+        for (binding, problem) in [
+            (r#"{ "backup": "excluded" }"#, "missing field `type`"),
+            (r#"{ "type": "queue" }"#, "unknown variant `queue`"),
+            (
+                r#"{ "type": "kv", "backup": "never" }"#,
+                "unknown variant `never`",
+            ),
+            (r#"{ "type": "kv", "id": "x" }"#, "unknown field `id`"),
+        ] {
+            let message = invalid_message(
+                temporary.path(),
+                &format!(r#"{{ "bindings": {{ "CACHE": {binding} }} }}"#),
+            )?;
+            assert!(
+                message.starts_with("bindings.CACHE: ") && message.contains(problem),
+                "{message}"
+            );
+        }
         Ok(())
     }
 

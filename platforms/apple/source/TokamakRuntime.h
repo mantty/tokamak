@@ -38,7 +38,8 @@ typedef struct {
 } TokamakPluginHandler;
 
 void *tokamak_runtime_start(const char *packaged_dir, const char *state_dir,
-                            const char *storage_dir, const char *host,
+                            const char *storage_dir,
+                            const char *excluded_storage_dir, const char *host,
                             TokamakPluginHandler plugins, char *error,
                             size_t error_len);
 void *tokamak_runtime_start_development(const char *state_dir, const char *host,

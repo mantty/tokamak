@@ -230,6 +230,7 @@ impl Started {
                 app,
                 state_dir: directory.path().join("state"),
                 storage_dir: directory.path().join("storage"),
+                excluded_storage_dir: directory.path().join("storage-excluded"),
                 host: "app.tokamak.local".to_owned(),
                 plugins: plugins.then(|| Arc::new(Shell(sender)) as Arc<dyn PluginHandler>),
             },

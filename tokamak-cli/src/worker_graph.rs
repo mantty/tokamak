@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use tokamak::{PackageLayout, ServiceBinding};
 
 use crate::wrangler_config::{self, WranglerBinding, WranglerConfig, WranglerService};
-use crate::{project, worker};
+use crate::{project, storage, worker};
 
 /// Generated configurations for the application's workers.
 pub(crate) struct WorkerGraph {
@@ -136,7 +136,7 @@ fn service_bindings(
 
 impl CompiledWorker<'_> {
     /// Write the bundle and environment into its application subpackage.
-    pub(crate) fn package(&self, app: &Path) -> Result<()> {
+    pub(crate) fn package(&self, app: &Path, provisioned: &storage::Provisioned) -> Result<()> {
         let layout = PackageLayout::new(app);
         let layout = if self.name == "tokamak" {
             layout.tokamak_worker()
@@ -147,6 +147,7 @@ impl CompiledWorker<'_> {
             layout.root(),
             &self.compiled,
             self.config,
+            provisioned,
             self.services.clone(),
         )
     }
