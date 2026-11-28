@@ -26,23 +26,22 @@ pub(crate) struct TokamakConfig {
     platforms: BTreeMap<&'static str, PlatformConfig>,
     /// Each plugin's values, by plugin ID.
     pub(crate) plugins: BTreeMap<String, PluginConfig>,
-    /// The device resources the app provisions, by the name of the Wrangler
-    /// binding that binds each.
+    /// tokamak's settings for storage bindings, by Wrangler binding name.
     pub(crate) bindings: BTreeMap<String, BindingConfig>,
 }
 
-/// A device resource the app provisions for a binding.
+/// tokamak's settings for a storage binding.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BindingConfig {
     #[serde(rename = "type")]
     pub(crate) kind: BindingKind,
-    /// Whether device backups include the resource.
+    /// Whether device backups include the binding's store.
     #[serde(default)]
     pub(crate) backup: Backup,
 }
 
-/// The kind of resource a `bindings` entry provisions.
+/// The kind of binding a `bindings` entry is for.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum BindingKind {
@@ -109,7 +108,7 @@ pub(crate) fn slug(name: &str) -> String {
 /// Top-level values are defaults; a platform object overrides them for that
 /// platform. Relative icon and splash image paths are resolved against `root`.
 /// Other platform-object keys are values for that platform's pack. `bindings`
-/// holds the device resources the app provisions. Other top-level objects are
+/// holds tokamak's settings for storage bindings. Other top-level objects are
 /// plugins' values, by plugin ID. `null` leaves a value unset.
 pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig> {
     if !config.is_object() {
@@ -557,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_resources_bindings_provision() -> TestResult {
+    fn reads_the_settings_of_storage_bindings() -> TestResult {
         let temporary = tempfile::tempdir()?;
         let config = load(
             temporary.path(),

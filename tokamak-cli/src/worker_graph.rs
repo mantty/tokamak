@@ -136,7 +136,11 @@ fn service_bindings(
 
 impl CompiledWorker<'_> {
     /// Write the bundle and environment into its application subpackage.
-    pub(crate) fn package(&self, app: &Path, provisioned: &storage::Provisioned) -> Result<()> {
+    pub(crate) fn package(
+        &self,
+        app: &Path,
+        binding_settings: &storage::BindingSettings,
+    ) -> Result<()> {
         let layout = PackageLayout::new(app);
         let layout = if self.name == "tokamak" {
             layout.tokamak_worker()
@@ -147,7 +151,7 @@ impl CompiledWorker<'_> {
             layout.root(),
             &self.compiled,
             self.config,
-            provisioned,
+            binding_settings,
             self.services.clone(),
         )
     }

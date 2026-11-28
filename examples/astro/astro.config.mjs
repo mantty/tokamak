@@ -7,9 +7,8 @@ export default defineConfig({
   adapter: tokamak({
     name: "Astro Tokamak",
     version: "1.0.0",
-    // The stores on the device: the events the app records, and Astro's sessions.
+    // Keeps Astro's sessions, in the KV binding its adapter adds, out of device backups.
     bindings: {
-      EVENTS: { type: "kv" },
       SESSION: { type: "kv", backup: "excluded" },
     },
     // Bundles the sound files in sounds/ for the `sound` field and channels.
