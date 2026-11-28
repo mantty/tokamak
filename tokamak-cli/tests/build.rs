@@ -80,13 +80,11 @@ fn configure(root: &Path, config: &str) -> TestResult {
     Ok(())
 }
 
-/// Declare a KV binding and provision its store.
 fn declare_storage(root: &Path) -> TestResult {
     write_worker_config(
         root,
         r#"{ "kv_namespaces": [{ "binding": "SESSION", "id": "session" }] }"#,
-    )?;
-    configure(root, r#"{ "bindings": { "SESSION": { "type": "kv" } } }"#)
+    )
 }
 
 /// Install this repository's location plugin.
@@ -801,10 +799,6 @@ fn warns_about_bindings_the_packaged_app_lacks() -> TestResult {
             "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] }
         }"#,
     )?;
-    configure(
-        &project,
-        r#"{ "bindings": { "SESSION": { "type": "kv" } } }"#,
-    )?;
     let warnings = build_warnings()?;
     assert!(
         warnings.contains(
@@ -954,15 +948,15 @@ fn packages_both_workers_with_their_own_bindings_and_migrations() -> TestResult 
 
 #[cfg(unix)]
 #[test]
-fn requires_the_options_to_provision_each_storage_binding() -> TestResult {
+fn rejects_binding_settings_of_another_type() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
     configure_worker_graph(&project)?;
-    configure(&project, "{}")?;
+    configure(&project, r#"{ "bindings": { "DB": { "type": "kv" } } }"#)?;
     build_command("macos", &project, &platform_pack)?
         .assert()
         .failure()
         .stderr(contains(
-            "d1_databases binding DB has no entry in the `bindings` of the tokamak() options",
+            "`bindings.DB` of the tokamak() options has another `type` than the d1_databases binding",
         ));
     Ok(())
 }

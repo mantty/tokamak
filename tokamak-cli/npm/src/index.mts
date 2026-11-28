@@ -43,28 +43,28 @@ export interface PluginConfig {
 /** Whether device backups include a store. */
 export type Backup = "included" | "excluded";
 
-/** A KV namespace on the device. */
+/** Settings for a KV binding's namespace on the device. */
 export interface KvBinding {
   type: "kv";
   /** Whether device backups include the namespace. Defaults to `included`. */
   backup?: Backup;
 }
 
-/** A D1 database on the device. */
+/** Settings for a D1 binding's database on the device. */
 export interface D1Binding {
   type: "d1";
   /** Whether device backups include the database. Defaults to `included`. */
   backup?: Backup;
 }
 
-/** An R2 bucket on the device. */
+/** Settings for an R2 binding's bucket on the device. */
 export interface R2Binding {
   type: "r2";
   /** Whether device backups include the bucket. Defaults to `included`. */
   backup?: Backup;
 }
 
-/** A resource the app provisions on the device for the Wrangler binding of the same name. */
+/** tokamak's settings for the Wrangler storage binding of the same name. */
 export type Binding = KvBinding | D1Binding | R2Binding;
 
 /**
@@ -91,8 +91,8 @@ export interface Config {
   /** App version. */
   version?: string;
   /**
-   * The resources the app provisions on the device, by the name of the Wrangler binding that binds
-   * each. Every KV, D1 and R2 binding in the Wrangler configuration needs an entry.
+   * tokamak's settings for the KV, D1 and R2 bindings the Wrangler configuration declares, by
+   * binding name. A binding without an entry has the defaults.
    */
   bindings?: Record<string, Binding>;
   android?: PlatformConfig;

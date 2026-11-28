@@ -205,10 +205,8 @@ the runtime has no WebAssembly and loads only ES modules.
 ### Storage
 
 A packaged app's Worker gets KV, D1 and R2 bindings backed by storage on the
-device. As on Cloudflare, a store is provisioned in one place and bound in
-another: the `bindings` option of `tokamak()` provisions the stores on the
-device, and the Wrangler configuration binds them as it does for Cloudflare.
-The Worker uses the same APIs, so the code deploys to Cloudflare unchanged. The
+device. Declare them in the Wrangler configuration as for Cloudflare; the
+Worker uses the same APIs, so the code deploys to Cloudflare unchanged. The
 data stays on the device and is not synced with the Cloudflare resources the
 bindings name. `tok build` warns about other bindings, such as Durable Objects
 or Queues, which the packaged app does not provide.
@@ -222,24 +220,24 @@ or Queues, which the packaged app does not provide.
 }
 ```
 
+The `bindings` option of `tokamak()` holds tokamak's own settings for these
+bindings. It is optional, and a binding without an entry has the defaults:
+
 ```ts
 // vite.config.ts
 tokamak({
   bindings: {
-    SETTINGS: { type: "kv" },
     DB: { type: "d1", backup: "excluded" },
-    FILES: { type: "r2" },
   },
 });
 ```
 
-Each key of `bindings` is the name of the Wrangler binding the store is for,
-and `type` is `kv`, `d1` or `r2`. `tok build` fails when a KV, D1 or R2 binding
-in the Wrangler configuration has no entry of its name and type. That includes
-the KV binding Astro's Cloudflare adapter adds for sessions, `SESSION` unless
-`sessionKVBindingName` names another. `backup` says whether
-[device backups](#where-data-lives) include the store: `included`, the default,
-or `excluded`.
+Each key of `bindings` is the name of a Wrangler binding, and `type` is that
+binding's type: `kv`, `d1` or `r2`. `tok build` fails when the binding of that
+name has another type. `backup` says whether
+[device backups](#where-data-lives) include the binding's store: `included`,
+the default, or `excluded`. An entry can also name a binding a framework adds,
+such as the `SESSION` KV binding Astro's Cloudflare adapter adds for sessions.
 
 | Binding | Worker API | Device store |
 | --- | --- | --- |
@@ -351,9 +349,9 @@ tokamak({
   icon: "assets/icons/AppIcon.icon",
   version: "1.0.0",
 
-  // The stores on the device, by Wrangler binding name
+  // Settings for storage bindings, by Wrangler binding name
   bindings: {
-    SETTINGS: { type: "kv" },
+    CACHE: { type: "kv", backup: "excluded" },
   },
 
   // Platform overrides and platform-pack settings

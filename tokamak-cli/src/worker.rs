@@ -75,7 +75,7 @@ pub(crate) fn package(
     app_dir: &Path,
     compiled: &Path,
     wrangler: &WranglerConfig,
-    provisioned: &storage::Provisioned,
+    binding_settings: &storage::BindingSettings,
     services: BTreeMap<String, ServiceBinding>,
 ) -> Result<()> {
     let layout = PackageLayout::new(app_dir);
@@ -85,7 +85,7 @@ pub(crate) fn package(
         &WorkerEnvironment {
             services,
             vars: wrangler.vars.clone(),
-            storage: storage::package(wrangler, provisioned, &layout)?,
+            storage: storage::package(wrangler, binding_settings, &layout)?,
         },
     )?;
     if let Some(assets) = &wrangler.assets {
@@ -277,12 +277,12 @@ mod tests {
         let compiled = compile(&root.join("cache"), &wrangler, None)?;
         let app = PackageLayout::new(root.join("app")).tokamak_worker();
 
-        let provisioned = BTreeMap::new();
+        let binding_settings = BTreeMap::new();
         package(
             app.root(),
             &compiled,
             &wrangler,
-            &provisioned,
+            &binding_settings,
             BTreeMap::new(),
         )?;
 
